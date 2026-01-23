@@ -199,17 +199,37 @@
         </div>
         <div style="padding: 24px;">
           <div style="margin-bottom: 16px;">
-            <label class="form-label">ファイル選択 (PDF, PPTX, DOCX, TXT, MD)</label>
-            <input 
-              type="file" 
-              id="fileInput" 
-              class="form-input" 
-              accept=".pdf,.pptx,.docx,.txt,.md"
-              onchange="handleFileSelect(event)"
-            />
+            <label class="form-label">ファイル選択 (PDF, PPT, PPTX, PNG, JPG, JPEG) - 最大5ファイル</label>
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-purple-400 transition cursor-pointer" 
+                 onclick="document.getElementById('fileInputMultiple').click()"
+                 ondragover="handleDragOver(event)"
+                 ondragleave="handleDragLeave(event)"
+                 ondrop="handleDropForMultipleInput(event)">
+              <svg class="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+              </svg>
+              <p class="text-gray-600 font-medium mb-2">ファイルをドラッグ＆ドロップまたはクリックしてアップロード</p>
+              <p class="text-sm text-gray-500">対応形式: PDF, PPT, PPTX, PNG, JPG, JPEG</p>
+              <p class="text-xs text-purple-600 font-semibold mt-2">☆ 最大5ファイルまで同時アップロード可能</p>
+              <input type="file" id="fileInputMultiple" class="hidden" accept=".pdf,.ppt,.pptx,.png,.jpg,.jpeg" multiple onchange="handleMultipleFileSelect(event)">
+            </div>
           </div>
-          <div id="uploadStatus" style="margin-bottom: 16px; display: none;"></div>
-          <button class="apex-button px-4 py-2" onclick="uploadDocument()" id="uploadBtn" disabled>
+          
+          <!-- 選択されたファイルリスト -->
+          <div id="selectedFilesList" style="margin-bottom: 16px; display: none;">
+            <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+              <div class="flex items-center justify-between mb-3">
+                <span class="text-sm font-semibold text-gray-700">選択されたファイル (<span id="selectedFilesCount">0</span>/5)</span>
+                <button onclick="clearMultipleFileSelection()" class="text-xs text-red-600 hover:text-red-800 hover:underline">すべてクリア</button>
+              </div>
+              <div id="selectedFilesListContent" class="space-y-2"></div>
+            </div>
+          </div>
+          
+          <!-- アップロード進捗 -->
+          <div id="uploadProgress" style="margin-bottom: 16px; display: none;"></div>
+          
+          <button class="apex-button px-4 py-2" onclick="uploadMultipleDocuments()" id="uploadMultipleBtn" disabled>
             📤 アップロード開始
           </button>
         </div>
@@ -219,7 +239,7 @@
       <div class="apex-region">
         <div class="apex-region-header">
           📁 登録済み文書
-          <button class="apex-button-secondary apex-button-xs" onclick="loadDocuments()">
+          <button class="apex-button-secondary apex-button-xs" onclick="loadOciObjects()">
             🔄 更新
           </button>
         </div>
@@ -362,7 +382,7 @@
             </div>
           </div>
 
-          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 20px;">
             <div class="form-group">
               <label class="form-label">Bucket Name</label>
               <input type="text" id="bucketName" class="form-input" placeholder="semantic-doc-search" />
@@ -370,8 +390,20 @@
 
             <div class="form-group">
               <label class="form-label">Namespace</label>
-              <input type="text" id="namespace" class="form-input" placeholder="your-namespace" />
+              <div style="position: relative;">
+                <input type="text" id="namespace" class="form-input" placeholder="自動取得されます" readonly style="background-color: #f8fafc; cursor: not-allowed;" />
+                <span id="namespaceStatus" class="text-xs text-gray-500" style="display: block; margin-top: 4px;">環境変数から読み込み中...</span>
+              </div>
             </div>
+          </div>
+          
+          <div style="display: flex; gap: 12px;">
+            <button class="apex-button px-4 py-2" onclick="saveObjectStorageSettings()">
+              💾 Object Storage設定を保存
+            </button>
+            <button class="apex-button-secondary px-4 py-2" onclick="testObjectStorageConnection()">
+              🧪 接続テスト
+            </button>
           </div>
         </div>
         </div>
@@ -384,7 +416,12 @@
       <div class="apex-region" style="margin-bottom: 20px;">
         <div class="apex-region-header">
           🗄️ Autonomous AI Database 起動/停止
-          <span id="adbLifecycleState" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未取得</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="apex-button-secondary apex-button-xs" onclick="getAdbInfo()" style="display: flex; align-items: center; gap: 4px;">
+              🔄 更新
+            </button>
+            <span id="adbLifecycleState" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未取得</span>
+          </div>
         </div>
         <div style="padding: 24px;">
           <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
@@ -403,9 +440,6 @@
           </div>
           
           <div style="display: flex; gap: 12px; margin-bottom: 20px;">
-            <button class="apex-button px-4 py-2" onclick="getAdbInfo()">
-              取得
-            </button>
             <button class="apex-button px-4 py-2" onclick="startAdb()" style="background: #10b981;">
               起動
             </button>
@@ -446,7 +480,12 @@
       <div class="apex-region" style="margin-bottom: 20px;">
         <div class="apex-region-header">
           🔌 データベース接続設定
-          <span id="dbConnectionStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未設定</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="apex-button-secondary apex-button-xs" onclick="refreshDbConnectionFromEnv()" style="display: flex; align-items: center; gap: 4px;">
+              🔄 更新
+            </button>
+            <span id="dbConnectionStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未設定</span>
+          </div>
         </div>
         <div style="padding: 24px;">
           <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
@@ -458,51 +497,46 @@
                 <div class="text-sm font-medium text-blue-900" style="color: #1e3a8a; margin-bottom: 4px;">データベース接続設定について</div>
                 <div class="text-sm text-blue-800" style="color: #1e40af;">
                   Oracle Databaseへの接続情報を設定します。<br>
-                  接続タイプは、Basic(ホスト/ポート)、TNS、Walletから選択できます。
+                  ユーザー名、パスワード、Walletファイル（ZIP）を設定してください。
                 </div>
               </div>
             </div>
           </div>
 
-          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
+          <!-- 共通フィールド -->
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 16px;">
             <div class="form-group">
-              <label class="form-label">ホスト</label>
-              <input type="text" id="dbHost" class="form-input" placeholder="localhost" />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">ポート</label>
-              <input type="number" id="dbPort" class="form-input" placeholder="1521" />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">データベース名/サービス名</label>
-              <input type="text" id="dbName" class="form-input" placeholder="ORCL" />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">ユーザー名</label>
+              <label class="form-label">ユーザー名<span class="text-red-500 ml-1">*</span></label>
               <input type="text" id="dbUser" class="form-input" placeholder="username" />
             </div>
 
             <div class="form-group">
-              <label class="form-label">パスワード</label>
-              <input type="password" id="dbPassword" class="form-input" placeholder="********" />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">接続タイプ</label>
-              <select id="dbConnectionType" class="form-input">
-                <option value="basic">Basic (ホスト/ポート)</option>
-                <option value="tns">TNS</option>
-                <option value="wallet">Wallet</option>
-              </select>
+              <label class="form-label">パスワード<span class="text-red-500 ml-1">*</span></label>
+              <input type="password" id="dbPassword" class="form-input" placeholder="********" autocomplete="new-password" />
             </div>
           </div>
 
-          <div class="form-group">
-            <label class="form-label">接続文字列 (TNS形式の場合)</label>
-            <textarea id="dbConnectionString" class="form-input" rows="4" placeholder="(DESCRIPTION=...)"></textarea>
+          <!-- Walletアップロード -->
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label class="form-label">Walletファイル<span class="text-red-500 ml-1">*</span></label>
+            <div id="walletUploadArea" class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center cursor-pointer hover:border-blue-500 transition-colors" onclick="document.getElementById('walletFileInput').click()">
+              <svg class="w-12 h-12 mx-auto mb-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+              </svg>
+              <div class="text-sm font-medium text-gray-700 mb-1">ファイルをドラッグ&ドロップまたはクリックしてアップロード</div>
+              <div class="text-xs text-gray-500">対応形式: ZIP (.zip)</div>
+            </div>
+            <input type="file" id="walletFileInput" accept=".zip" style="display: none" onchange="handleWalletFileSelect(event)" />
+            <div id="walletFileName" class="text-sm text-gray-600 mt-2" style="display: none;"></div>
+            <div id="walletStatus" class="text-sm mt-2" style="display: none;"></div>
+          </div>
+
+          <!-- サービス名/DSN表示 -->
+          <div class="form-group" id="dsnDisplay" style="display: none; margin-bottom: 16px;">
+            <label class="form-label">サービス名 / DSN</label>
+            <select id="dbDsn" class="form-input">
+              <option value="">選択してください</option>
+            </select>
           </div>
 
           <div style="display: flex; gap: 12px; margin-top: 20px;">
@@ -547,6 +581,42 @@
               <div style="font-size: 48px; margin-bottom: 16px;">🗄️</div>
               <div style="font-size: 16px; font-weight: 500;">データベースに接続してください</div>
               <div style="font-size: 14px; margin-top: 8px;">接続後、データベース情報が表示されます</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ストレージ情報 -->
+      <div class="apex-region" style="margin-bottom: 20px;">
+        <div class="apex-region-header">
+          💾 ストレージ情報
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button id="refreshDbStorageBtn" class="apex-button-secondary apex-button-xs" onclick="refreshDbStorage()" style="display: flex; align-items: center; gap: 4px;">
+              🔄 更新
+            </button>
+            <span id="dbStorageStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未取得</span>
+          </div>
+        </div>
+        <div style="padding: 24px;">
+          <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+              </svg>
+              <div style="flex: 1;">
+                <div class="text-sm font-medium text-blue-900" style="color: #1e3a8a; margin-bottom: 4px;">ストレージ情報について</div>
+                <div class="text-sm text-blue-800" style="color: #1e40af;">
+                  データベースのストレージ使用状況を表示します。テーブルスペースごとの使用状況を確認できます。
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div id="dbStorageContent">
+            <div style="text-align: center; padding: 40px; color: #64748b;">
+              <div style="font-size: 48px; margin-bottom: 16px;">💾</div>
+              <div style="font-size: 16px; font-weight: 500;">データベースに接続してください</div>
+              <div style="font-size: 14px; margin-top: 8px;">接続後、ストレージ情報が表示されます</div>
             </div>
           </div>
         </div>

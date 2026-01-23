@@ -1,24 +1,27 @@
 import os
 import logging
 import uuid
+import base64
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import PyPDF2
 from pptx import Presentation
 from docx import Document as DocxDocument
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
-    """文書処理サービス - PDF/PPT/DOCX/TXTの解析"""
+    """文書処理サービス - PDF/PPT/PPTX/PNG/JPG/JPEGの解析"""
     
     def __init__(self):
         self.supported_formats = {
             'pdf': self._process_pdf,
+            'ppt': self._process_pptx,
             'pptx': self._process_pptx,
-            'docx': self._process_docx,
-            'txt': self._process_txt,
-            'md': self._process_txt,
+            'png': self._process_image,
+            'jpg': self._process_image,
+            'jpeg': self._process_image,
         }
     
     def process_document(self, file_path: str, filename: str) -> Dict[str, Any]:
@@ -198,6 +201,96 @@ class DocumentProcessor:
                 "total_chars": len(content)
             }
         }
+    
+    def _process_image(self, file_path: str, filename: str) -> Dict[str, Any]:
+        """画像ファイル処理 - OCI Vision AIを使用してテキスト抽出"""
+        try:
+            from app.services.ai_copilot import get_copilot_service
+            
+            # 画像をbase64エンコード
+            with open(file_path, 'rb') as f:
+                image_data = f.read()
+            
+            # 画像の検証
+            try:
+                img = Image.open(file_path)
+                width, height = img.size
+                logger.info(f"画像サイズ: {width}x{height}")
+            except Exception as e:
+                logger.error(f"画像の検証エラー: {e}")
+                raise ValueError(f"無効な画像ファイル: {e}")
+            
+            # base64エンコード
+            base64_image = base64.b64encode(image_data).decode('utf-8')
+            
+            # MIMEタイプを判定
+            file_ext = Path(filename).suffix.lower().lstrip('.')
+            mime_type = f"image/{file_ext}" if file_ext in ['png', 'jpg', 'jpeg'] else 'image/jpeg'
+            data_url = f"data:{mime_type};base64,{base64_image}"
+            
+            # Vision AIでテキスト抽出
+            copilot = get_copilot_service()
+            prompt = "この画像に含まれるすべてのテキストを抽出してください。テキストがない場合は「テキストなし」と応答してください。"
+            
+            # 同期的にテキスト抽出（ストリーミング不要）
+            import asyncio
+            
+            async def extract_text():
+                result = []
+                async for chunk in copilot.chat_stream(
+                    message=prompt,
+                    images=[{"data_url": data_url}]
+                ):
+                    result.append(chunk)
+                return ''.join(result)
+            
+            # イベントループを取得または作成
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            extracted_text = loop.run_until_complete(extract_text())
+            
+            logger.info(f"画像からテキストを抽出: {len(extracted_text)}文字")
+            
+            # テキストがない場合
+            if not extracted_text or extracted_text.strip().lower() in ['テキストなし', 'no text']:
+                extracted_text = f"[画像: {filename}]\n画像からテキストを抽出できませんでした。"
+            
+            # チャンクとして返す
+            chunks = [{
+                "page_number": 1,
+                "text": extracted_text.strip(),
+                "chunk_id": f"{uuid.uuid4()}"
+            }]
+            
+            return {
+                "chunks": chunks,
+                "page_count": 1,
+                "metadata": {
+                    "format": "Image",
+                    "image_size": f"{width}x{height}",
+                    "mime_type": mime_type
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"画像処理エラー: {filename} - {e}")
+            # エラーの場合でも基本情報を返す
+            return {
+                "chunks": [{
+                    "page_number": 1,
+                    "text": f"[画像: {filename}]\n画像処理エラー: {str(e)}",
+                    "chunk_id": f"{uuid.uuid4()}"
+                }],
+                "page_count": 1,
+                "metadata": {
+                    "format": "Image",
+                    "error": str(e)
+                }
+            }
 
 # シングルトンインスタンス
 document_processor = DocumentProcessor()

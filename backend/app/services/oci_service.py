@@ -55,7 +55,7 @@ class OCIService:
             
             # Object Storage設定を環境変数から取得
             bucket_name = os.environ.get("OCI_BUCKET")
-            namespace = os.environ.get("OCI_NAMESPACE")
+            namespace = os.environ.get("OCI_NAMESPACE", "")  # 空でもOK
                 
             return OCISettings(
                 user_ocid=defaults.get('user'),
@@ -184,12 +184,351 @@ class OCIService:
         return self._oci_config
     
     def get_object_storage_client(self) -> oci.object_storage.ObjectStorageClient:
-        """Object Storage Clientを取得"""
+        """Object Storage Clientを取得（OCI_REGION_DEPLOYを使用）"""
         if self._object_storage_client is None:
             config = self.get_oci_config()
             if config:
-                self._object_storage_client = oci.object_storage.ObjectStorageClient(config)
+                # Object Storageは OCI_REGION_DEPLOY を使用
+                deploy_region = os.environ.get("OCI_REGION_DEPLOY")
+                if deploy_region:
+                    # 設定をコピーしてregionを上書き
+                    storage_config = config.copy()
+                    storage_config["region"] = deploy_region
+                    logger.info(f"Object Storage ClientをOCI_REGION_DEPLOYで作成: {deploy_region}")
+                    self._object_storage_client = oci.object_storage.ObjectStorageClient(storage_config)
+                else:
+                    # OCI_REGION_DEPLOYがない場合はデフォルトregionを使用
+                    logger.warning("OCI_REGION_DEPLOYが設定されていません。OCI_REGIONを使用します")
+                    self._object_storage_client = oci.object_storage.ObjectStorageClient(config)
         return self._object_storage_client
+    
+    def get_namespace(self) -> Dict[str, Any]:
+        """
+        Object StorageのNamespaceを取得
+        環境変数から優先、空ならOCI SDKで取得
+        
+        Returns:
+            namespace情報
+        """
+        try:
+            # 環境変数から取得を試みる
+            namespace_from_env = os.environ.get("OCI_NAMESPACE", "").strip()
+            if namespace_from_env:
+                logger.info(f"Namespaceを環境変数から取得: {namespace_from_env}")
+                return {
+                    "success": True,
+                    "namespace": namespace_from_env,
+                    "source": "env"
+                }
+            
+            # 環境変数が空の場合、OCI SDKで取得
+            client = self.get_object_storage_client()
+            if not client:
+                raise Exception("Object Storage Clientの取得に失敗しました")
+            
+            # Namespaceを取得
+            namespace = client.get_namespace().data
+            logger.info(f"NamespaceをOCI SDKから取得: {namespace}")
+            
+            return {
+                "success": True,
+                "namespace": namespace,
+                "source": "api"
+            }
+            
+        except Exception as e:
+            logger.error(f"Namespace取得エラー: {e}")
+            return {
+                "success": False,
+                "message": f"Namespace取得エラー: {str(e)}"
+            }
+    
+    def save_object_storage_settings(self, bucket_name: str, namespace: str) -> Dict[str, Any]:
+        """
+        Object Storage設定を.envファイルに保存
+        
+        Args:
+            bucket_name: バケット名
+            namespace: ネームスペース
+            
+        Returns:
+            保存結果
+        """
+        try:
+            # .envファイルのパスを取得
+            # backend/app/services/oci_service.py から 4階層上がプロジェクトルート
+            project_root = Path(__file__).parent.parent.parent.parent
+            env_path = project_root / ".env"
+            
+            logger.info(f".envファイルパス: {env_path}")
+            logger.info(f".envファイル存在確認: {env_path.exists()}")
+            
+            if not env_path.exists():
+                raise Exception(f".envファイルが見つかりません: {env_path}")
+            
+            # .envファイルを読み込む
+            with open(env_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # 設定を更新
+            bucket_updated = False
+            namespace_updated = False
+            new_lines = []
+            
+            for line in lines:
+                if line.startswith('OCI_BUCKET='):
+                    new_lines.append(f'OCI_BUCKET={bucket_name}\n')
+                    bucket_updated = True
+                elif line.startswith('OCI_NAMESPACE='):
+                    new_lines.append(f'OCI_NAMESPACE={namespace}\n')
+                    namespace_updated = True
+                else:
+                    new_lines.append(line)
+            
+            # 設定が存在しない場合は追加
+            if not bucket_updated:
+                # OCI_BUCKETを追加（OCI関連設定の後に）
+                for i, line in enumerate(new_lines):
+                    if line.startswith('OCI_REGION_DEPLOY=') or line.startswith('OCI_COMPARTMENT_OCID='):
+                        new_lines.insert(i + 1, f'OCI_BUCKET={bucket_name}\n')
+                        bucket_updated = True
+                        break
+                if not bucket_updated:
+                    new_lines.append(f'OCI_BUCKET={bucket_name}\n')
+            
+            if not namespace_updated:
+                # OCI_NAMESPACEを追加（OCI_BUCKETの後に）
+                for i, line in enumerate(new_lines):
+                    if line.startswith('OCI_BUCKET='):
+                        new_lines.insert(i + 1, f'OCI_NAMESPACE={namespace}\n')
+                        namespace_updated = True
+                        break
+                if not namespace_updated:
+                    new_lines.append(f'OCI_NAMESPACE={namespace}\n')
+            
+            # ファイルに書き込む
+            with open(env_path, 'w', encoding='utf-8') as f:
+                f.writelines(new_lines)
+            
+            # 環境変数を更新（再読み込み）
+            load_dotenv(env_path, override=True)
+            
+            logger.info(f"Object Storage設定を保存: bucket={bucket_name}, namespace={namespace}")
+            
+            return {
+                "success": True,
+                "message": "Object Storage設定を保存しました"
+            }
+            
+        except Exception as e:
+            logger.error(f"Object Storage設定保存エラー: {e}")
+            return {
+                "success": False,
+                "message": f"Object Storage設定保存エラー: {str(e)}"
+            }
+    
+    def list_objects(self, bucket_name: str, namespace: str, prefix: str = "", page_size: int = 50, page_token: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Object Storage内のオブジェクト一覧を取得
+        
+        Args:
+            bucket_name: バケット名
+            namespace: ネームスペース
+            prefix: プレフィックス（フォルダパス）
+            page_size: ページサイズ
+            page_token: ページトークン（次ページ取得用）
+            
+        Returns:
+            オブジェクト一覧とページ情報
+        """
+        try:
+            client = self.get_object_storage_client()
+            if not client:
+                raise Exception("Object Storage Clientの取得に失敗しました")
+            
+            # オブジェクト一覧を取得
+            kwargs = {
+                "namespace_name": namespace,
+                "bucket_name": bucket_name,
+                "prefix": prefix,
+                "limit": page_size,
+                "fields": "name,size,timeCreated,md5"
+            }
+            
+            if page_token:
+                kwargs["start"] = page_token
+                
+            response = client.list_objects(**kwargs)
+            
+            # レスポンスを整形
+            objects = []
+            for obj in response.data.objects:
+                # フォルダかファイルかを判定
+                is_folder = obj.name.endswith('/')
+                
+                objects.append({
+                    "name": obj.name,
+                    "size": obj.size if obj.size else 0,
+                    "time_created": obj.time_created.isoformat() if obj.time_created else None,
+                    "md5": obj.md5 if hasattr(obj, 'md5') else None,
+                    "is_folder": is_folder,
+                    "type": "folder" if is_folder else "file"
+                })
+            
+            return {
+                "success": True,
+                "objects": objects,
+                "next_start_with": response.data.next_start_with,
+                "prefixes": response.data.prefixes if hasattr(response.data, 'prefixes') else []
+            }
+            
+        except Exception as e:
+            logger.error(f"オブジェクト一覧取得エラー: {e}")
+            return {
+                "success": False,
+                "message": f"オブジェクト一覧取得エラー: {str(e)}",
+                "objects": [],
+                "next_start_with": None,
+                "prefixes": []
+            }
+    
+    
+    def upload_file(self, file_content, object_name: str, content_type: str = None) -> bool:
+        """
+        ファイルをObject Storageにアップロード
+        
+        Args:
+            file_content: ファイル内容（バイナリデータまたはBytesIO）
+            object_name: Object名（パス含む）
+            content_type: Content-Type
+            
+        Returns:
+            成功した場合True
+        """
+        try:
+            client = self.get_object_storage_client()
+            if not client:
+                raise Exception("Object Storage Clientの取得に失敗しました")
+            
+            # 環境変数から設定を取得
+            bucket_name = os.environ.get("OCI_BUCKET")
+            if not bucket_name:
+                raise Exception("OCI_BUCKETが設定されていません")
+            
+            # Namespaceを取得
+            namespace_result = self.get_namespace()
+            if not namespace_result.get("success"):
+                raise Exception(namespace_result.get("message", "Namespace取得失敗"))
+            
+            namespace = namespace_result.get("namespace")
+            
+            # Object Storageにアップロード
+            put_object_kwargs = {
+                "namespace_name": namespace,
+                "bucket_name": bucket_name,
+                "object_name": object_name,
+                "put_object_body": file_content
+            }
+            
+            if content_type:
+                put_object_kwargs["content_type"] = content_type
+            
+            client.put_object(**put_object_kwargs)
+            
+            logger.info(f"Object Storageアップロード成功: {object_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Object Storageアップロードエラー: {e}")
+            return False
+    
+    def delete_objects(self, bucket_name: str, namespace: str, object_names: list) -> Dict[str, Any]:
+        """
+        Object Storage内のオブジェクトを削除
+        
+        Args:
+            bucket_name: バケット名
+            namespace: ネームスペース
+            object_names: 削除するオブジェクト名のリスト
+            
+        Returns:
+            削除結果
+        """
+        try:
+            client = self.get_object_storage_client()
+            if not client:
+                raise Exception("Object Storage Clientの取得に失敗しました")
+            
+            success_count = 0
+            failed_objects = []
+            
+            for obj_name in object_names:
+                try:
+                    # フォルダの場合は配下のオブジェクトも削除
+                    if obj_name.endswith('/'):
+                        # フォルダ配下のオブジェクトを取得
+                        prefix_objects = self.list_objects(bucket_name, namespace, prefix=obj_name, page_size=1000)
+                        if prefix_objects.get("success"):
+                            for sub_obj in prefix_objects.get("objects", []):
+                                try:
+                                    client.delete_object(
+                                        namespace_name=namespace,
+                                        bucket_name=bucket_name,
+                                        object_name=sub_obj["name"]
+                                    )
+                                    success_count += 1
+                                except Exception as sub_e:
+                                    logger.error(f"サブオブジェクト削除エラー: {sub_obj['name']} - {sub_e}")
+                                    failed_objects.append(sub_obj["name"])
+                        
+                        # フォルダ自体も削除
+                        try:
+                            client.delete_object(
+                                namespace_name=namespace,
+                                bucket_name=bucket_name,
+                                object_name=obj_name
+                            )
+                            success_count += 1
+                        except Exception as folder_e:
+                            logger.error(f"フォルダ削除エラー: {obj_name} - {folder_e}")
+                            # フォルダが存在しない場合はエラーを無視
+                            if "NoSuchKey" not in str(folder_e):
+                                failed_objects.append(obj_name)
+                    else:
+                        # ファイルを削除
+                        client.delete_object(
+                            namespace_name=namespace,
+                            bucket_name=bucket_name,
+                            object_name=obj_name
+                        )
+                        success_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"オブジェクト削除エラー: {obj_name} - {e}")
+                    failed_objects.append(obj_name)
+            
+            if failed_objects:
+                return {
+                    "success": False,
+                    "message": f"{success_count}件削除成功、{len(failed_objects)}件失敗",
+                    "success_count": success_count,
+                    "failed_count": len(failed_objects),
+                    "failed_objects": failed_objects
+                }
+            else:
+                return {
+                    "success": True,
+                    "message": f"{success_count}件のオブジェクトを削除しました",
+                    "success_count": success_count,
+                    "failed_count": 0
+                }
+                
+        except Exception as e:
+            logger.error(f"オブジェクト削除エラー: {e}")
+            return {
+                "success": False,
+                "message": f"オブジェクト削除エラー: {str(e)}"
+            }
 
 # シングルトンインスタンス
 oci_service = OCIService()

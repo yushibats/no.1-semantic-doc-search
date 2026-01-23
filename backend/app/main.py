@@ -11,7 +11,7 @@ import secrets
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -48,7 +48,9 @@ from app.models.database import (
     DatabaseInfo,
     DatabaseInfoResponse,
     TableInfo,
-    DatabaseTablesResponse
+    DatabaseTablesResponse,
+    WalletUploadResponse,
+    DatabaseStorageResponse
 )
 from app.models.adb import (
     ADBGetRequest,
@@ -318,6 +320,217 @@ async def test_oci_connection(request: OCIConnectionTestRequest):
             message=f"接続テストエラー: {str(e)}"
         )
 
+@app.get("/api/oci/namespace")
+async def get_oci_namespace():
+    """OCI Object StorageのNamespaceを取得"""
+    try:
+        result = oci_service.get_namespace()
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "namespace": result.get("namespace"),
+                "source": result.get("source", "unknown")
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("message", "Namespace取得エラー"))
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Namespace取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ObjectStorageSettingsRequest(BaseModel):
+    bucket_name: str
+    namespace: str
+
+@app.post("/api/oci/object-storage/save")
+async def save_object_storage_settings(request: ObjectStorageSettingsRequest):
+    """Object Storage設定を保存"""
+    try:
+        result = oci_service.save_object_storage_settings(
+            bucket_name=request.bucket_name,
+            namespace=request.namespace
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Object Storage設定保存エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/oci/object-storage/test")
+async def test_object_storage_connection(request: ObjectStorageSettingsRequest):
+    """Object Storage接続テスト"""
+    try:
+        # Namespaceを検証
+        namespace_result = oci_service.get_namespace()
+        if not namespace_result.get("success"):
+            return {
+                "success": False,
+                "message": f"⚠️ Namespace取得エラー: {namespace_result.get('message')}"
+            }
+        
+        # Bucketへのアクセスをテスト
+        client = oci_service.get_object_storage_client()
+        if not client:
+            return {
+                "success": False,
+                "message": "⚠️ Object Storage Clientの取得に失敗しました"
+            }
+        
+        # Bucketの存在確認
+        try:
+            bucket_response = client.get_bucket(
+                namespace_name=request.namespace,
+                bucket_name=request.bucket_name
+            )
+            
+            return {
+                "success": True,
+                "message": f"✅ 接続成功: Bucket '{request.bucket_name}' にアクセスできました",
+                "details": {
+                    "bucket_name": bucket_response.data.name,
+                    "namespace": request.namespace,
+                    "created_by": bucket_response.data.created_by if hasattr(bucket_response.data, 'created_by') else None
+                }
+            }
+        except Exception as bucket_e:
+            logger.error(f"Bucketアクセスエラー: {bucket_e}")
+            return {
+                "success": False,
+                "message": f"⚠️ Bucket '{request.bucket_name}' へのアクセスに失敗: {str(bucket_e)}"
+            }
+        
+    except Exception as e:
+        logger.error(f"Object Storage接続テストエラー: {e}")
+        return {
+            "success": False,
+            "message": f"⚠️ 接続テストエラー: {str(e)}"
+        }
+
+@app.get("/api/oci/objects")
+async def list_oci_objects(
+    prefix: str = Query(default="", description="プレフィックス（フォルダパス）"),
+    page: int = Query(default=1, ge=1, description="ページ番号"),
+    page_size: int = Query(default=50, ge=1, le=100, description="ページサイズ")
+):
+    """OCI Object Storage内のオブジェクト一覧を取得"""
+    try:
+        # 環境変数からバケット名を取得
+        bucket_name = os.getenv("OCI_BUCKET")
+        
+        if not bucket_name:
+            raise HTTPException(status_code=400, detail="バケット名が設定されていません")
+        
+        # Namespaceを取得（.env優先、空ならAPI）
+        namespace_result = oci_service.get_namespace()
+        if not namespace_result.get("success"):
+            raise HTTPException(status_code=500, detail=f"Namespace取得エラー: {namespace_result.get('message')}")
+        
+        namespace = namespace_result.get("namespace")
+        
+        # 全オブジェクトを取得（ページネーション用）
+        # 注: 本番環境では、大量のオブジェクトがある場合はキャッシュ機構を導入するべき
+        all_objects = []
+        page_token = None
+        
+        # 最大取得件数（無限ループ防止）
+        max_fetch = 10000
+        fetch_count = 0
+        
+        while fetch_count < max_fetch:
+            result = oci_service.list_objects(
+                bucket_name=bucket_name,
+                namespace=namespace,
+                prefix=prefix,
+                page_size=1000,  # APIの1回あたりの取得数
+                page_token=page_token
+            )
+            
+            if not result.get("success"):
+                raise HTTPException(status_code=500, detail=result.get("message", "オブジェクト一覧取得エラー"))
+            
+            objects = result.get("objects", [])
+            all_objects.extend(objects)
+            fetch_count += len(objects)
+            
+            # 次のページがあるかチェック
+            page_token = result.get("next_start_with")
+            if not page_token:
+                break
+        
+        # ページネーション情報を計算
+        total = len(all_objects)
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        
+        # 現在のページのオブジェクトを取得
+        paginated_objects = all_objects[start_idx:end_idx]
+        
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        
+        return {
+            "success": True,
+            "objects": paginated_objects,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "page_size": page_size,
+                "total": total,
+                "start_row": start_idx + 1 if total > 0 else 0,
+                "end_row": min(end_idx, total),
+                "has_next": page < total_pages,
+                "has_prev": page > 1
+            },
+            "bucket_name": bucket_name,
+            "namespace": namespace,
+            "prefix": prefix
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OCI Object Storage一覧取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ObjectDeleteRequest(BaseModel):
+    object_names: List[str]
+
+@app.post("/api/oci/objects/delete")
+async def delete_oci_objects(request: ObjectDeleteRequest):
+    """OCI Object Storage内のオブジェクトを削除"""
+    try:
+        # 環境変数からバケット名を取得
+        bucket_name = os.getenv("OCI_BUCKET")
+        
+        if not bucket_name:
+            raise HTTPException(status_code=400, detail="バケット名が設定されていません")
+        
+        # Namespaceを取得（.env優先、空ならAPI）
+        namespace_result = oci_service.get_namespace()
+        if not namespace_result.get("success"):
+            raise HTTPException(status_code=500, detail=f"Namespace取得エラー: {namespace_result.get('message')}")
+        
+        namespace = namespace_result.get("namespace")
+        
+        if not request.object_names or len(request.object_names) == 0:
+            raise HTTPException(status_code=400, detail="削除するオブジェクトが指定されていません")
+        
+        # オブジェクトを削除
+        result = oci_service.delete_objects(
+            bucket_name=bucket_name,
+            namespace=namespace,
+            object_names=request.object_names
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OCI Object Storage削除エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ========================================
 # 文書管理
 # ========================================
@@ -325,77 +538,106 @@ async def test_oci_connection(request: OCIConnectionTestRequest):
 @app.post("/api/documents/upload", response_model=DocumentUploadResponse)
 async def upload_document(file: UploadFile = File(...)):
     """
-    文書をアップロードして処理
-    - ローカルに一時保存
-    - OCI Object Storageにアップロード
-    - テキスト抽出とベクトル化
-    - インデックスに追加
+    文書をObject Storageにアップロード
+    - ローカルには保存しない
+    - OCI Object Storageにそのまま保存
+    - テキスト抽出やベクトル化は行わない
     """
     try:
-        # ファイルサイズチェック
-        max_size = int(os.getenv("MAX_FILE_SIZE", 100000000))  # 100MB
-        content = await file.read()
+        # ファイル名検証
+        if not file.filename or file.filename.strip() == "":
+            raise HTTPException(status_code=400, detail="無効なファイル名です")
         
-        if len(content) > max_size:
-            raise HTTPException(status_code=400, detail=f"ファイルサイズが大きすぎます（最大{max_size}バイト）")
+        # 環境変数から設定を取得
+        max_size = int(os.getenv("MAX_FILE_SIZE", 100000000))  # 100MB
+        allowed_extensions_str = os.getenv("ALLOWED_EXTENSIONS", "pdf,pptx,ppt,docx,txt,md,png,jpg,jpeg")
+        allowed_extensions = [ext.strip() for ext in allowed_extensions_str.split(",")]
         
         # ファイル拡張子チェック
-        allowed_extensions = os.getenv("ALLOWED_EXTENSIONS", "pdf,pptx,docx,txt,md").split(",")
         file_ext = Path(file.filename).suffix.lower().lstrip('.')
         
         if file_ext not in allowed_extensions:
             raise HTTPException(status_code=400, detail=f"サポートされていないファイル形式: {file_ext}")
         
-        # 文書IDを生成
+        # 許可されたMIMEタイプ
+        allowed_mime_types = {
+            'pdf': 'application/pdf',
+            'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'ppt': 'application/vnd.ms-powerpoint',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'txt': 'text/plain',
+            'md': 'text/markdown',
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg'
+        }
+        
+        # MIMEタイプ検証
+        content_type = file.content_type
+        expected_mime = allowed_mime_types.get(file_ext)
+        if expected_mime and content_type:
+            if not content_type.startswith(expected_mime.split('/')[0]):
+                logger.warning(f"MIMEタイプの不一致: 拡張子={file_ext}, Content-Type={content_type}")
+        
+        # ファイルサイズチェック
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
+        
+        if file_size > max_size:
+            raise HTTPException(status_code=400, detail=f"ファイルサイズが大きすぎます（最大{max_size}バイト）")
+        
+        if file_size == 0:
+            raise HTTPException(status_code=400, detail="空のファイルです")
+        
+        # 文書IDと安全なファイル名を生成
         document_id = str(uuid.uuid4())
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_filename = f"{timestamp}_{document_id[:8]}_{file.filename}"
         
-        # ローカルに一時保存
-        local_path = UPLOAD_PATH / safe_filename
-        with open(local_path, 'wb') as f:
-            f.write(content)
+        import re
+        safe_basename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', file.filename)
+        safe_basename = safe_basename.replace('..', '_')
+        if not safe_basename or safe_basename.strip() == '':
+            safe_basename = 'unnamed_file'
         
-        # 文書処理（テキスト抽出）
-        logger.info(f"文書を処理中: {file.filename}")
-        processing_result = document_processor.process_document(str(local_path), file.filename)
+        safe_filename = f"{timestamp}_{document_id[:8]}_{safe_basename}"
+        oci_object_name = f"uploads/{safe_filename}"
         
-        if not processing_result.get("success"):
-            raise HTTPException(status_code=500, detail=f"文書処理エラー: {processing_result.get('error')}")
+        # Object Storageにアップロード
+        logger.info(f"Object Storageにアップロード中: {file.filename} ({file_size} バイト)")
+        upload_success = oci_service.upload_file(
+            file_content=file.file,
+            object_name=oci_object_name,
+            content_type=content_type or f"application/{file_ext}"
+        )
         
-        chunks = processing_result.get("chunks", [])
-        page_count = processing_result.get("page_count", 0)
+        if not upload_success:
+            logger.error("Object Storageアップロードに失敗しました")
+            raise HTTPException(status_code=500, detail="Object Storageアップロードに失敗しました")
         
-        # ベクトルインデックスに追加
-        logger.info(f"ベクトルインデックスに追加中: {file.filename}")
-        vector_search_engine.add_document(document_id, file.filename, chunks)
+        logger.info(f"Object Storageアップロード完了: {file.filename} -> {oci_object_name}")
         
         # メタデータを保存
         documents = load_documents_metadata()
         document_metadata = {
             "document_id": document_id,
             "filename": file.filename,
-            "file_size": len(content),
-            "content_type": file.content_type,
+            "file_size": file_size,
+            "content_type": content_type or f"application/{file_ext}",
             "uploaded_at": datetime.now().isoformat(),
-            "oci_path": f"uploads/{safe_filename}",
-            "local_path": str(local_path),
-            "page_count": page_count,
-            "status": "completed",
-            "chunk_count": len(chunks)
+            "oci_path": oci_object_name,
+            "status": "uploaded"
         }
         documents.append(document_metadata)
         save_documents_metadata(documents)
         
-        logger.info(f"文書アップロード完了: {file.filename} (ID: {document_id})")
-        
         return DocumentUploadResponse(
             success=True,
-            message="文書のアップロードと処理が完了しました",
+            message="文書のアップロードが完了しました",
             document_id=document_id,
             filename=file.filename,
-            file_size=len(content),
-            content_type=file.content_type,
+            file_size=file_size,
+            content_type=document_metadata["content_type"],
             uploaded_at=document_metadata["uploaded_at"],
             oci_path=document_metadata["oci_path"]
         )
@@ -404,6 +646,182 @@ async def upload_document(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.error(f"文書アップロードエラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/documents/upload/multiple")
+async def upload_multiple_documents(files: List[UploadFile] = File(...)):
+    """
+    複数の文書をObject Storageにアップロード（最大5ファイル）
+    - ファイル検証（サイズ、拡張子、MIMEタイプ）
+    - Object Storageに保存
+    - ファイル名衝突回避（UUID）
+    """
+    try:
+        # ファイル数チェック
+        max_files = 5
+        if len(files) > max_files:
+            raise HTTPException(status_code=400, detail=f"アップロード可能なファイル数は最大{max_files}個です")
+        
+        if len(files) == 0:
+            raise HTTPException(status_code=400, detail="アップロードするファイルを選択してください")
+        
+        # 環境変数から設定を取得
+        max_size = int(os.getenv("MAX_FILE_SIZE", 100000000))  # 100MB
+        allowed_extensions_str = os.getenv("ALLOWED_EXTENSIONS", "pdf,pptx,ppt,docx,txt,md,png,jpg,jpeg")
+        allowed_extensions = [ext.strip() for ext in allowed_extensions_str.split(",")]
+        
+        # 許可されたMIMEタイプ（品質確保）
+        allowed_mime_types = {
+            'pdf': 'application/pdf',
+            'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'ppt': 'application/vnd.ms-powerpoint',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'txt': 'text/plain',
+            'md': 'text/markdown',
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg'
+        }
+        
+        results = []
+        success_count = 0
+        failed_count = 0
+        
+        # 各ファイルを処理
+        for idx, file in enumerate(files, 1):
+            file_result = {
+                "filename": file.filename,
+                "index": idx,
+                "success": False,
+                "message": "",
+                "document_id": None,
+                "oci_path": None
+            }
+            
+            try:
+                # ファイル名検証
+                if not file.filename or file.filename.strip() == "":
+                    file_result["message"] = "無効なファイル名です"
+                    failed_count += 1
+                    results.append(file_result)
+                    continue
+                
+                # ファイル拡張子チェック
+                file_ext = Path(file.filename).suffix.lower().lstrip('.')
+                
+                if file_ext not in allowed_extensions:
+                    file_result["message"] = f"サポートされていないファイル形式: {file_ext}"
+                    failed_count += 1
+                    results.append(file_result)
+                    continue
+                
+                # ファイルサイズをストリーミングでチェック
+                file.file.seek(0, 2)
+                file_size = file.file.tell()
+                file.file.seek(0)
+                
+                if file_size > max_size:
+                    file_result["message"] = f"ファイルサイズが大きすぎます（最大{max_size}バイト）"
+                    failed_count += 1
+                    results.append(file_result)
+                    continue
+                
+                if file_size == 0:
+                    file_result["message"] = "空のファイルです"
+                    failed_count += 1
+                    results.append(file_result)
+                    continue
+                
+                # MIMEタイプ検証（品質確保）
+                content_type = file.content_type
+                expected_mime = allowed_mime_types.get(file_ext)
+                
+                if expected_mime and content_type:
+                    # メインMIMEタイプが一致するかチェック
+                    if not content_type.startswith(expected_mime.split('/')[0]):
+                        logger.warning(f"MIMEタイプの不一致: 拡張子={file_ext}, Content-Type={content_type}")
+                
+                # 文書IDを生成（UUIDで衝突回避）
+                document_id = str(uuid.uuid4())
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # ファイル名をサニタイズ（パストラバーサル対策）
+                import re
+                safe_basename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', file.filename)
+                safe_basename = safe_basename.replace('..', '_')
+                if not safe_basename or safe_basename.strip() == '':
+                    safe_basename = 'unnamed_file'
+                
+                safe_filename = f"{timestamp}_{document_id[:8]}_{safe_basename}"
+                oci_object_name = f"uploads/{safe_filename}"
+                
+                # OCI Object Storageにアップロード（ストリーミング）
+                logger.info(f"Object Storageにアップロード中 [{idx}/{len(files)}]: {file.filename}")
+                
+                # ファイルを先頭にリセット
+                file.file.seek(0)
+                
+                # OCIに直接アップロード
+                upload_success = oci_service.upload_file(
+                    file_content=file.file,
+                    object_name=oci_object_name,
+                    content_type=content_type or f"application/{file_ext}"
+                )
+                
+                if not upload_success:
+                    file_result["message"] = "Object Storageアップロード失敗"
+                    failed_count += 1
+                    results.append(file_result)
+                    continue
+                
+                logger.info(f"Object Storageアップロード完了 [{idx}/{len(files)}]: {file.filename} ({file_size} バイト)")
+                
+                # メタデータを保存
+                documents = load_documents_metadata()
+                document_metadata = {
+                    "document_id": document_id,
+                    "filename": file.filename,
+                    "file_size": file_size,
+                    "content_type": content_type or f"application/{file_ext}",
+                    "uploaded_at": datetime.now().isoformat(),
+                    "oci_path": oci_object_name,
+                    "status": "uploaded"
+                }
+                documents.append(document_metadata)
+                save_documents_metadata(documents)
+                
+                logger.info(f"文書アップロード完了 [{idx}/{len(files)}]: {file.filename} (ID: {document_id})")
+                
+                file_result["success"] = True
+                file_result["message"] = "アップロード成功"
+                file_result["document_id"] = document_id
+                file_result["file_size"] = file_size
+                file_result["oci_path"] = oci_object_name
+                success_count += 1
+                results.append(file_result)
+                
+            except Exception as e:
+                logger.error(f"ファイル処理エラー [{idx}/{len(files)}] {file.filename}: {e}")
+                file_result["message"] = f"処理エラー: {str(e)}"
+                failed_count += 1
+                results.append(file_result)
+        
+        # 全体の結果を返す
+        overall_success = failed_count == 0
+        summary_message = f"アップロード完了: 成功 {success_count}件、失敗 {failed_count}件"
+        
+        return {
+            "success": overall_success,
+            "message": summary_message,
+            "total_files": len(files),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"複数ファイルアップロードエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/documents", response_model=DocumentListResponse)
@@ -561,7 +979,8 @@ async def test_db_connection(request: DatabaseConnectionTestRequest):
         if request.settings:
             settings_dict = request.settings.model_dump()
         
-        result = database_service.test_connection(settings_dict)
+        # 非同期版を使用
+        result = await database_service.test_connection_async(settings_dict)
         
         return DatabaseConnectionTestResponse(
             success=result["success"],
@@ -610,12 +1029,424 @@ async def get_db_tables():
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========================================
-# Autonomous Database 管理
+# データベース接続設定
 # ========================================
+
+@app.get("/api/settings/database", response_model=DatabaseSettingsResponse)
+async def get_database_settings():
+    """データベース接続設定を取得"""
+    try:
+        settings = database_service.get_settings()
+        is_connected = database_service.is_connected()
+        
+        return DatabaseSettingsResponse(
+            settings=DatabaseSettings(**settings),
+            is_connected=is_connected,
+            status="connected" if is_connected else "not_connected"
+        )
+    except Exception as e:
+        logger.error(f"データベース設定取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/settings/database/env")
+async def get_database_env_info(include_password: bool = False):
+    """環境変数からDB接続情報を取得"""
+    try:
+        result = database_service.get_env_connection_info()
+        
+        # パスワードをマスク（include_password=Trueの場合はマスクしない）
+        if result.get("password") and not include_password:
+            result["password"] = "[CONFIGURED]"
+        
+        return result
+    except Exception as e:
+        logger.error(f"環境変数情報取得エラー: {e}")
+        return {
+            "success": False,
+            "message": f"エラー: {str(e)}",
+            "username": None,
+            "dsn": None,
+            "wallet_exists": False,
+            "available_services": []
+        }
+
+@app.post("/api/settings/database", response_model=DatabaseSettingsResponse)
+async def save_database_settings(settings: DatabaseSettings):
+    """データベース接続設定を保存"""
+    try:
+        # 設定をdict形式に変換
+        settings_dict = settings.dict()
+        
+        success = database_service.save_settings(settings_dict)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="設定の保存に失敗しました")
+        
+        # 保存後の接続状態を確認
+        is_connected = database_service.is_connected()
+        
+        return DatabaseSettingsResponse(
+            settings=settings,
+            is_connected=is_connected,
+            status="connected" if is_connected else "saved"
+        )
+    except Exception as e:
+        logger.error(f"データベース設定保存エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/settings/database/test", response_model=DatabaseConnectionTestResponse)
+async def test_database_connection(request: DatabaseConnectionTestRequest):
+    """データベース接続テスト"""
+    try:
+        # テスト用の設定を使用（指定されていれば）
+        test_settings = None
+        if request.settings:
+            test_settings = request.settings.dict()
+            # 接続に必要なフィールドのみを抽出
+            test_settings = {
+                "username": test_settings.get("username"),
+                "password": test_settings.get("password"),
+                "dsn": test_settings.get("dsn")
+            }
+            logger.info(f"テスト設定: username={test_settings.get('username')}, dsn={test_settings.get('dsn')}")
+        
+        # 非同期版を使用
+        result = await database_service.test_connection_async(test_settings)
+        
+        return DatabaseConnectionTestResponse(
+            success=result["success"],
+            message=result["message"],
+            details=result.get("details")
+        )
+    except Exception as e:
+        logger.error(f"データベース接続テストエラー: {e}")
+        return DatabaseConnectionTestResponse(
+            success=False,
+            message=f"接続テストエラー: {str(e)}"
+        )
+
+@app.get("/api/database/info", response_model=DatabaseInfoResponse)
+async def get_database_info():
+    """データベース情報を取得"""
+    try:
+        info = database_service.get_database_info()
+        
+        if info:
+            return DatabaseInfoResponse(
+                success=True,
+                info=DatabaseInfo(**info)
+            )
+        else:
+            return DatabaseInfoResponse(
+                success=False,
+                info=None
+            )
+    except Exception as e:
+        logger.error(f"データベース情報取得エラー: {e}")
+        return DatabaseInfoResponse(
+            success=False,
+            info=None
+        )
+
+@app.get("/api/database/tables", response_model=DatabaseTablesResponse)
+async def get_database_tables(
+    page: int = Query(1, ge=1, description="ページ番号"),
+    page_size: int = Query(20, ge=1, le=100, description="1ページあたりの件数")
+):
+    """データベースのテーブル一覧を取得（ページング対応）"""
+    import math
+    try:
+        result = database_service.get_tables(page=page, page_size=page_size)
+        tables = result.get("tables", [])
+        total = result.get("total", 0)
+        
+        # ページング計算
+        total_pages = max(1, math.ceil(total / page_size)) if total > 0 else 1
+        start_row = (page - 1) * page_size + 1 if total > 0 else 0
+        end_row = min(page * page_size, total) if total > 0 else 0
+        
+        return DatabaseTablesResponse(
+            success=True,
+            tables=[TableInfo(**t) for t in tables],
+            total=total,
+            current_page=page,
+            total_pages=total_pages,
+            page_size=page_size,
+            start_row=start_row,
+            end_row=end_row
+        )
+    except Exception as e:
+        logger.error(f"テーブル一覧取得エラー: {e}")
+        return DatabaseTablesResponse(
+            success=False,
+            tables=[],
+            total=0
+        )
+
+@app.post("/api/database/tables/batch-delete")
+async def delete_database_tables(request: dict):
+    """データベースのテーブルを一括削除"""
+    from app.models.database import TableBatchDeleteResponse
+    try:
+        table_names = request.get("table_names", [])
+        
+        if not table_names:
+            return TableBatchDeleteResponse(
+                success=False,
+                deleted_count=0,
+                message="削除するテーブルが指定されていません"
+            )
+        
+        result = database_service.delete_tables(table_names)
+        
+        return TableBatchDeleteResponse(
+            success=result.get("success", False),
+            deleted_count=result.get("deleted_count", 0),
+            message=result.get("message", ""),
+            errors=result.get("errors", [])
+        )
+    except Exception as e:
+        logger.error(f"テーブル一括削除エラー: {e}")
+        return TableBatchDeleteResponse(
+            success=False,
+            deleted_count=0,
+            message=str(e)
+        )
+
+@app.get("/api/database/storage", response_model=DatabaseStorageResponse)
+async def get_database_storage():
+    """データベースストレージ情報を取得"""
+    try:
+        storage_info = database_service.get_storage_info()
+        
+        if storage_info:
+            from app.models.database import DatabaseStorageInfo, TablespaceInfo
+            
+            # テーブルスペース情報を変換
+            tablespaces = [TablespaceInfo(**ts) for ts in storage_info['tablespaces']]
+            
+            storage_data = DatabaseStorageInfo(
+                tablespaces=tablespaces,
+                total_size_mb=storage_info['total_size_mb'],
+                used_size_mb=storage_info['used_size_mb'],
+                free_size_mb=storage_info['free_size_mb'],
+                used_percent=storage_info['used_percent']
+            )
+            
+            return DatabaseStorageResponse(
+                success=True,
+                storage_info=storage_data
+            )
+        else:
+            return DatabaseStorageResponse(
+                success=False,
+                storage_info=None,
+                message="ストレージ情報の取得に失敗しました"
+            )
+    except Exception as e:
+        logger.error(f"ストレージ情報取得エラー: {e}")
+        return DatabaseStorageResponse(
+            success=False,
+            storage_info=None,
+            message=f"エラー: {str(e)}"
+        )
+
+@app.post("/api/settings/database/wallet", response_model=WalletUploadResponse)
+async def upload_wallet(file: UploadFile = File(...)):
+    """Walletファイルをアップロード"""
+    try:
+        # ファイル拡張子チェック
+        if not file.filename.lower().endswith('.zip'):
+            raise HTTPException(status_code=400, detail="ZIPファイルのみ対応しています")
+        
+        # 一時ファイルに保存
+        temp_file = UPLOAD_PATH / f"wallet_temp_{time.time()}.zip"
+        content = await file.read()
+        with open(temp_file, 'wb') as f:
+            f.write(content)
+        
+        # Walletアップロード処理
+        result = database_service.upload_wallet(str(temp_file))
+        
+        # 一時ファイル削除
+        try:
+            temp_file.unlink()
+        except:
+            pass
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return WalletUploadResponse(
+            success=result["success"],
+            message=result["message"],
+            wallet_location=result.get("wallet_location"),
+            available_services=result.get("available_services", [])
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Walletアップロードエラー: {e}")
+        raise HTTPException(status_code=500, detail=f"Walletアップロードエラー: {str(e)}")
+
+# ========================================
+# Autonomous Database管理
+# ========================================
+
+import oci
+
+def create_database_client():
+    """Database Client を作成"""
+    settings = oci_service.get_settings()
+    missing = []
+    for key, value in {
+        "user_ocid": settings.user_ocid,
+        "tenancy_ocid": settings.tenancy_ocid,
+        "fingerprint": settings.fingerprint,
+        "key_content": settings.key_content,
+    }.items():
+        if not value or (isinstance(value, str) and not value.strip()):
+            missing.append(key)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"OCI認証情報が不完全です: {', '.join(missing)}")
+
+    # Use OCI_REGION_DEPLOY if set (for cross-region ADB access), otherwise OCI_REGION, then settings default
+    region = os.environ.get("OCI_REGION_DEPLOY") or os.environ.get("OCI_REGION") or settings.region
+    if not region:
+        raise HTTPException(status_code=400, detail="OCI_REGION / OCI_REGION_DEPLOY が設定されていません")
+
+    logger.info(f"Creating DatabaseClient for region: {region}")
+
+    signer = oci.signer.Signer(
+        tenancy=settings.tenancy_ocid,
+        user=settings.user_ocid,
+        fingerprint=settings.fingerprint,
+        private_key_file_location=None,
+        private_key_content=settings.key_content,
+    )
+    config = {
+        "user": settings.user_ocid,
+        "fingerprint": settings.fingerprint,
+        "tenancy": settings.tenancy_ocid,
+        "region": region,
+        "key_content": settings.key_content,
+    }
+    return oci.database.DatabaseClient(config, signer=signer)
+
+def find_target_autonomous_database(db_client, compartment_id: str, adb_name: str):
+    """ターゲットAutonomous Databaseを検索"""
+    name_upper = adb_name.strip().upper()
+    logger.info(f"Searching ADB '{adb_name}' in compartment {compartment_id}")
+    
+    # OCI Database API does not support subtree search, so we only search the specified compartment.
+    try:
+        # Use pagination to get ALL ADBs in the compartment
+        adbs = oci.pagination.list_call_get_all_results(
+            db_client.list_autonomous_databases,
+            compartment_id=compartment_id
+        ).data
+    except Exception as e:
+        logger.error(f"Failed to list ADBs: {e}")
+        return None
+
+    # Log found DBs for debugging
+    found_names = [f"{adb.display_name} ({adb.db_name})" for adb in adbs]
+    logger.info(f"Found {len(adbs)} ADBs in compartment: {', '.join(found_names[:10])}...")
+
+    candidates = []
+    for adb in adbs:
+        db_name = (adb.db_name or "").strip()
+        display_name = (adb.display_name or "").strip()
+        if db_name.upper() == name_upper or display_name.upper() == name_upper:
+            candidates.append(adb)
+            
+    if not candidates:
+        logger.warning(f"No ADB found matching '{adb_name}' in compartment {compartment_id}")
+        return None
+        
+    for adb in candidates:
+        if (adb.db_name or "").strip().upper() == name_upper:
+            return adb
+    for adb in candidates:
+        if (adb.display_name or "").strip().upper() == name_upper:
+            return adb
+    return candidates[0]
+
+@app.get("/api/database/target")
+def get_target_autonomous_database():
+    """ターゲットAutonomous Database情報を取得"""
+    adb_name = os.environ.get("ADB_NAME")
+    if not adb_name:
+        raise HTTPException(status_code=400, detail="ADB_NAME が設定されていません")
+
+    db_client = create_database_client()
+    compartment_id = os.environ.get("OCI_COMPARTMENT_OCID") or oci_service.get_settings().tenancy_ocid
+    adb = find_target_autonomous_database(db_client, compartment_id=compartment_id, adb_name=adb_name)
+    if not adb:
+        raise HTTPException(status_code=404, detail=f"Autonomous Database が見つかりません: {adb_name}")
+
+    # find_target_autonomous_databaseで既に取得済みの情報を使用（不要な追加API呼び出しを避ける）
+    return {
+        "target_compartment_id": compartment_id,
+        "target_adb_name": adb_name,
+        "id": adb.id,
+        "display_name": adb.display_name,
+        "db_name": adb.db_name,
+        "lifecycle_state": adb.lifecycle_state,
+        "cpu_core_count": adb.cpu_core_count,
+        "data_storage_size_in_tbs": adb.data_storage_size_in_tbs,
+        "db_workload": getattr(adb, "db_workload", None),
+        "db_version": getattr(adb, "db_version", None),
+        "is_free_tier": getattr(adb, "is_free_tier", None),
+        "time_created": getattr(adb, "time_created", None),
+    }
+
+@app.post("/api/database/target/start")
+def start_target_autonomous_database():
+    """ターゲットAutonomous Databaseを起動"""
+    adb_name = os.environ.get("ADB_NAME")
+    if not adb_name:
+        raise HTTPException(status_code=400, detail="ADB_NAME が設定されていません")
+
+    db_client = create_database_client()
+    compartment_id = os.environ.get("OCI_COMPARTMENT_OCID") or oci_service.get_settings().tenancy_ocid
+    adb = find_target_autonomous_database(db_client, compartment_id=compartment_id, adb_name=adb_name)
+    if not adb:
+        raise HTTPException(status_code=404, detail=f"Autonomous Database が見つかりません: {adb_name}")
+
+    # 既に取得済みの情報を使用（不要な追加API呼び出しを避ける）
+    if adb.lifecycle_state in {"AVAILABLE", "STARTING"}:
+        return {"status": "noop", "message": f"Already {adb.lifecycle_state}", "id": adb.id}
+
+    resp = db_client.start_autonomous_database(adb.id)
+    work_request_id = getattr(resp, "headers", {}).get("opc-work-request-id") if resp else None
+    return {"status": "accepted", "message": "✅ 起動リクエストを送信しました", "id": adb.id, "work_request_id": work_request_id}
+
+@app.post("/api/database/target/stop")
+def stop_target_autonomous_database():
+    """ターゲットAutonomous Databaseを停止"""
+    adb_name = os.environ.get("ADB_NAME")
+    if not adb_name:
+        raise HTTPException(status_code=400, detail="ADB_NAME が設定されていません")
+
+    db_client = create_database_client()
+    compartment_id = os.environ.get("OCI_COMPARTMENT_OCID") or oci_service.get_settings().tenancy_ocid
+    adb = find_target_autonomous_database(db_client, compartment_id=compartment_id, adb_name=adb_name)
+    if not adb:
+        raise HTTPException(status_code=404, detail=f"Autonomous Database が見つかりません: {adb_name}")
+
+    # 既に取得済みの情報を使用（不要な追加API呼び出しを避ける）
+    if adb.lifecycle_state in {"STOPPED", "STOPPING"}:
+        return {"status": "noop", "message": f"Already {adb.lifecycle_state}", "id": adb.id}
+
+    resp = db_client.stop_autonomous_database(adb.id)
+    work_request_id = getattr(resp, "headers", {}).get("opc-work-request-id") if resp else None
+    return {"status": "accepted", "message": "✅ 停止リクエストを送信しました", "id": adb.id, "work_request_id": work_request_id}
 
 @app.post("/api/adb/get", response_model=ADBGetResponse)
 async def get_adb_info(request: ADBGetRequest):
-    """Autonomous Database情報を取得"""
+    """Autonomous Database情報を取得（旧エンドポイント、互換性のため残す）"""
     try:
         return adb_service.get_adb_info(request.adb_name, request.oci_compartment_ocid)
     except Exception as e:
@@ -627,7 +1458,7 @@ async def get_adb_info(request: ADBGetRequest):
 
 @app.post("/api/adb/start", response_model=ADBOperationResponse)
 async def start_adb(request: ADBOperationRequest):
-    """Autonomous Databaseを起動"""
+    """Autonomous Databaseを起動（旧エンドポイント、互換性のため残す）"""
     try:
         return adb_service.start_adb(request.adb_ocid)
     except Exception as e:
@@ -639,7 +1470,7 @@ async def start_adb(request: ADBOperationRequest):
 
 @app.post("/api/adb/stop", response_model=ADBOperationResponse)
 async def stop_adb(request: ADBOperationRequest):
-    """Autonomous Databaseを停止"""
+    """Autonomous Databaseを停止（旧エンドポイント、互換性のため残す）"""
     try:
         return adb_service.stop_adb(request.adb_ocid)
     except Exception as e:

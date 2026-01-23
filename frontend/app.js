@@ -169,9 +169,10 @@ function switchTab(tabName) {
   
   // タブに応じた初期化処理
   if (tabName === 'documents') {
-    loadDocuments();
+    loadOciObjects();
   } else if (tabName === 'settings') {
     loadOciSettings();
+    loadObjectStorageSettings(); // Object Storage設定も読み込む
   } else if (tabName === 'database') {
     loadDbConnectionSettings();
   }
@@ -273,6 +274,236 @@ function clearSearchResults() {
 // 文書管理
 // ========================================
 
+// 複数ファイルアップロード用の状態管理
+let selectedMultipleFiles = [];
+const MAX_FILES = 5;
+
+/**
+ * 複数ファイル選択ハンドラー
+ */
+function handleMultipleFileSelect(event) {
+  const files = Array.from(event.target.files);
+  
+  if (files.length === 0) {
+    return;
+  }
+  
+  // 最大5ファイルチェック
+  if (files.length > MAX_FILES) {
+    showToast(`アップロード可能なファイル数は最大${MAX_FILES}個です`, 'warning');
+    event.target.value = '';
+    return;
+  }
+  
+  selectedMultipleFiles = files;
+  displaySelectedFiles();
+  document.getElementById('uploadMultipleBtn').disabled = false;
+}
+
+/**
+ * ドラッグ＆ドロップハンドラー
+ */
+function handleDropForMultipleInput(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  
+  const dt = event.dataTransfer;
+  const files = Array.from(dt.files);
+  
+  if (files.length === 0) {
+    return;
+  }
+  
+  // 最大5ファイルチェック
+  if (files.length > MAX_FILES) {
+    showToast(`アップロード可能なファイル数は最大${MAX_FILES}個です`, 'warning');
+    return;
+  }
+  
+  selectedMultipleFiles = files;
+  displaySelectedFiles();
+  document.getElementById('uploadMultipleBtn').disabled = false;
+  
+  // ドラッグオーバースタイルを解除
+  event.currentTarget.classList.remove('border-purple-400');
+  event.currentTarget.classList.add('border-gray-300');
+}
+
+/**
+ * 選択されたファイルリストを表示
+ */
+function displaySelectedFiles() {
+  const listDiv = document.getElementById('selectedFilesList');
+  const countSpan = document.getElementById('selectedFilesCount');
+  const contentDiv = document.getElementById('selectedFilesListContent');
+  
+  if (selectedMultipleFiles.length === 0) {
+    listDiv.style.display = 'none';
+    return;
+  }
+  
+  listDiv.style.display = 'block';
+  countSpan.textContent = selectedMultipleFiles.length;
+  
+  contentDiv.innerHTML = selectedMultipleFiles.map((file, index) => `
+    <div class="flex items-center justify-between p-2 bg-white border border-gray-200 rounded">
+      <div class="flex items-center gap-2 flex-1">
+        <span class="text-xs font-semibold text-purple-600">#${index + 1}</span>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-gray-800">📄 ${file.name}</div>
+          <div class="text-xs text-gray-500">${formatFileSize(file.size)}</div>
+        </div>
+      </div>
+      <button 
+        onclick="removeFileFromSelection(${index})" 
+        class="text-xs text-red-600 hover:text-red-800 hover:bg-red-50 px-2 py-1 rounded transition"
+      >
+        削除
+      </button>
+    </div>
+  `).join('');
+}
+
+/**
+ * ファイルリストから削除
+ */
+function removeFileFromSelection(index) {
+  // 配列をフィルタリングして新しい配列を作成
+  const newFiles = [];
+  for (let i = 0; i < selectedMultipleFiles.length; i++) {
+    if (i !== index) {
+      newFiles.push(selectedMultipleFiles[i]);
+    }
+  }
+  selectedMultipleFiles = newFiles;
+  
+  // すべて削除された場合はクリア
+  if (selectedMultipleFiles.length === 0) {
+    clearMultipleFileSelection();
+  } else {
+    // ファイルinputをリセット（残りのファイルを保持しながら）
+    const input = document.getElementById('fileInputMultiple');
+    input.value = ''; // inputをリセット
+    displaySelectedFiles();
+    // アップロードボタンを有効化
+    document.getElementById('uploadMultipleBtn').disabled = selectedMultipleFiles.length === 0;
+  }
+}
+
+/**
+ * 選択をクリア
+ */
+function clearMultipleFileSelection() {
+  selectedMultipleFiles = [];
+  document.getElementById('fileInputMultiple').value = '';
+  document.getElementById('uploadMultipleBtn').disabled = true;
+  document.getElementById('selectedFilesList').style.display = 'none';
+  document.getElementById('uploadProgress').style.display = 'none';
+}
+
+/**
+ * 複数ファイルをアップロード
+ */
+async function uploadMultipleDocuments() {
+  if (selectedMultipleFiles.length === 0) {
+    showToast('ファイルを選択してください', 'warning');
+    return;
+  }
+  
+  try {
+    // ボタンを無効化
+    document.getElementById('uploadMultipleBtn').disabled = true;
+    
+    // 進捗表示を表示
+    const progressDiv = document.getElementById('uploadProgress');
+    progressDiv.style.display = 'block';
+    progressDiv.innerHTML = `
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div class="flex items-center gap-3 mb-3">
+          <div class="loading-spinner" style="width: 24px; height: 24px;">
+            <svg class="loading-spinner-svg" viewBox="0 0 50 50">
+              <circle class="loading-spinner-circle" cx="25" cy="25" r="20" fill="none" stroke-width="4"></circle>
+            </svg>
+          </div>
+          <span class="text-sm font-semibold text-blue-800">アップロード中...</span>
+        </div>
+        <div class="text-xs text-blue-700">${selectedMultipleFiles.length}個のファイルを処理しています。しばらくお待ちください...</div>
+      </div>
+    `;
+    
+    // FormDataを作成
+    const formData = new FormData();
+    selectedMultipleFiles.forEach(file => {
+      formData.append('files', file);
+    });
+    
+    // API呼び出し
+    const data = await apiCall('/api/documents/upload/multiple', {
+      method: 'POST',
+      body: formData
+    });
+    
+    // 結果を表示
+    displayUploadResults(data);
+    
+    // 成功した場合のトースト
+    if (data.success) {
+      showToast(`✅ ${data.success_count}件のファイルアップロードが完了しました`, 'success');
+    } else {
+      showToast(`⚠️ ${data.message}`, 'warning');
+    }
+    
+    // フォームをリセット
+    setTimeout(() => {
+      clearMultipleFileSelection();
+      // 文書リストを更新
+      loadOciObjects();
+    }, 3000);
+    
+  } catch (error) {
+    document.getElementById('uploadProgress').style.display = 'none';
+    document.getElementById('uploadMultipleBtn').disabled = false;
+    showToast(`アップロードエラー: ${error.message}`, 'error');
+  }
+}
+
+/**
+ * アップロード結果を表示
+ */
+function displayUploadResults(data) {
+  const progressDiv = document.getElementById('uploadProgress');
+  
+  const results = data.results || [];
+  
+  const successResults = results.filter(r => r.success);
+  const failedResults = results.filter(r => !r.success);
+  
+  progressDiv.innerHTML = `
+    <div class="bg-white border border-gray-200 rounded-lg p-4">
+      <div class="mb-3">
+        <div class="text-sm font-semibold text-gray-800 mb-2">アップロード結果</div>
+        <div class="flex items-center gap-4 text-xs">
+          <span class="text-green-600 font-semibold">✅ 成功: ${data.success_count}件</span>
+          ${data.failed_count > 0 ? `<span class="text-red-600 font-semibold">❌ 失敗: ${data.failed_count}件</span>` : ''}
+        </div>
+      </div>
+      
+      <div class="space-y-2">
+        ${results.map(result => `
+          <div class="flex items-start gap-2 p-2 rounded ${result.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}">
+            <span class="text-lg">${result.success ? '✅' : '❌'}</span>
+            <div class="flex-1">
+              <div class="text-sm font-medium ${result.success ? 'text-green-800' : 'text-red-800'}">${result.filename}</div>
+              <div class="text-xs ${result.success ? 'text-green-600' : 'text-red-600'} mt-1">${result.message}</div>
+              ${result.success && result.page_count ? `<div class="text-xs text-gray-500 mt-1">ページ数: ${result.page_count}</div>` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
 function handleFileSelect(event) {
   const file = event.target.files[0];
   if (file) {
@@ -282,11 +513,24 @@ function handleFileSelect(event) {
     const statusDiv = document.getElementById('uploadStatus');
     statusDiv.style.display = 'block';
     statusDiv.innerHTML = `
-      <div class="badge badge-info" style="padding: 8px 12px;">
-        📄 ${file.name} (${formatFileSize(file.size)})
+      <div class="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700">ファイルがアップロードされました</span>
+          <button onclick="clearFileSelection();" class="text-xs text-red-600 hover:text-red-800 hover:underline">クリア</button>
+        </div>
+        <div class="text-sm text-gray-600">
+          📄 ${file.name} (${formatFileSize(file.size)})
+        </div>
       </div>
     `;
   }
+}
+
+function clearFileSelection() {
+  selectedFile = null;
+  document.getElementById('fileInput').value = '';
+  document.getElementById('uploadBtn').disabled = true;
+  document.getElementById('uploadStatus').style.display = 'none';
 }
 
 async function uploadDocument() {
@@ -310,10 +554,7 @@ async function uploadDocument() {
     showToast('文書のアップロードと処理が完了しました', 'success');
     
     // フォームをリセット
-    document.getElementById('fileInput').value = '';
-    document.getElementById('uploadStatus').style.display = 'none';
-    document.getElementById('uploadBtn').disabled = true;
-    selectedFile = null;
+    clearFileSelection();
     
     // 文書リストを更新
     await loadDocuments();
@@ -331,6 +572,312 @@ async function loadDocuments() {
     displayDocumentsList(data.documents);
   } catch (error) {
     showToast(`エラー: ${error.message}`, 'error');
+  }
+}
+
+// ========================================
+// OCI Object Storage一覧表示
+// ========================================
+
+// 状態管理
+let ociObjectsPage = 1;
+let ociObjectsPageSize = 20;
+let ociObjectsPrefix = "";
+let selectedOciObjects = [];
+let ociObjectsBatchDeleteLoading = false;
+
+/**
+ * OCI Object Storage一覧を読み込む
+ */
+async function loadOciObjects() {
+  try {
+    showLoading('OCI Object Storage一覧を取得中...');
+    
+    const params = new URLSearchParams({
+      prefix: ociObjectsPrefix,
+      page: ociObjectsPage.toString(),
+      page_size: ociObjectsPageSize.toString()
+    });
+    
+    const data = await apiCall(`/api/oci/objects?${params}`);
+    
+    hideLoading();
+    
+    if (!data.success) {
+      showToast(`エラー: ${data.message || 'オブジェクト一覧取得失敗'}`, 'error');
+      return;
+    }
+    
+    displayOciObjectsList(data);
+    
+  } catch (error) {
+    hideLoading();
+    showToast(`OCI Object Storage一覧取得エラー: ${error.message}`, 'error');
+  }
+}
+
+/**
+ * OCI Object Storage一覧を表示
+ */
+function displayOciObjectsList(data) {
+  const listDiv = document.getElementById('documentsList');
+  
+  const objects = data.objects || [];
+  const pagination = data.pagination || {};
+  
+  if (objects.length === 0) {
+    listDiv.innerHTML = `
+      <div style="text-align: center; padding: 40px; color: #64748b;">
+        <div style="font-size: 48px; margin-bottom: 16px;">📁</div>
+        <div style="font-size: 16px; font-weight: 500;">オブジェクトがありません</div>
+        <div style="font-size: 14px; margin-top: 8px;">バケット: ${data.bucket_name || '-'}</div>
+      </div>
+    `;
+    return;
+  }
+  
+  // 全ページ選択状態をチェック
+  const allPageSelected = objects.every(obj => selectedOciObjects.includes(obj.name));
+  
+  // 選択ボタンHTML
+  const selectionButtonsHtml = `
+    <div class="flex items-center gap-2 mb-2">
+      <button 
+        class="px-3 py-1 text-xs border rounded transition-colors ${ociObjectsBatchDeleteLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100'}" 
+        onclick="selectAllOciObjects()" 
+        ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}
+      >
+        すべて選択
+      </button>
+      <button 
+        class="px-3 py-1 text-xs border rounded transition-colors ${ociObjectsBatchDeleteLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100'}" 
+        onclick="clearAllOciObjects()" 
+        ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}
+      >
+        すべて解除
+      </button>
+      <button 
+        class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600 text-white'}" 
+        onclick="deleteSelectedOciObjects()" 
+        ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
+      >
+        🗑️ 削除 (${selectedOciObjects.length})
+      </button>
+    </div>
+  `;
+  
+  // ページネーションUI生成
+  const paginationHtml = UIComponents.renderPagination({
+    currentPage: pagination.current_page,
+    totalPages: pagination.total_pages,
+    totalItems: pagination.total,
+    startNum: pagination.start_row,
+    endNum: pagination.end_row,
+    onPrevClick: 'handleOciObjectsPrevPage()',
+    onNextClick: 'handleOciObjectsNextPage()',
+    onJumpClick: 'handleOciObjectsJumpPage',
+    inputId: 'ociObjectsPageInput',
+    disabled: ociObjectsBatchDeleteLoading
+  });
+  
+  listDiv.innerHTML = `
+    <div>
+      ${selectionButtonsHtml}
+      ${paginationHtml}
+      <div class="table-wrapper-scrollable">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 40px;"><input type="checkbox" id="ociObjectsHeaderCheckbox" onchange="toggleSelectAllOciObjects(this.checked)" ${allPageSelected ? 'checked' : ''} class="w-4 h-4 rounded" ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}></th>
+              <th>タイプ</th>
+              <th>名前</th>
+              <th>サイズ</th>
+              <th>作成日時</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${objects.map(obj => {
+              const isFolder = obj.type === 'folder';
+              const icon = isFolder ? '📁' : '📄';
+              const typeLabel = isFolder ? 'フォルダ' : 'ファイル';
+              // HTML属性用にエスケープ
+              const escapedNameForHtml = obj.name.replace(/"/g, '&quot;');
+              
+              return `
+                <tr>
+                  <td><input type="checkbox" data-object-name="${escapedNameForHtml}" onchange="toggleOciObjectSelection(this.getAttribute('data-object-name'))" ${selectedOciObjects.includes(obj.name) ? 'checked' : ''} class="w-4 h-4 rounded" ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}></td>
+                  <td>${icon} ${typeLabel}</td>
+                  <td style="font-weight: 500; font-family: monospace; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${obj.name}</td>
+                  <td>${isFolder ? '-' : formatFileSize(obj.size)}</td>
+                  <td>${obj.time_created ? formatDateTime(obj.time_created) : '-'}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * ページネーション - 前ページ
+ */
+function handleOciObjectsPrevPage() {
+  if (ociObjectsPage > 1 && !ociObjectsBatchDeleteLoading) {
+    ociObjectsPage--;
+    loadOciObjects();
+  }
+}
+
+/**
+ * ページネーション - 次ページ
+ */
+function handleOciObjectsNextPage() {
+  if (!ociObjectsBatchDeleteLoading) {
+    ociObjectsPage++;
+    loadOciObjects();
+  }
+}
+
+/**
+ * ページネーション - ページジャンプ
+ */
+function handleOciObjectsJumpPage() {
+  if (ociObjectsBatchDeleteLoading) return;
+  
+  const input = document.getElementById('ociObjectsPageInput');
+  const page = parseInt(input.value);
+  
+  if (page && page >= 1) {
+    ociObjectsPage = page;
+    loadOciObjects();
+  }
+}
+
+/**
+ * オブジェクト選択状態をトグル
+ */
+function toggleOciObjectSelection(objectName) {
+  if (ociObjectsBatchDeleteLoading) return;
+  
+  const index = selectedOciObjects.indexOf(objectName);
+  if (index > -1) {
+    selectedOciObjects.splice(index, 1);
+  } else {
+    selectedOciObjects.push(objectName);
+  }
+  
+  // 再描画
+  loadOciObjects();
+}
+
+/**
+ * 全選択トグル（ヘッダーチェックボックス）
+ */
+function toggleSelectAllOciObjects(checked) {
+  if (ociObjectsBatchDeleteLoading) return;
+  
+  // 現在表示中のオブジェクトを取得
+  const checkboxes = document.querySelectorAll('#documentsList tbody input[type="checkbox"]');
+  const currentPageObjects = Array.from(checkboxes).map(cb => {
+    return cb.getAttribute('data-object-name');
+  }).filter(Boolean);
+  
+  if (checked) {
+    // 現在ページのオブジェクトをすべて選択
+    currentPageObjects.forEach(objName => {
+      if (!selectedOciObjects.includes(objName)) {
+        selectedOciObjects.push(objName);
+      }
+    });
+  } else {
+    // 現在ページのオブジェクトをすべて解除
+    currentPageObjects.forEach(objName => {
+      const index = selectedOciObjects.indexOf(objName);
+      if (index > -1) {
+        selectedOciObjects.splice(index, 1);
+      }
+    });
+  }
+  
+  // 再描画
+  loadOciObjects();
+}
+
+/**
+ * すべて選択
+ */
+function selectAllOciObjects() {
+  if (ociObjectsBatchDeleteLoading) return;
+  
+  const checkboxes = document.querySelectorAll('#documentsList tbody input[type="checkbox"]');
+  const currentPageObjects = Array.from(checkboxes).map(cb => {
+    return cb.getAttribute('data-object-name');
+  }).filter(Boolean);
+  
+  currentPageObjects.forEach(objName => {
+    if (!selectedOciObjects.includes(objName)) {
+      selectedOciObjects.push(objName);
+    }
+  });
+  
+  loadOciObjects();
+}
+
+/**
+ * すべて解除
+ */
+function clearAllOciObjects() {
+  if (ociObjectsBatchDeleteLoading) return;
+  selectedOciObjects = [];
+  loadOciObjects();
+}
+
+/**
+ * 選択されたオブジェクトを削除
+ */
+async function deleteSelectedOciObjects() {
+  if (selectedOciObjects.length === 0) {
+    showToast('削除するオブジェクトを選択してください', 'warning');
+    return;
+  }
+  
+  const count = selectedOciObjects.length;
+  const confirmed = confirm(`選択された${count}件のオブジェクトを削除しますか？\n\nこの操作は元に戻せません。`);
+  
+  if (!confirmed) {
+    return;
+  }
+  
+  // 処理中表示を設定
+  ociObjectsBatchDeleteLoading = true;
+  loadOciObjects();
+  
+  try {
+    // 一括削除APIを呼び出す
+    const response = await apiCall('/api/oci/objects/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ object_names: selectedOciObjects })
+    });
+    
+    if (response.success) {
+      showToast(`${count}件のオブジェクトを削除しました`, 'success');
+      // 選択をクリア
+      selectedOciObjects = [];
+      // ページを1にリセット
+      ociObjectsPage = 1;
+    } else {
+      showToast(`削除エラー: ${response.message || '不明なエラー'}`, 'error');
+    }
+  } catch (error) {
+    showToast(`削除エラー: ${error.message}`, 'error');
+  } finally {
+    // 処理中表示を解除
+    ociObjectsBatchDeleteLoading = false;
+    // 一覧を再読み込み
+    loadOciObjects();
   }
 }
 
@@ -2044,6 +2591,17 @@ window.getAdbInfo = getAdbInfo;
 window.startAdb = startAdb;
 window.stopAdb = stopAdb;
 
+// OCI Object Storage関連関数
+window.loadOciObjects = loadOciObjects;
+window.handleOciObjectsPrevPage = handleOciObjectsPrevPage;
+window.handleOciObjectsNextPage = handleOciObjectsNextPage;
+window.handleOciObjectsJumpPage = handleOciObjectsJumpPage;
+window.toggleOciObjectSelection = toggleOciObjectSelection;
+window.toggleSelectAllOciObjects = toggleSelectAllOciObjects;
+window.selectAllOciObjects = selectAllOciObjects;
+window.clearAllOciObjects = clearAllOciObjects;
+window.deleteSelectedOciObjects = deleteSelectedOciObjects;
+
 // ========================================
 // AI Assistant機能
 // ========================================
@@ -2366,6 +2924,158 @@ window.selectAllDbTables = selectAllDbTables;
 window.clearAllDbTables = clearAllDbTables;
 window.deleteSelectedDbTables = deleteSelectedDbTables;
 
+// ========================================
+// Object Storage設定機能
+// ========================================
+
+/**
+ * Object Storage設定を読み込む
+ */
+async function loadObjectStorageSettings() {
+  try {
+    showLoading('Object Storage設定を読み込み中...');
+    
+    // OCI設定を取得
+    const settingsData = await apiCall('/api/oci/settings');
+    
+    // Bucket Nameを設定
+    const bucketNameInput = document.getElementById('bucketName');
+    if (bucketNameInput && settingsData.settings.bucket_name) {
+      bucketNameInput.value = settingsData.settings.bucket_name;
+    }
+    
+    // Namespaceを取得（.env優先、空ならAPI）
+    const namespaceInput = document.getElementById('namespace');
+    const namespaceStatus = document.getElementById('namespaceStatus');
+    
+    if (settingsData.settings.namespace) {
+      // .envから取得できた場合
+      namespaceInput.value = settingsData.settings.namespace;
+      namespaceStatus.textContent = '環境変数から読み込み済み';
+      namespaceStatus.className = 'text-xs text-green-600';
+    } else {
+      // 空の場合、APIで取得を試みる
+      namespaceStatus.textContent = 'Namespaceを取得中...';
+      namespaceStatus.className = 'text-xs text-blue-600';
+      
+      try {
+        const namespaceData = await apiCall('/api/oci/namespace');
+        if (namespaceData.success) {
+          namespaceInput.value = namespaceData.namespace;
+          namespaceStatus.textContent = `OCI APIから自動取得済み`;
+          namespaceStatus.className = 'text-xs text-green-600';
+        } else {
+          namespaceStatus.textContent = '⚠️ Namespaceの取得に失敗しました';
+          namespaceStatus.className = 'text-xs text-red-600';
+        }
+      } catch (namespaceError) {
+        console.error('Namespace取得エラー:', namespaceError);
+        namespaceStatus.textContent = `⚠️ 取得エラー: ${namespaceError.message}`;
+        namespaceStatus.className = 'text-xs text-red-600';
+      }
+    }
+    
+  } catch (error) {
+    console.error('Object Storage設定読み込みエラー:', error);
+    showToast('⚠️ Object Storage設定の読み込みに失敗しました', 'error');
+  } finally {
+    hideLoading();
+  }
+}
+
+/**
+ * Object Storage設定を保存
+ */
+async function saveObjectStorageSettings() {
+  try {
+    const bucketName = document.getElementById('bucketName').value.trim();
+    const namespace = document.getElementById('namespace').value.trim();
+    
+    if (!bucketName) {
+      showToast('⚠️ Bucket Nameを入力してください', 'warning');
+      return;
+    }
+    
+    if (!namespace) {
+      showToast('⚠️ Namespaceが取得されていません', 'warning');
+      return;
+    }
+    
+    showLoading('Object Storage設定を保存中...');
+    
+    const response = await apiCall('/api/oci/object-storage/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bucket_name: bucketName,
+        namespace: namespace
+      })
+    });
+    
+    if (response.success) {
+      showToast('✅ Object Storage設定を保存しました', 'success');
+      // 設定を再読み込み
+      await loadObjectStorageSettings();
+    } else {
+      showToast(`⚠️ ${response.message || '保存に失敗しました'}`, 'error');
+    }
+    
+  } catch (error) {
+    console.error('Object Storage設定保存エラー:', error);
+    showToast(`⚠️ 保存エラー: ${error.message}`, 'error');
+  } finally {
+    hideLoading();
+  }
+}
+
+/**
+ * Object Storage接続テスト
+ */
+async function testObjectStorageConnection() {
+  try {
+    const bucketName = document.getElementById('bucketName').value.trim();
+    const namespace = document.getElementById('namespace').value.trim();
+    
+    if (!bucketName) {
+      showToast('⚠️ Bucket Nameを入力してください', 'warning');
+      return;
+    }
+    
+    if (!namespace) {
+      showToast('⚠️ Namespaceが取得されていません', 'warning');
+      return;
+    }
+    
+    showLoading('Object Storage接続テスト中...');
+    
+    const response = await apiCall('/api/oci/object-storage/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bucket_name: bucketName,
+        namespace: namespace
+      })
+    });
+    
+    if (response.success) {
+      showToast(response.message || '✅ 接続テストに成功しました', 'success');
+    } else {
+      showToast(response.message || '⚠️ 接続テストに失敗しました', 'error');
+    }
+    
+  } catch (error) {
+    console.error('Object Storage接続テストエラー:', error);
+    showToast(`⚠️ テストエラー: ${error.message}`, 'error');
+  } finally {
+    hideLoading();
+  }
+}
+
+// Object Storage関連関数をグローバルスコープに公開
+window.loadObjectStorageSettings = loadObjectStorageSettings;
+window.saveObjectStorageSettings = saveObjectStorageSettings;
+window.testObjectStorageConnection = testObjectStorageConnection;
+
 // その他のグローバル関数
 window.switchTab = switchTab;
 window.performSearch = performSearch;
@@ -2379,3 +3089,10 @@ window.testOciConnection = testOciConnection;
 window.handleLogin = handleLogin;
 window.handleLogout = handleLogout;
 window.toggleLoginPassword = toggleLoginPassword;
+
+// 複数ファイルアップロード関連関数をグローバルスコープに公開
+window.handleMultipleFileSelect = handleMultipleFileSelect;
+window.handleDropForMultipleInput = handleDropForMultipleInput;
+window.uploadMultipleDocuments = uploadMultipleDocuments;
+window.clearMultipleFileSelection = clearMultipleFileSelection;
+window.removeFileFromSelection = removeFileFromSelection;

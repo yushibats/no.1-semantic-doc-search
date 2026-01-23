@@ -1,0 +1,35 @@
+[project]
+name = "semantic-doc-search-backend"
+version = "0.1.0"
+description = "セマンティック文書検索システムAPI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.110",
+    "uvicorn>=0.29",
+    "numpy>=2.0.1,<2.4",
+    "pandas>=2.2.2",
+    "python-multipart>=0.0.20",
+    "python-dotenv>=1.2.1",
+    "oci>=2.165.1",
+    "pydantic>=2.0.0",
+    "pypdf2>=3.0.0",
+    "python-pptx>=0.6.21",
+    "python-docx>=1.1.0",
+    "pillow>=10.0.0",
+    "sentence-transformers>=2.2.0",
+    "torch>=2.0.0",
+    "faiss-cpu>=1.7.4",
+    "scikit-learn>=1.5.1",
+    "transformers>=4.30.0",
+    "oci-openai>=1.0.0",
+    "oracledb>=3.4.1",
+]
+
+[tool.uv]
+
+[dependency-groups]
+dev = []
+
+[tool.setuptools]
+packages = ["app"]

@@ -7,13 +7,11 @@ from pydantic import BaseModel, Field
 
 class DatabaseSettings(BaseModel):
     """データベース接続設定"""
-    host: Optional[str] = None
-    port: Optional[int] = 1521
-    database: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
-    connection_type: str = "basic"  # basic, tns, wallet
-    connection_string: Optional[str] = None
+    dsn: Optional[str] = None  # 表示用DSN
+    wallet_uploaded: bool = False  # Walletアップロード済みか
+    available_services: List[str] = []  # tnsnames.oraから抽出したDSNリスト
 
 
 class DatabaseSettingsResponse(BaseModel):
@@ -63,3 +61,56 @@ class DatabaseTablesResponse(BaseModel):
     success: bool
     tables: List[TableInfo] = []
     total: int = 0
+    # ページネーション情報
+    current_page: int = 1      # 現在のページ番号
+    total_pages: int = 1       # 総ページ数
+    page_size: int = 20        # ページサイズ
+    start_row: int = 0         # 開始行番号
+    end_row: int = 0           # 終了行番号
+
+
+class WalletUploadResponse(BaseModel):
+    """�Walletアップロードレスポンス"""
+    success: bool
+    message: str
+    wallet_location: Optional[str] = None
+    available_services: List[str] = []
+
+
+class TablespaceInfo(BaseModel):
+    """テーブルスペース情報"""
+    tablespace_name: str
+    total_size_mb: float = 0.0
+    used_size_mb: float = 0.0
+    free_size_mb: float = 0.0
+    used_percent: float = 0.0
+    status: Optional[str] = None
+
+
+class DatabaseStorageInfo(BaseModel):
+    """データベースストレージ情報"""
+    tablespaces: List[TablespaceInfo] = []
+    total_size_mb: float = 0.0
+    used_size_mb: float = 0.0
+    free_size_mb: float = 0.0
+    used_percent: float = 0.0
+
+
+class DatabaseStorageResponse(BaseModel):
+    """データベースストレージ情報取得レスポンス"""
+    success: bool
+    storage_info: Optional[DatabaseStorageInfo] = None
+    message: Optional[str] = None
+
+
+class TableBatchDeleteRequest(BaseModel):
+    """テーブル一括削除リクエスト"""
+    table_names: List[str]
+
+
+class TableBatchDeleteResponse(BaseModel):
+    """テーブル一括削除レスポンス"""
+    success: bool
+    deleted_count: int = 0
+    message: Optional[str] = None
+    errors: List[str] = []
