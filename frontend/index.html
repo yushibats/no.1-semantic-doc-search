@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>資料みつかるくん - セマンティック文書検索システム</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body class="flex flex-col" style="height: 100vh; margin: 0; overflow: hidden;">
+  <div id="app" class="flex flex-col" style="height: 100%; overflow: hidden;">
+    <!-- ヘッダー -->
+    <nav class="apex-header text-white h-16 flex items-center px-6 shadow-lg sticky top-0 z-50">
+      <div class="flex items-center gap-3">
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+          <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+        </svg>
+        <div class="flex flex-col">
+          <span class="font-bold text-lg leading-tight">資料みつかるくん</span>
+          <span class="text-xs font-normal opacity-80 leading-tight">AIセマンティック検索で、必要な資料を瞬時に発見</span>
+        </div>
+      </div>
+      
+      <div class="ml-auto flex items-center gap-6 text-sm" id="userInfo" style="display: none;">
+        <div class="flex items-center gap-3">
+          <span class="opacity-90">ユーザー: <span id="userName"></span></span>
+          <button onclick="handleLogout()" class="apex-button px-3 py-1 bg-white/15 hover:bg-white/25 border border-white/25 rounded-md transition">ログアウト</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- タブナビゲーション -->
+    <div class="apex-tabs" style="flex-shrink: 0; margin: 0;">
+      <div class="apex-tab active" onclick="switchTab('search')">🔍 検索</div>
+      <div class="apex-tab" onclick="switchTab('documents')">📁 文書管理</div>
+      <div class="apex-tab" onclick="switchTab('database')">🗄️ DB管理</div>
+      <div class="apex-tab" onclick="switchTab('settings')">⚙️ OCI設定</div>
+    </div>
+
+    <!-- AI Assistant 浮動ボタン -->
+    <button 
+      id="copilotToggleBtn" 
+      class="copilot-float-button"
+      onclick="toggleCopilot()"
+      style="display: none;"
+    >
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+      </svg>
+    </button>
+
+    <!-- AI Assistant パネル -->
+    <div id="copilotPanel" class="copilot-panel" style="display: none;">
+      <div class="copilot-header">
+        <div class="flex items-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+          </svg>
+          <span class="font-semibold">AI Assistant</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <button 
+            type="button" 
+            class="p-1.5 rounded-full hover:bg-white/10 transition" 
+            onclick="startNewConversation()"
+            title="新しい会話"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            </svg>
+          </button>
+          <button 
+            type="button" 
+            class="p-1.5 rounded-full hover:bg-white/10 transition" 
+            onclick="toggleCopilotExpand()"
+            title="展開/縮小"
+          >
+            <svg id="copilotExpandIcon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+          </button>
+          <button 
+            type="button" 
+            class="p-1.5 rounded-full hover:bg-white/10 transition" 
+            onclick="toggleCopilot()"
+            title="閉じる"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      
+      <div class="copilot-messages" id="copilotMessages">
+        <div class="text-center text-gray-500 py-8">
+          <p class="text-sm">何でもお聞きください！</p>
+        </div>
+      </div>
+      
+      <div class="copilot-input-area">
+        <form id="copilot-form" onsubmit="event.preventDefault(); sendCopilotMessage();">
+          <textarea 
+            id="copilotInput" 
+            class="copilot-input" 
+            placeholder="質問を入力または画像を貼り付け..."
+            rows="2"
+            onkeydown="handleCopilotKeydown(event)"
+          ></textarea>
+          <div id="copilotImagesPreview"></div>
+          <div class="flex justify-between items-center mt-2">
+            <span class="text-xs text-gray-500">Ctrl+Enter で送信</span>
+            <div class="flex gap-2">
+              <label class="apex-button-secondary px-3 py-1.5 text-xs" style="cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                🖼️ 画像
+                <input type="file" accept="image/*" multiple style="display:none" onchange="addCopilotImagesFromFiles(this.files); this.value='';" />
+              </label>
+              <button 
+                type="button"
+                onclick="document.getElementById('copilotInput').value=''; renderCopilotMessages();"
+                class="apex-button-secondary px-3 py-1.5 text-xs"
+              >
+                🗑️ クリア
+              </button>
+              <button 
+                type="submit" 
+                class="apex-button px-4 py-1.5 text-xs"
+                id="copilotSendBtn"
+              >
+                🚀 送信
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- スクロール可能なコンテンツエリア -->
+    <div class="tab-scroll-container" style="flex: 1; overflow-y: auto; background: #f5f7fa; padding: 24px;">
+
+      <!-- 検索タブ -->
+      <div id="tab-search" class="tab-content">
+      <div class="apex-region" style="margin-bottom: 20px;">
+        <div class="apex-region-header">
+          🔍 セマンティック検索
+        </div>
+        <div style="padding: 24px;">
+          <div style="margin-bottom: 20px;">
+            <label class="form-label">検索クエリ</label>
+            <input 
+              type="text" 
+              id="searchQuery" 
+              class="form-input" 
+              placeholder="例: 機械学習の前処理方法について"
+              onkeypress="if(event.key==='Enter') performSearch()"
+            />
+          </div>
+          
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
+            <div>
+              <label class="form-label">取得件数</label>
+              <input type="number" id="topK" class="form-input" value="10" min="1" max="50" />
+            </div>
+            <div>
+              <label class="form-label">最小スコア</label>
+              <input type="number" id="minScore" class="form-input" value="0" min="0" max="1" step="0.1" />
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 12px;">
+            <button class="apex-button px-4 py-2" onclick="performSearch()">
+              🔍 検索実行
+            </button>
+            <button class="apex-button-secondary px-4 py-2" onclick="clearSearchResults()">
+              🗑️ クリア
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 検索結果 -->
+      <div id="searchResults" class="apex-region" style="display: none;">
+        <div class="apex-region-header">
+          📊 検索結果
+          <span id="searchResultsSummary" style="font-size: 13px; font-weight: normal; color: #64748b;"></span>
+        </div>
+        <div style="padding: 20px;">
+          <div id="searchResultsList"></div>
+        </div>
+        </div>
+      </div>
+
+      <!-- 文書管理タブ -->
+      <div id="tab-documents" class="tab-content" style="display: none;">
+      <!-- アップロード -->
+      <div class="apex-region" style="margin-bottom: 20px;">
+        <div class="apex-region-header">
+          📤 文書アップロード
+        </div>
+        <div style="padding: 24px;">
+          <div style="margin-bottom: 16px;">
+            <label class="form-label">ファイル選択 (PDF, PPTX, DOCX, TXT, MD)</label>
+            <input 
+              type="file" 
+              id="fileInput" 
+              class="form-input" 
+              accept=".pdf,.pptx,.docx,.txt,.md"
+              onchange="handleFileSelect(event)"
+            />
+          </div>
+          <div id="uploadStatus" style="margin-bottom: 16px; display: none;"></div>
+          <button class="apex-button px-4 py-2" onclick="uploadDocument()" id="uploadBtn" disabled>
+            📤 アップロード開始
+          </button>
+        </div>
+      </div>
+
+      <!-- 文書リスト -->
+      <div class="apex-region">
+        <div class="apex-region-header">
+          📁 登録済み文書
+          <button class="apex-button-secondary apex-button-xs" onclick="loadDocuments()">
+            🔄 更新
+          </button>
+        </div>
+        <div style="padding: 20px;">
+          <div id="documentsList"></div>
+        </div>
+        </div>
+      </div>
+
+      <!-- OCI設定タブ -->
+      <div id="tab-settings" class="tab-content" style="display: none;">
+      
+      <!-- OCI APIキー設定 -->
+      <div class="apex-region bg-gray-50/50" style="margin-bottom: 20px;">
+        <div class="apex-region-header">
+          <span>⚙️ OCI APIキー設定</span>
+          <span id="ociSettingsStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未設定</span>
+        </div>
+        <div class="p-6 space-y-6">
+          <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <div class="flex items-start gap-2">
+              <svg class="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <div class="flex-1">
+                <div class="text-sm font-medium text-blue-800 mb-1">OCI APIキー認証について</div>
+                <div class="text-xs text-blue-700">
+                  OCI Generative AI などの OCI リソースにアクセスするための認証情報を設定します。<br>
+                  User OCID、Tenancy OCID、Fingerprint、Region、Private Key が必要です。
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="bg-white p-5 rounded-lg border border-gray-200">
+            <h4 class="text-sm font-semibold text-gray-800 mb-4 pb-2 border-b border-gray-100">
+              🔑 APIキー認証情報
+            </h4>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">User OCID*</label>
+                <input 
+                  type="text" 
+                  id="userOcid" 
+                  class="w-full font-mono text-sm px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
+                  placeholder="ocid1.user.oc1..aaaa..." 
+                />
+              </div>
+              
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Tenancy OCID*</label>
+                <input 
+                  type="text" 
+                  id="tenancyOcid" 
+                  class="w-full font-mono text-sm px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
+                  placeholder="ocid1.tenancy.oc1..aaaa..." 
+                />
+              </div>
+              
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Fingerprint*</label>
+                <input 
+                  type="text" 
+                  id="fingerprint" 
+                  class="w-full font-mono text-sm px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
+                  placeholder="aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99" 
+                />
+              </div>
+              
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Region*</label>
+                <div class="mb-0">
+                  <input 
+                    type="text" 
+                    id="region"
+                    value="us-chicago-1" 
+                    readonly
+                    class="w-full font-mono text-sm px-3 py-2 border border-gray-300 rounded-md shadow-sm bg-gray-50 text-gray-500 cursor-not-allowed"
+                  />
+                  <p class="text-xs text-gray-500 mt-1">固定値（変更不可）</p>
+                </div>
+              </div>
+              
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Private Key Content*</label>
+                <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-purple-400 transition cursor-pointer" 
+                     onclick="document.getElementById('privateKeyFileInput').click()"
+                     ondragover="handleDragOver(event)"
+                     ondragleave="handleDragLeave(event)"
+                     ondrop="handleDropForInput(event, 'privateKeyFileInput')">
+                  <svg class="w-10 h-10 mx-auto mb-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                  </svg>
+                  <p class="text-gray-600 font-medium mb-1">ファイルをドラッグ＆ドロップまたはクリックしてアップロード</p>
+                  <p class="text-sm text-gray-500">対応形式: PEM (.pem, .key)</p>
+                  <input type="file" id="privateKeyFileInput" class="hidden" accept=".pem,.key" onchange="handlePrivateKeyFileSelect(event)">
+                </div>
+                <div id="privateKeyStatus"></div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="flex items-center gap-3">
+            <button 
+              onclick="saveOciSettings()" 
+              class="apex-button px-6 py-2 bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 transition rounded-md shadow-sm font-medium"
+            >
+              💾 APIキーを保存
+            </button>
+            
+            <button 
+              onclick="testOciConnection()" 
+              class="apex-button px-6 py-2 bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50 transition rounded-md shadow-sm font-medium"
+            >
+              🧪 接続テスト
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Object Storage設定 -->
+      <div class="apex-region">
+        <div class="apex-region-header">
+          📦 Object Storage設定
+        </div>
+        <div style="padding: 24px;">
+          <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+              </svg>
+              <div style="flex: 1;">
+                <div class="text-sm font-medium text-blue-900" style="color: #1e3a8a; margin-bottom: 4px;">Object Storage設定について</div>
+                <div class="text-sm text-blue-800" style="color: #1e40af;">
+                  文書アップロード先のOCI Object Storage バケット情報を設定します。<br>
+                  Bucket Name、Namespaceが必要です。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
+            <div class="form-group">
+              <label class="form-label">Bucket Name</label>
+              <input type="text" id="bucketName" class="form-input" placeholder="semantic-doc-search" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Namespace</label>
+              <input type="text" id="namespace" class="form-input" placeholder="your-namespace" />
+            </div>
+          </div>
+        </div>
+        </div>
+      </div>
+
+      <!-- DB管理タブ -->
+      <div id="tab-database" class="tab-content" style="display: none;">
+      
+      <!-- Autonomous AI Database 起動/停止 -->
+      <div class="apex-region" style="margin-bottom: 20px;">
+        <div class="apex-region-header">
+          🗄️ Autonomous AI Database 起動/停止
+          <span id="adbLifecycleState" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未取得</span>
+        </div>
+        <div style="padding: 24px;">
+          <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+              </svg>
+              <div style="flex: 1;">
+                <div class="text-sm font-medium text-blue-900" style="color: #1e3a8a; margin-bottom: 4px;">Autonomous Database 管理について</div>
+                <div class="text-sm text-blue-800" style="color: #1e40af;">
+                  ターゲット Autonomous Database の状態を取得し、起動/停止を行います。<br>
+                  バックエンドの環境変数 <code class="bg-white px-2 py-0.5 rounded text-xs">ADB_NAME</code> と <code class="bg-white px-2 py-0.5 rounded text-xs">OCI_COMPARTMENT_OCID</code> が必要です。
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div style="display: flex; gap: 12px; margin-bottom: 20px;">
+            <button class="apex-button px-4 py-2" onclick="getAdbInfo()">
+              取得
+            </button>
+            <button class="apex-button px-4 py-2" onclick="startAdb()" style="background: #10b981;">
+              起動
+            </button>
+            <button class="apex-button px-4 py-2" onclick="stopAdb()" style="background: #ef4444;">
+              停止
+            </button>
+          </div>
+          
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
+            <div>
+              <label class="form-label">Display Name</label>
+              <div id="adbDisplayName" class="form-input" style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px 12px; border-radius: 6px; color: #475569;">-</div>
+            </div>
+            <div>
+              <label class="form-label">Lifecycle State</label>
+              <div id="adbLifecycleStateDetail" class="form-input" style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px 12px; border-radius: 6px; color: #475569;">-</div>
+            </div>
+          </div>
+          
+          <div>
+            <label class="form-label">OCID</label>
+            <div id="adbOcid" class="form-input" style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px 12px; border-radius: 6px; color: #475569; font-size: 12px; word-break: break-all;">-</div>
+          </div>
+          
+          <div id="adbOperationResult" style="margin-top: 20px; display: none;">
+            <div class="apex-region-header" style="font-size: 14px; padding: 8px 12px;">
+              操作結果
+            </div>
+            <div style="padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; margin-top: 8px;">
+              <ul id="adbOperationResultList" style="margin: 0; padding-left: 20px; color: #475569; font-size: 13px;">
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- データベース接続設定 -->
+      <div class="apex-region" style="margin-bottom: 20px;">
+        <div class="apex-region-header">
+          🔌 データベース接続設定
+          <span id="dbConnectionStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未設定</span>
+        </div>
+        <div style="padding: 24px;">
+          <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+              </svg>
+              <div style="flex: 1;">
+                <div class="text-sm font-medium text-blue-900" style="color: #1e3a8a; margin-bottom: 4px;">データベース接続設定について</div>
+                <div class="text-sm text-blue-800" style="color: #1e40af;">
+                  Oracle Databaseへの接続情報を設定します。<br>
+                  接続タイプは、Basic(ホスト/ポート)、TNS、Walletから選択できます。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
+            <div class="form-group">
+              <label class="form-label">ホスト</label>
+              <input type="text" id="dbHost" class="form-input" placeholder="localhost" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">ポート</label>
+              <input type="number" id="dbPort" class="form-input" placeholder="1521" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">データベース名/サービス名</label>
+              <input type="text" id="dbName" class="form-input" placeholder="ORCL" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">ユーザー名</label>
+              <input type="text" id="dbUser" class="form-input" placeholder="username" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">パスワード</label>
+              <input type="password" id="dbPassword" class="form-input" placeholder="********" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">接続タイプ</label>
+              <select id="dbConnectionType" class="form-input">
+                <option value="basic">Basic (ホスト/ポート)</option>
+                <option value="tns">TNS</option>
+                <option value="wallet">Wallet</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">接続文字列 (TNS形式の場合)</label>
+            <textarea id="dbConnectionString" class="form-input" rows="4" placeholder="(DESCRIPTION=...)"></textarea>
+          </div>
+
+          <div style="display: flex; gap: 12px; margin-top: 20px;">
+            <button class="apex-button px-4 py-2" onclick="saveDbConnection()">
+              💾 接続設定を保存
+            </button>
+            <button class="apex-button-secondary px-4 py-2" onclick="testDbConnection()">
+              🧪 接続テスト
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- データベース情報 -->
+      <div class="apex-region" style="margin-bottom: 20px;">
+        <div class="apex-region-header">
+          📊 データベース情報
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button id="refreshDbInfoBtn" class="apex-button-secondary apex-button-xs" onclick="refreshDbInfo()" style="display: flex; align-items: center; gap: 4px;">
+              🔄 更新
+            </button>
+            <span id="dbInfoStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未取得</span>
+          </div>
+        </div>
+        <div style="padding: 24px;">
+          <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+              </svg>
+              <div style="flex: 1;">
+                <div class="text-sm font-medium text-blue-900" style="color: #1e3a8a; margin-bottom: 4px;">データベース情報について</div>
+                <div class="text-sm text-blue-800" style="color: #1e40af;">
+                  接続されたデータベースのバージョン、キャラクターセット、その他の基本情報を表示します。
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div id="dbInfoContent">
+            <div style="text-align: center; padding: 40px; color: #64748b;">
+              <div style="font-size: 48px; margin-bottom: 16px;">🗄️</div>
+              <div style="font-size: 16px; font-weight: 500;">データベースに接続してください</div>
+              <div style="font-size: 14px; margin-top: 8px;">接続後、データベース情報が表示されます</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- テーブル一覧 -->
+      <div class="apex-region">
+        <div class="apex-region-header">
+          📋 テーブル一覧
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button id="refreshDbTablesBtn" class="apex-button-secondary apex-button-xs" onclick="refreshDbTables()" style="display: flex; align-items: center; gap: 4px;">
+              🔄 更新
+            </button>
+            <span id="dbTablesStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未取得</span>
+          </div>
+        </div>
+        <div style="padding: 24px;">
+          <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+              </svg>
+              <div style="flex: 1;">
+                <div class="text-sm font-medium text-blue-900" style="color: #1e3a8a; margin-bottom: 4px;">テーブル一覧について</div>
+                <div class="text-sm text-blue-800" style="color: #1e40af;">
+                  接続されたスキーマ内のテーブル一覧を表示します。各テーブルの行数や作成日時を確認できます。
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div id="dbTablesContent">
+            <div style="text-align: center; padding: 40px; color: #64748b;">
+              <div style="font-size: 48px; margin-bottom: 16px;">📋</div>
+              <div style="font-size: 16px; font-weight: 500;">テーブル情報なし</div>
+              <div style="font-size: 14px; margin-top: 8px;">データベースに接続後、テーブル一覧が表示されます</div>
+            </div>
+          </div>
+        </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- ログインオーバーレイ -->
+  <div id="loginOverlay" class="login-overlay" style="display: none;" role="dialog" aria-modal="true" aria-label="ログイン">
+    <div class="login-bg" aria-hidden="true">
+      <div class="login-blob login-blob-1"></div>
+      <div class="login-blob login-blob-2"></div>
+      <div class="login-blob login-blob-3"></div>
+      <div class="login-grid"></div>
+    </div>
+    <div class="login-shell">
+      <div class="login-panel">
+        <div class="hidden md:flex flex-col justify-center px-2">
+          <div class="inline-flex items-center gap-3 mb-6">
+            <div class="w-10 h-10 rounded-xl login-brand-mark"></div>
+            <div class="text-white">
+              <div class="text-sm font-semibold tracking-wide opacity-90">資料みつかるくん</div>
+              <div class="text-xs opacity-80">Semantic Document Search</div>
+            </div>
+          </div>
+          <div class="text-white text-3xl font-bold leading-tight tracking-tight">
+            AIセマンティック検索で、<br>必要な資料を瞬時に発見。
+          </div>
+          <div class="text-white/80 mt-4 text-sm leading-relaxed max-w-[44ch]">
+            膨大な文書の中から、意味を理解して最適な情報を見つけ出します。Oracle Generative AIを活用した高精度な検索システムです。
+          </div>
+          <div class="mt-6 flex flex-wrap gap-2">
+            <span class="login-pill">セマンティック検索</span>
+            <span class="login-pill">文書管理</span>
+            <span class="login-pill">Oracle Generative AI</span>
+            <span class="login-pill">ベクトル検索</span>
+          </div>
+        </div>
+
+        <div class="login-card">
+          <div class="login-card-header">
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-slate-900">
+                <div class="text-xs font-semibold tracking-wide text-slate-600">WELCOME BACK</div>
+                <div class="text-xl font-semibold tracking-tight">ログイン</div>
+              </div>
+              <div class="login-badge">AI</div>
+            </div>
+            <div class="text-sm text-slate-600 mt-2">
+              このシステムを使用するにはログインが必要です。
+            </div>
+          </div>
+
+          <div class="login-card-body">
+            <div id="loginError" class="login-alert" role="alert" aria-live="polite" style="display: none;">
+              <div class="login-alert-icon">!</div>
+              <div class="text-sm" id="loginErrorMessage"></div>
+            </div>
+
+            <form id="loginForm" class="space-y-4" onsubmit="handleLogin(event)" autocomplete="on">
+              <div class="space-y-1.5">
+                <label for="loginUsername" class="form-label">ユーザー名</label>
+                <div class="login-input-wrap">
+                  <div class="login-input-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" class="w-5 h-5">
+                      <path d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-4.42 0-8 2.18-8 4.88V21h16v-1.87c0-2.7-3.58-4.88-8-4.88Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <input
+                    type="text"
+                    id="loginUsername"
+                    class="form-input login-input"
+                    placeholder="ユーザー名を入力"
+                    autocomplete="username"
+                    inputmode="text"
+                    autocapitalize="none"
+                    spellcheck="false"
+                    autofocus
+                    required
+                  >
+                </div>
+              </div>
+
+              <div class="space-y-1.5">
+                <label for="loginPassword" class="form-label">パスワード</label>
+                <div class="login-input-wrap">
+                  <div class="login-input-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" class="w-5 h-5">
+                      <path d="M7 11V8.75A5 5 0 0 1 12 4a5 5 0 0 1 5 4.75V11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                      <path d="M6.5 11h11A2.5 2.5 0 0 1 20 13.5v5A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-5A2.5 2.5 0 0 1 6.5 11Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                      <path d="M12 16.25v1.75" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <input
+                    type="password"
+                    id="loginPassword"
+                    class="form-input login-input pr-11"
+                    placeholder="パスワードを入力"
+                    autocomplete="current-password"
+                    required
+                  >
+                  <button
+                    type="button"
+                    class="login-reveal"
+                    onclick="toggleLoginPassword()"
+                    aria-label="パスワード表示切替"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" class="w-5 h-5">
+                      <path d="M2.25 12s3.5-7.5 9.75-7.5S21.75 12 21.75 12s-3.5 7.5-9.75 7.5S2.25 12 2.25 12Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M12 15a3 3 0 1 0-3-3 3 3 0 0 0 3 3Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <button
+                class="modal-button modal-button-primary w-full justify-center login-submit"
+                type="submit"
+                id="loginSubmitBtn"
+              >
+                ログイン
+              </button>
+            </form>
+
+            <div class="text-xs text-slate-500 mt-4 leading-relaxed">
+              セッション情報はブラウザに保存されます。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/components.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
