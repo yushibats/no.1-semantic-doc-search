@@ -1,0 +1,930 @@
+/**
+ * 統一UIコンポーネントライブラリ
+ * 
+ * このファイルは、アプリケーション全体で一貫性のあるUI/UXを提供するための
+ * 再利用可能なコンポーネント群を定義します。
+ * 
+ * @author Machine Learning Platform Team
+ * @version 1.0.0
+ * @created 2026-01-19
+ */
+
+// ========================================
+// 1. ボタンコンポーネント
+// ========================================
+
+/**
+ * 統一されたボタンコンポーネントを生成
+ * 
+ * @param {Object} options - ボタン設定オプション
+ * @param {string} options.text - ボタンのテキスト
+ * @param {string} options.onClick - クリックイベントハンドラ
+ * @param {string} [options.variant='primary'] - ボタンの種類 ('primary' | 'secondary' | 'danger' | 'success')
+ * @param {string} [options.size='md'] - ボタンのサイズ ('sm' | 'md' | 'lg')
+ * @param {boolean} [options.disabled=false] - 無効化フラグ
+ * @param {string} [options.icon=''] - アイコン（絵文字またはSVG）
+ * @param {string} [options.className=''] - 追加のCSSクラス
+ * @param {string} [options.id=''] - ボタンのID属性
+ * @returns {string} HTMLボタン文字列
+ * 
+ * @example
+ * renderButton({
+ *   text: 'データセット作成',
+ *   onClick: 'createDataset()',
+ *   variant: 'primary',
+ *   icon: '➕'
+ * })
+ */
+function renderButton({
+  text,
+  onClick,
+  variant = 'primary',
+  size = 'md',
+  disabled = false,
+  icon = '',
+  className = '',
+  id = ''
+}) {
+  // バリアント別のスタイル定義
+  const variantClasses = {
+    primary: 'bg-blue-500 hover:bg-blue-600 text-white',
+    secondary: 'bg-gray-500 hover:bg-gray-600 text-white',
+    danger: 'bg-red-500 hover:bg-red-600 text-white',
+    success: 'bg-green-500 hover:bg-green-600 text-white',
+    outline: 'border border-blue-500 text-blue-500 hover:bg-blue-50'
+  };
+
+  // サイズ別のスタイル定義
+  const sizeClasses = {
+    sm: 'px-2 py-1 text-xs',
+    md: 'px-4 py-2 text-sm',
+    lg: 'px-6 py-3 text-base'
+  };
+
+  // 基本クラスの組み立て
+  const baseClasses = 'rounded transition-colors duration-200 font-medium';
+  const disabledClasses = disabled ? 'opacity-50 cursor-not-allowed' : '';
+  
+  const finalClasses = [
+    baseClasses,
+    variantClasses[variant] || variantClasses.primary,
+    sizeClasses[size] || sizeClasses.md,
+    disabledClasses,
+    className
+  ].filter(Boolean).join(' ');
+
+  // アイコンとテキストの組み合わせ
+  const content = icon ? `${icon} ${text}` : text;
+
+  return `
+    <button
+      ${id ? `id="${id}"` : ''}
+      class="${finalClasses}"
+      onclick="${onClick}"
+      ${disabled ? 'disabled' : ''}
+    >
+      ${content}
+    </button>
+  `;
+}
+
+// ========================================
+// 2. 入力フィールドコンポーネント
+// ========================================
+
+/**
+ * 統一された入力フィールドコンポーネントを生成
+ * 
+ * @param {Object} options - 入力フィールド設定オプション
+ * @param {string} options.type - 入力タイプ ('text' | 'number' | 'email' | 'password' | 'textarea')
+ * @param {string} options.id - 入力フィールドのID
+ * @param {string} [options.value=''] - 初期値
+ * @param {string} [options.placeholder=''] - プレースホルダーテキスト
+ * @param {string} [options.label=''] - ラベルテキスト
+ * @param {boolean} [options.required=false] - 必須フラグ
+ * @param {boolean} [options.disabled=false] - 無効化フラグ
+ * @param {string} [options.className=''] - 追加のCSSクラス
+ * @param {number} [options.min] - 最小値（数値型の場合）
+ * @param {number} [options.max] - 最大値（数値型の場合）
+ * @param {number} [options.step] - ステップ値（数値型の場合）
+ * @param {number} [options.rows=4] - 行数（textareaの場合）
+ * @returns {string} HTML入力フィールド文字列
+ * 
+ * @example
+ * renderInput({
+ *   type: 'number',
+ *   id: 'maxDepth',
+ *   label: '最大深度',
+ *   value: '10',
+ *   min: 1,
+ *   max: 100
+ * })
+ */
+function renderInput({
+  type,
+  id,
+  value = '',
+  placeholder = '',
+  label = '',
+  required = false,
+  disabled = false,
+  className = '',
+  min,
+  max,
+  step,
+  rows = 4
+}) {
+  const baseInputClasses = 'w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent';
+  const disabledClasses = disabled ? 'bg-gray-100 cursor-not-allowed' : '';
+  const finalClasses = `${baseInputClasses} ${disabledClasses} ${className}`.trim();
+
+  // ラベル部分の生成
+  const labelHtml = label ? `
+    <label for="${id}" class="block text-sm font-medium text-gray-700 mb-1">
+      ${label}${required ? '<span class="text-red-500 ml-1">*</span>' : ''}
+    </label>
+  ` : '';
+
+  // 数値型の属性
+  const numberAttrs = type === 'number' ? `
+    ${min !== undefined ? `min="${min}"` : ''}
+    ${max !== undefined ? `max="${max}"` : ''}
+    ${step !== undefined ? `step="${step}"` : ''}
+  ` : '';
+
+  // テキストエリアの場合
+  if (type === 'textarea') {
+    return `
+      <div class="mb-4">
+        ${labelHtml}
+        <textarea
+          id="${id}"
+          class="${finalClasses}"
+          placeholder="${placeholder}"
+          ${required ? 'required' : ''}
+          ${disabled ? 'disabled' : ''}
+          rows="${rows}"
+        >${value}</textarea>
+      </div>
+    `;
+  }
+
+  // 通常の入力フィールド
+  return `
+    <div class="mb-4">
+      ${labelHtml}
+      <input
+        type="${type}"
+        id="${id}"
+        class="${finalClasses}"
+        value="${value}"
+        placeholder="${placeholder}"
+        ${required ? 'required' : ''}
+        ${disabled ? 'disabled' : ''}
+        ${numberAttrs}
+      />
+    </div>
+  `;
+}
+
+/**
+ * 統一されたセレクトボックスコンポーネントを生成
+ * 
+ * @param {Object} options - セレクトボックス設定オプション
+ * @param {string} options.id - セレクトボックスのID
+ * @param {Array<{value: string, label: string}>} options.options - 選択肢の配列
+ * @param {string} [options.value=''] - 初期選択値
+ * @param {string} [options.label=''] - ラベルテキスト
+ * @param {boolean} [options.required=false] - 必須フラグ
+ * @param {boolean} [options.disabled=false] - 無効化フラグ
+ * @param {string} [options.onChange=''] - 変更イベントハンドラ
+ * @param {string} [options.className=''] - 追加のCSSクラス
+ * @returns {string} HTMLセレクトボックス文字列
+ * 
+ * @example
+ * renderSelect({
+ *   id: 'algorithm',
+ *   label: 'アルゴリズム',
+ *   options: [
+ *     { value: 'dt', label: '決定木' },
+ *     { value: 'rf', label: 'ランダムフォレスト' }
+ *   ],
+ *   value: 'dt'
+ * })
+ */
+function renderSelect({
+  id,
+  options,
+  value = '',
+  label = '',
+  required = false,
+  disabled = false,
+  onChange = '',
+  className = ''
+}) {
+  const baseSelectClasses = 'w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white';
+  const disabledClasses = disabled ? 'bg-gray-100 cursor-not-allowed' : '';
+  const finalClasses = `${baseSelectClasses} ${disabledClasses} ${className}`.trim();
+
+  // ラベル部分の生成
+  const labelHtml = label ? `
+    <label for="${id}" class="block text-sm font-medium text-gray-700 mb-1">
+      ${label}${required ? '<span class="text-red-500 ml-1">*</span>' : ''}
+    </label>
+  ` : '';
+
+  // オプションの生成
+  const optionsHtml = options.map(opt => `
+    <option value="${opt.value}" ${opt.value === value ? 'selected' : ''}>
+      ${opt.label}
+    </option>
+  `).join('');
+
+  return `
+    <div class="mb-4">
+      ${labelHtml}
+      <select
+        id="${id}"
+        class="${finalClasses}"
+        ${required ? 'required' : ''}
+        ${disabled ? 'disabled' : ''}
+        ${onChange ? `onchange="${onChange}"` : ''}
+      >
+        ${optionsHtml}
+      </select>
+    </div>
+  `;
+}
+
+// ========================================
+// 3. ページネーションコンポーネント
+// ========================================
+
+/**
+ * 統一されたページネーションコンポーネントを生成
+ * 
+ * @param {Object} options - ページネーション設定オプション
+ * @param {number} options.currentPage - 現在のページ番号
+ * @param {number} options.totalPages - 総ページ数
+ * @param {number} options.totalItems - 総アイテム数
+ * @param {number} options.startNum - 開始番号
+ * @param {number} options.endNum - 終了番号
+ * @param {string} options.onPrevClick - 前へボタンのクリックハンドラ
+ * @param {string} options.onNextClick - 次へボタンのクリックハンドラ
+ * @param {string} options.onJumpClick - ページジャンプのハンドラ
+ * @param {string} options.inputId - ページ入力フィールドのID
+ * @param {boolean} [options.disabled=false] - 無効化フラグ
+ * @returns {string} HTMLページネーション文字列
+ * 
+ * @example
+ * renderPagination({
+ *   currentPage: 2,
+ *   totalPages: 10,
+ *   totalItems: 95,
+ *   startNum: 11,
+ *   endNum: 20,
+ *   onPrevClick: 'handlePrevPage()',
+ *   onNextClick: 'handleNextPage()',
+ *   onJumpClick: 'handleJumpPage',
+ *   inputId: 'pageInput'
+ * })
+ */
+function renderPagination({
+  currentPage,
+  totalPages,
+  totalItems,
+  startNum,
+  endNum,
+  onPrevClick,
+  onNextClick,
+  onJumpClick,
+  inputId,
+  disabled = false
+}) {
+  const isPrevDisabled = currentPage <= 1 || disabled;
+  const isNextDisabled = currentPage >= totalPages || disabled;
+
+  return `
+    <div class="flex items-center justify-between mb-2 text-xs text-gray-500">
+      <span>${startNum}〜${endNum} 件目を表示（全 ${totalItems} 件）</span>
+      <div class="flex items-center gap-2">
+        <button 
+          class="px-2 py-1 border rounded text-xs transition-colors ${isPrevDisabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-100'}"
+          onclick="${onPrevClick}"
+          ${isPrevDisabled ? 'disabled' : ''}
+        >
+          前へ
+        </button>
+        <span>ページ ${currentPage} / ${totalPages}</span>
+        <div class="flex items-center gap-1">
+          <input 
+            id="${inputId}" 
+            type="number" 
+            min="1" 
+            max="${totalPages}" 
+            value="${currentPage}" 
+            class="w-16 px-1 py-0.5 border rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            onkeydown="if(event.key==='Enter'){event.preventDefault(); ${onJumpClick}();}"
+            ${disabled ? 'disabled' : ''}
+          />
+          <button 
+            class="px-2 py-1 border rounded text-xs transition-colors ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100'}"
+            onclick="${onJumpClick}()"
+            ${disabled ? 'disabled' : ''}
+          >
+            移動
+          </button>
+        </div>
+        <button 
+          class="px-2 py-1 border rounded text-xs transition-colors ${isNextDisabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-100'}"
+          onclick="${onNextClick}"
+          ${isNextDisabled ? 'disabled' : ''}
+        >
+          次へ
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ========================================
+// 4. モーダルコンポーネント
+// ========================================
+
+/**
+ * 統一されたモーダルダイアログを生成
+ * 
+ * @param {Object} options - モーダル設定オプション
+ * @param {string} options.id - モーダルのID
+ * @param {string} options.title - モーダルのタイトル
+ * @param {string} options.content - モーダルの内容（HTML文字列）
+ * @param {Array<{text: string, onClick: string, variant: string}>} [options.buttons=[]] - ボタン配列
+ * @param {string} [options.size='md'] - モーダルサイズ ('sm' | 'md' | 'lg' | 'xl')
+ * @param {boolean} [options.closeOnBackdrop=true] - 背景クリックで閉じるか
+ * @returns {string} HTMLモーダル文字列
+ * 
+ * @example
+ * renderModal({
+ *   id: 'confirmModal',
+ *   title: 'データセット削除',
+ *   content: '<p>本当に削除しますか？</p>',
+ *   buttons: [
+ *     { text: 'キャンセル', onClick: 'closeModal("confirmModal")', variant: 'secondary' },
+ *     { text: '削除', onClick: 'deleteDataset()', variant: 'danger' }
+ *   ]
+ * })
+ */
+function renderModal({
+  id,
+  title,
+  content,
+  buttons = [],
+  size = 'md',
+  closeOnBackdrop = true
+}) {
+  // サイズ別のクラス定義
+  const sizeClasses = {
+    sm: 'max-w-sm',
+    md: 'max-w-2xl',
+    lg: 'max-w-4xl',
+    xl: 'max-w-6xl'
+  };
+
+  // ボタンの生成
+  const buttonsHtml = buttons.length > 0 ? `
+    <div class="flex justify-end gap-2 mt-6 pt-4 border-t">
+      ${buttons.map(btn => renderButton({
+        text: btn.text,
+        onClick: btn.onClick,
+        variant: btn.variant || 'primary',
+        size: 'md'
+      })).join('')}
+    </div>
+  ` : '';
+
+  return `
+    <dialog 
+      id="${id}" 
+      class="rounded-lg shadow-2xl p-0 ${sizeClasses[size]} w-full"
+      ${closeOnBackdrop ? `onclick="if(event.target.id==='${id}') this.close()"` : ''}
+    >
+      <div class="bg-white rounded-lg">
+        <!-- ヘッダー -->
+        <div class="flex items-center justify-between p-4 border-b">
+          <h3 class="text-lg font-semibold text-gray-800">${title}</h3>
+          <button 
+            onclick="document.getElementById('${id}').close()"
+            class="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+            aria-label="閉じる"
+          >
+            &times;
+          </button>
+        </div>
+        
+        <!-- コンテンツ -->
+        <div class="p-6">
+          ${content}
+        </div>
+        
+        <!-- フッター（ボタン） -->
+        ${buttonsHtml}
+      </div>
+    </dialog>
+  `;
+}
+
+/**
+ * モーダルを開く
+ * 
+ * @param {string} modalId - モーダルのID
+ * @example
+ * openModal('confirmModal')
+ */
+function openModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) {
+    modal.showModal();
+    console.log(`モーダルを開きました: ${modalId}`);
+  } else {
+    console.error(`モーダルが見つかりません: ${modalId}`);
+  }
+}
+
+/**
+ * モーダルを閉じる
+ * 
+ * @param {string} modalId - モーダルのID
+ * @example
+ * closeModal('confirmModal')
+ */
+function closeModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) {
+    modal.close();
+    console.log(`モーダルを閉じました: ${modalId}`);
+  } else {
+    console.error(`モーダルが見つかりません: ${modalId}`);
+  }
+}
+
+// ========================================
+// 5. ローディング状態コンポーネント
+// ========================================
+
+/**
+ * 統一されたローディングインジケーターを生成
+ * 
+ * @param {Object} options - ローディング設定オプション
+ * @param {string} [options.message='読み込み中...'] - ローディングメッセージ
+ * @param {string} [options.size='md'] - サイズ ('sm' | 'md' | 'lg')
+ * @param {string} [options.variant='spinner'] - バリアント ('spinner' | 'dots' | 'text')
+ * @returns {string} HTMLローディング文字列
+ * 
+ * @example
+ * renderLoading({ message: 'データを取得中...', size: 'lg' })
+ */
+function renderLoading({
+  message = '読み込み中...',
+  size = 'md',
+  variant = 'spinner'
+} = {}) {
+  // サイズ別の設定
+  const sizeConfig = {
+    sm: { spinner: 'w-4 h-4', text: 'text-xs' },
+    md: { spinner: 'w-6 h-6', text: 'text-sm' },
+    lg: { spinner: 'w-8 h-8', text: 'text-base' }
+  };
+
+  const config = sizeConfig[size] || sizeConfig.md;
+
+  // スピナー型
+  if (variant === 'spinner') {
+    return `
+      <div class="flex items-center justify-center gap-2 py-4">
+        <div class="${config.spinner} border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        <span class="${config.text} text-gray-600">${message}</span>
+      </div>
+    `;
+  }
+
+  // ドット型
+  if (variant === 'dots') {
+    return `
+      <div class="flex items-center justify-center gap-2 py-4">
+        <div class="flex gap-1">
+          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
+          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
+          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
+        </div>
+        <span class="${config.text} text-gray-600">${message}</span>
+      </div>
+    `;
+  }
+
+  // テキスト型
+  return `
+    <div class="flex items-center justify-center py-4">
+      <span class="${config.text} text-gray-600">⏳ ${message}</span>
+    </div>
+  `;
+}
+
+// ========================================
+// 6. トースト通知コンポーネント
+// ========================================
+
+/**
+ * 統一されたトースト通知を表示
+ * 
+ * @param {string} message - 通知メッセージ
+ * @param {string} [type='info'] - 通知タイプ ('success' | 'error' | 'warning' | 'info')
+ * @param {number} [duration=4000] - 表示時間（ミリ秒）
+ * @returns {number} トーストID
+ * 
+ * @example
+ * showToast('保存しました', 'success')
+ * showToast('エラーが発生しました', 'error')
+ */
+function showToast(message, type = 'info', duration = 4000) {
+  const id = Date.now() + Math.random();
+  
+  // タイプ別のアイコンとスタイル
+  const config = {
+    success: { icon: '✅', bgColor: 'bg-green-50', borderColor: 'border-green-500', textColor: 'text-green-800' },
+    error: { icon: '❌', bgColor: 'bg-red-50', borderColor: 'border-red-500', textColor: 'text-red-800' },
+    warning: { icon: '⚠️', bgColor: 'bg-yellow-50', borderColor: 'border-yellow-500', textColor: 'text-yellow-800' },
+    info: { icon: 'ℹ️', bgColor: 'bg-blue-50', borderColor: 'border-blue-500', textColor: 'text-blue-800' }
+  };
+
+  const typeConfig = config[type] || config.info;
+
+  // メッセージに既に絵文字が含まれているか確認
+  const hasEmoji = /[\u{1F300}-\u{1F9FF}]|[✅❌⚠️ℹ️]/u.test(message);
+  const finalMessage = hasEmoji ? message : `${typeConfig.icon} ${message}`;
+
+  // トーストコンテナが存在しない場合は作成
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    container.className = 'fixed top-4 right-4 z-50 flex flex-col gap-2';
+    document.body.appendChild(container);
+  }
+
+  // トースト要素の作成
+  const toast = document.createElement('div');
+  toast.id = `toast-${id}`;
+  toast.className = `${typeConfig.bgColor} ${typeConfig.textColor} border-l-4 ${typeConfig.borderColor} px-4 py-3 rounded shadow-lg max-w-sm animate-slide-in-right`;
+  toast.innerHTML = `
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-sm font-medium">${finalMessage}</span>
+      <button 
+        onclick="document.getElementById('toast-${id}').remove()"
+        class="text-gray-500 hover:text-gray-700 text-xl leading-none"
+      >
+        &times;
+      </button>
+    </div>
+  `;
+
+  container.appendChild(toast);
+  console.log(`トースト通知を表示: [${type}] ${message}`);
+
+  // 自動削除
+  if (duration > 0) {
+    setTimeout(() => {
+      const toastEl = document.getElementById(`toast-${id}`);
+      if (toastEl) {
+        toastEl.style.animation = 'slide-out-right 0.3s ease-out';
+        setTimeout(() => toastEl.remove(), 300);
+      }
+    }, duration);
+  }
+
+  return id;
+}
+
+// ========================================
+// 7. テーブルコンポーネント
+// ========================================
+
+/**
+ * 統一されたテーブルコンポーネントを生成
+ * 
+ * @param {Object} options - テーブル設定オプション
+ * @param {Array<{key: string, label: string, align?: string}>} options.columns - カラム定義
+ * @param {Array<Object>} options.data - データ配列
+ * @param {boolean} [options.striped=true] - ストライプ表示
+ * @param {boolean} [options.hoverable=true] - ホバー効果
+ * @param {string} [options.emptyMessage='データがありません'] - 空データ時のメッセージ
+ * @returns {string} HTMLテーブル文字列
+ * 
+ * @example
+ * renderTable({
+ *   columns: [
+ *     { key: 'id', label: 'ID', align: 'center' },
+ *     { key: 'name', label: '名前' },
+ *     { key: 'score', label: 'スコア', align: 'right' }
+ *   ],
+ *   data: [
+ *     { id: 1, name: 'データA', score: 95.5 },
+ *     { id: 2, name: 'データB', score: 88.3 }
+ *   ]
+ * })
+ */
+function renderTable({
+  columns,
+  data,
+  striped = true,
+  hoverable = true,
+  emptyMessage = 'データがありません'
+}) {
+  // 空データの場合
+  if (!data || data.length === 0) {
+    return `
+      <div class="text-center py-8 text-gray-500">
+        ${emptyMessage}
+      </div>
+    `;
+  }
+
+  // ヘッダーの生成
+  const theadHtml = `
+    <thead class="bg-gray-100 border-b-2 border-gray-200">
+      <tr>
+        ${columns.map(col => `
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider ${col.align === 'center' ? 'text-center' : col.align === 'right' ? 'text-right' : ''}">
+            ${col.label}
+          </th>
+        `).join('')}
+      </tr>
+    </thead>
+  `;
+
+  // ボディの生成
+  const tbodyHtml = `
+    <tbody class="bg-white divide-y divide-gray-200">
+      ${data.map((row, idx) => `
+        <tr class="${striped && idx % 2 === 1 ? 'bg-gray-50' : ''} ${hoverable ? 'hover:bg-blue-50 transition-colors' : ''}">
+          ${columns.map(col => `
+            <td class="px-4 py-3 text-sm text-gray-800 ${col.align === 'center' ? 'text-center' : col.align === 'right' ? 'text-right' : ''}">
+              ${row[col.key] !== undefined ? row[col.key] : '-'}
+            </td>
+          `).join('')}
+        </tr>
+      `).join('')}
+    </tbody>
+  `;
+
+  return `
+    <div class="overflow-x-auto border rounded-lg">
+      <table class="min-w-full divide-y divide-gray-200">
+        ${theadHtml}
+        ${tbodyHtml}
+      </table>
+    </div>
+  `;
+}
+
+// ========================================
+// 8. カードコンポーネント
+// ========================================
+
+/**
+ * 統一されたカードコンポーネントを生成
+ * 
+ * @param {Object} options - カード設定オプション
+ * @param {string} options.title - カードタイトル
+ * @param {string} options.content - カード内容（HTML文字列）
+ * @param {string} [options.footer=''] - カードフッター（HTML文字列）
+ * @param {boolean} [options.collapsible=false] - 折りたたみ可能か
+ * @param {boolean} [options.defaultExpanded=true] - デフォルトで展開するか
+ * @param {string} [options.className=''] - 追加のCSSクラス
+ * @returns {string} HTMLカード文字列
+ * 
+ * @example
+ * renderCard({
+ *   title: 'データセット情報',
+ *   content: '<p>データセットの詳細...</p>',
+ *   collapsible: true
+ * })
+ */
+function renderCard({
+  title,
+  content,
+  footer = '',
+  collapsible = false,
+  defaultExpanded = true,
+  className = ''
+}) {
+  const cardId = `card-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const contentId = `${cardId}-content`;
+
+  // 折りたたみアイコン
+  const collapseIcon = collapsible ? `
+    <button 
+      onclick="toggleCardCollapse('${contentId}')"
+      class="text-gray-500 hover:text-gray-700 transition-transform"
+      id="${contentId}-toggle"
+    >
+      <svg class="w-5 h-5 transform ${defaultExpanded ? '' : 'rotate-180'}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+      </svg>
+    </button>
+  ` : '';
+
+  // フッター部分
+  const footerHtml = footer ? `
+    <div class="border-t bg-gray-50 px-4 py-3">
+      ${footer}
+    </div>
+  ` : '';
+
+  return `
+    <div class="bg-white border rounded-lg shadow-sm ${className}">
+      <!-- ヘッダー -->
+      <div class="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+        <h3 class="text-base font-semibold text-gray-800">${title}</h3>
+        ${collapseIcon}
+      </div>
+      
+      <!-- コンテンツ -->
+      <div id="${contentId}" class="${defaultExpanded ? '' : 'hidden'}">
+        <div class="p-4">
+          ${content}
+        </div>
+        ${footerHtml}
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * カードの折りたたみトグル
+ * 
+ * @param {string} contentId - コンテンツ要素のID
+ */
+function toggleCardCollapse(contentId) {
+  const content = document.getElementById(contentId);
+  const toggle = document.getElementById(`${contentId}-toggle`);
+  
+  if (content && toggle) {
+    const isHidden = content.classList.toggle('hidden');
+    toggle.querySelector('svg').classList.toggle('rotate-180', isHidden);
+    console.log(`カードを${isHidden ? '折りたたみ' : '展開'}ました: ${contentId}`);
+  }
+}
+
+// ========================================
+// 9. バッジコンポーネント
+// ========================================
+
+/**
+ * 統一されたバッジコンポーネントを生成
+ * 
+ * @param {Object} options - バッジ設定オプション
+ * @param {string} options.text - バッジテキスト
+ * @param {string} [options.variant='default'] - バリアント ('default' | 'success' | 'error' | 'warning' | 'info')
+ * @param {string} [options.size='md'] - サイズ ('sm' | 'md' | 'lg')
+ * @returns {string} HTMLバッジ文字列
+ * 
+ * @example
+ * renderBadge({ text: '完了', variant: 'success' })
+ */
+function renderBadge({
+  text,
+  variant = 'default',
+  size = 'md'
+}) {
+  // バリアント別のスタイル
+  const variantClasses = {
+    default: 'bg-gray-100 text-gray-800',
+    success: 'bg-green-100 text-green-800',
+    error: 'bg-red-100 text-red-800',
+    warning: 'bg-yellow-100 text-yellow-800',
+    info: 'bg-blue-100 text-blue-800'
+  };
+
+  // サイズ別のスタイル
+  const sizeClasses = {
+    sm: 'px-2 py-0.5 text-xs',
+    md: 'px-2.5 py-1 text-sm',
+    lg: 'px-3 py-1.5 text-base'
+  };
+
+  const finalClasses = `inline-flex items-center font-medium rounded ${variantClasses[variant]} ${sizeClasses[size]}`;
+
+  return `<span class="${finalClasses}">${text}</span>`;
+}
+
+// ========================================
+// 10. アラートコンポーネント
+// ========================================
+
+/**
+ * 統一されたアラートコンポーネントを生成
+ * 
+ * @param {Object} options - アラート設定オプション
+ * @param {string} options.message - アラートメッセージ
+ * @param {string} [options.type='info'] - タイプ ('success' | 'error' | 'warning' | 'info')
+ * @param {boolean} [options.dismissible=true] - 閉じるボタンを表示するか
+ * @param {string} [options.id=''] - アラートのID（dismissible時に必要）
+ * @returns {string} HTMLアラート文字列
+ * 
+ * @example
+ * renderAlert({
+ *   message: '処理が完了しました',
+ *   type: 'success',
+ *   dismissible: true,
+ *   id: 'successAlert'
+ * })
+ */
+function renderAlert({
+  message,
+  type = 'info',
+  dismissible = true,
+  id = ''
+}) {
+  // タイプ別の設定
+  const typeConfig = {
+    success: { icon: '✅', bgColor: 'bg-green-50', borderColor: 'border-green-200', textColor: 'text-green-800' },
+    error: { icon: '❌', bgColor: 'bg-red-50', borderColor: 'border-red-200', textColor: 'text-red-800' },
+    warning: { icon: '⚠️', bgColor: 'bg-yellow-50', borderColor: 'border-yellow-200', textColor: 'text-yellow-800' },
+    info: { icon: 'ℹ️', bgColor: 'bg-blue-50', borderColor: 'border-blue-200', textColor: 'text-blue-800' }
+  };
+
+  const config = typeConfig[type] || typeConfig.info;
+  const alertId = id || `alert-${Date.now()}`;
+
+  // 閉じるボタン
+  const dismissBtn = dismissible ? `
+    <button 
+      onclick="document.getElementById('${alertId}').remove()"
+      class="text-gray-500 hover:text-gray-700 text-xl leading-none ml-4"
+    >
+      &times;
+    </button>
+  ` : '';
+
+  return `
+    <div 
+      id="${alertId}"
+      class="${config.bgColor} ${config.textColor} ${config.borderColor} border rounded-lg px-4 py-3 mb-4"
+      role="alert"
+    >
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-lg">${config.icon}</span>
+          <span class="text-sm font-medium">${message}</span>
+        </div>
+        ${dismissBtn}
+      </div>
+    </div>
+  `;
+}
+
+// ========================================
+// エクスポート（グローバルスコープで利用可能にする）
+// ========================================
+
+// ブラウザ環境でグローバルに公開
+if (typeof window !== 'undefined') {
+  window.UIComponents = {
+    renderButton,
+    renderInput,
+    renderSelect,
+    renderPagination,
+    renderModal,
+    openModal,
+    closeModal,
+    renderLoading,
+    showToast,
+    renderTable,
+    renderCard,
+    toggleCardCollapse,
+    renderBadge,
+    renderAlert
+  };
+  
+  console.log('✅ 統一UIコンポーネントライブラリが読み込まれました');
+}
+
+// Node.js環境用のエクスポート
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    renderButton,
+    renderInput,
+    renderSelect,
+    renderPagination,
+    renderModal,
+    openModal,
+    closeModal,
+    renderLoading,
+    showToast,
+    renderTable,
+    renderCard,
+    toggleCardCollapse,
+    renderBadge,
+    renderAlert
+  };
+}
