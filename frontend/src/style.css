@@ -54,6 +54,8 @@
 
 /* カスタムスタイル */
 @keyframes fade-in{from{opacity:0}to{opacity:1}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes fadeOut{from{opacity:1}to{opacity:0}}
 .fade-in{animation:fade-in .3s ease-out}
 body{background-color:#f5f7fa;font-family:"Noto Sans JP",Roboto,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol",Arial,sans-serif}
 .apex-header{background: linear-gradient(135deg, #667eea 0%, #764ba2 100%)}
@@ -165,6 +167,17 @@ tr:hover{background:#f8fafc}
 .toast-message{font-size:13px;color:#64748b;line-height:1.5;}
 .toast-close{flex-shrink:0;width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#94a3b8;transition:all .2s;}
 .toast-close:hover{background:#f1f5f9;color:#64748b;}
+
+/* 確認モーダル */
+.confirm-modal{position:fixed;inset:0;z-index:10003;display:flex;align-items:center;justify-content:center;animation:modal-fade-in .2s ease-out;}
+.confirm-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);}
+.confirm-modal-content{background:#fff;border-radius:16px;max-width:450px;width:90%;margin:0 auto;box-shadow:0 20px 60px rgba(0,0,0,.3);animation:modal-scale-in .3s cubic-bezier(.175,.885,.32,1.275);z-index:1;}
+.confirm-modal-header{padding:24px 24px 16px 24px;text-align:center;}
+.confirm-modal-header svg{margin:0 auto 12px auto;}
+.confirm-modal-title{font-size:20px;font-weight:600;color:#1e293b;margin:0;}
+.confirm-modal-body{padding:0 24px 24px 24px;}
+.confirm-modal-body p{color:#475569;line-height:1.6;text-align:center;margin:0;font-size:15px;}
+.confirm-modal-footer{padding:0 24px 24px 24px;display:flex;justify-content:center;gap:12px;}
 
 /* Modal Dialog */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10001;display:flex;align-items:center;justify-content:center;animation:modal-fade-in .2s ease-out;padding:16px;}

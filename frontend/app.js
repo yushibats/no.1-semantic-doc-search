@@ -14,7 +14,7 @@ let requireLogin = true;
 
 // AI Assistant状態
 let copilotOpen = false;
-let copilotExpanded = true;
+let copilotExpanded = false;
 let copilotMessages = [];
 let copilotLoading = false;
 let copilotImages = [];
@@ -585,6 +585,18 @@ let ociObjectsPageSize = 20;
 let ociObjectsPrefix = "";
 let selectedOciObjects = [];
 let ociObjectsBatchDeleteLoading = false;
+let allOciObjects = []; // 全オブジェクトのキャッシュ（親子関係処理用）
+
+/**
+ * 指定したフォルダの子オブジェクトをすべて取得
+ */
+function getChildObjects(folderName) {
+  // フォルダ名が/で終わっていることを確認
+  const folderPath = folderName.endsWith('/') ? folderName : folderName + '/';
+  
+  // フォルダの配下にあるすべてのオブジェクトを検索
+  return allOciObjects.filter(obj => obj.name.startsWith(folderPath));
+}
 
 /**
  * OCI Object Storage一覧を読み込む
@@ -607,6 +619,17 @@ async function loadOciObjects() {
       showToast(`エラー: ${data.message || 'オブジェクト一覧取得失敗'}`, 'error');
       return;
     }
+    
+    // 全オブジェクトキャッシュを更新（ページネーションで分割されているため、一度取得したものを保持）
+    // 注: ページ変更時には前ページのデータも保持
+    data.objects.forEach(obj => {
+      const existingIndex = allOciObjects.findIndex(o => o.name === obj.name);
+      if (existingIndex >= 0) {
+        allOciObjects[existingIndex] = obj;
+      } else {
+        allOciObjects.push(obj);
+      }
+    });
     
     displayOciObjectsList(data);
     
@@ -703,11 +726,30 @@ function displayOciObjectsList(data) {
               // HTML属性用にエスケープ
               const escapedNameForHtml = obj.name.replace(/"/g, '&quot;');
               
+              // 階層深度に応じたインデントを計算（20px×深度）
+              const depth = obj.depth || 0;
+              const indentPx = depth * 20;
+              
+              // 表示名（フルパスではなく最後のセグメントのみ）
+              let displayName = obj.name;
+              if (obj.name.includes('/')) {
+                const parts = obj.name.split('/');
+                if (isFolder) {
+                  // フォルダの場合、末尾の/を除いて最後のセグメント
+                  displayName = parts[parts.length - 2] || obj.name;
+                } else {
+                  // ファイルの場合、最後のセグメント
+                  displayName = parts[parts.length - 1] || obj.name;
+                }
+              }
+              
               return `
                 <tr>
                   <td><input type="checkbox" data-object-name="${escapedNameForHtml}" onchange="toggleOciObjectSelection(this.getAttribute('data-object-name'))" ${selectedOciObjects.includes(obj.name) ? 'checked' : ''} class="w-4 h-4 rounded" ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}></td>
                   <td>${icon} ${typeLabel}</td>
-                  <td style="font-weight: 500; font-family: monospace; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${obj.name}</td>
+                  <td style="font-weight: 500; font-family: monospace; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <span style="display: inline-block; padding-left: ${indentPx}px;">${displayName}</span>
+                  </td>
                   <td>${isFolder ? '-' : formatFileSize(obj.size)}</td>
                   <td>${obj.time_created ? formatDateTime(obj.time_created) : '-'}</td>
                 </tr>
@@ -756,16 +798,41 @@ function handleOciObjectsJumpPage() {
 }
 
 /**
- * オブジェクト選択状態をトグル
+ * オブジェクト選択状態をトグル（親子関係対応）
  */
 function toggleOciObjectSelection(objectName) {
   if (ociObjectsBatchDeleteLoading) return;
   
   const index = selectedOciObjects.indexOf(objectName);
-  if (index > -1) {
+  const isCurrentlySelected = index > -1;
+  
+  if (isCurrentlySelected) {
+    // 選択解除
     selectedOciObjects.splice(index, 1);
+    
+    // フォルダの場合、子オブジェクトも解除
+    if (objectName.endsWith('/')) {
+      const children = getChildObjects(objectName);
+      children.forEach(child => {
+        const childIndex = selectedOciObjects.indexOf(child.name);
+        if (childIndex > -1) {
+          selectedOciObjects.splice(childIndex, 1);
+        }
+      });
+    }
   } else {
+    // 選択
     selectedOciObjects.push(objectName);
+    
+    // フォルダの場合、子オブジェクトも選択
+    if (objectName.endsWith('/')) {
+      const children = getChildObjects(objectName);
+      children.forEach(child => {
+        if (!selectedOciObjects.includes(child.name)) {
+          selectedOciObjects.push(child.name);
+        }
+      });
+    }
   }
   
   // 再描画
@@ -773,7 +840,7 @@ function toggleOciObjectSelection(objectName) {
 }
 
 /**
- * 全選択トグル（ヘッダーチェックボックス）
+ * 全選択トグル（ヘッダーチェックボックス）（親子関係対応）
  */
 function toggleSelectAllOciObjects(checked) {
   if (ociObjectsBatchDeleteLoading) return;
@@ -785,18 +852,39 @@ function toggleSelectAllOciObjects(checked) {
   }).filter(Boolean);
   
   if (checked) {
-    // 現在ページのオブジェクトをすべて選択
+    // 現在ページのオブジェクトをすべて選択（親子関係を考慮）
     currentPageObjects.forEach(objName => {
       if (!selectedOciObjects.includes(objName)) {
         selectedOciObjects.push(objName);
       }
+      
+      // フォルダの場合、子オブジェクトも選択
+      if (objName.endsWith('/')) {
+        const children = getChildObjects(objName);
+        children.forEach(child => {
+          if (!selectedOciObjects.includes(child.name)) {
+            selectedOciObjects.push(child.name);
+          }
+        });
+      }
     });
   } else {
-    // 現在ページのオブジェクトをすべて解除
+    // 現在ページのオブジェクトをすべて解除（親子関係を考慮）
     currentPageObjects.forEach(objName => {
       const index = selectedOciObjects.indexOf(objName);
       if (index > -1) {
         selectedOciObjects.splice(index, 1);
+      }
+      
+      // フォルダの場合、子オブジェクトも解除
+      if (objName.endsWith('/')) {
+        const children = getChildObjects(objName);
+        children.forEach(child => {
+          const childIndex = selectedOciObjects.indexOf(child.name);
+          if (childIndex > -1) {
+            selectedOciObjects.splice(childIndex, 1);
+          }
+        });
       }
     });
   }
@@ -806,7 +894,7 @@ function toggleSelectAllOciObjects(checked) {
 }
 
 /**
- * すべて選択
+ * すべて選択（親子関係対応）
  */
 function selectAllOciObjects() {
   if (ociObjectsBatchDeleteLoading) return;
@@ -819,6 +907,16 @@ function selectAllOciObjects() {
   currentPageObjects.forEach(objName => {
     if (!selectedOciObjects.includes(objName)) {
       selectedOciObjects.push(objName);
+    }
+    
+    // フォルダの場合、子オブジェクトも選択
+    if (objName.endsWith('/')) {
+      const children = getChildObjects(objName);
+      children.forEach(child => {
+        if (!selectedOciObjects.includes(child.name)) {
+          selectedOciObjects.push(child.name);
+        }
+      });
     }
   });
   
@@ -844,7 +942,10 @@ async function deleteSelectedOciObjects() {
   }
   
   const count = selectedOciObjects.length;
-  const confirmed = confirm(`選択された${count}件のオブジェクトを削除しますか？\n\nこの操作は元に戻せません。`);
+  const confirmed = await showConfirmModal(
+    `選択された${count}件のオブジェクトを削除しますか？\n\nこの操作は元に戻せません。`,
+    'オブジェクト削除の確認'
+  );
   
   if (!confirmed) {
     return;
@@ -934,7 +1035,12 @@ function displayDocumentsList(documents) {
 }
 
 async function deleteDocument(documentId, filename) {
-  if (!confirm(`文書「${filename}」を削除してもよろしいですか?`)) {
+  const confirmed = await showConfirmModal(
+    `文書「${filename}」を削除してもよろしいですか?`,
+    '文書削除の確認'
+  );
+  
+  if (!confirmed) {
     return;
   }
   
@@ -2666,10 +2772,10 @@ async function sendCopilotMessage() {
   copilotImages = [];
   renderCopilotImagesPreview();
   
-  // アシスタントメッセージのプレースホルダー
+  // アシスタントメッセージのプレースホルダーに「考え...」を表示
   copilotMessages.push({
     role: 'assistant',
-    content: ''
+    content: '考え...'
   });
   
   copilotLoading = true;
@@ -2698,6 +2804,7 @@ async function sendCopilotMessage() {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let isFirstChunk = true;
     
     while (true) {
       const { done, value } = await reader.read();
@@ -2715,7 +2822,13 @@ async function sendCopilotMessage() {
               copilotLoading = false;
               renderCopilotMessages();
             } else if (data.content) {
-              copilotMessages[copilotMessages.length - 1].content += data.content;
+              // 最初のチャンクの場合、「考え...」を置き換える
+              if (isFirstChunk) {
+                copilotMessages[copilotMessages.length - 1].content = data.content;
+                isFirstChunk = false;
+              } else {
+                copilotMessages[copilotMessages.length - 1].content += data.content;
+              }
               renderCopilotMessages();
             }
           } catch (e) {
@@ -2748,14 +2861,36 @@ function renderCopilotMessages() {
     return;
   }
   
-  messagesDiv.innerHTML = copilotMessages.map(msg => {
+  // 画像データをグローバルに保存（イベントハンドラからアクセスするため）
+  window._copilotImageData = {};
+  
+  messagesDiv.innerHTML = copilotMessages.map((msg, msgIdx) => {
     const isUser = msg.role === 'user';
     const content = isUser ? msg.content : renderMarkdown(msg.content);
     const imagesHtml = isUser && msg.images && msg.images.length > 0 ? `
       <div style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;">
-        ${msg.images.map(img => `
-          <img src="${img.data_url}" style="max-width: 120px; max-height: 120px; border-radius: 8px; border: 1px solid #e2e8f0; object-fit: contain;" />
-        `).join('')}
+        ${msg.images.map((img, imgIdx) => {
+          const imageKey = `img_${msgIdx}_${imgIdx}`;
+          // 画像データをグローバルに保存
+          window._copilotImageData[imageKey] = {
+            data_url: img.data_url,
+            filename: img.filename || ''
+          };
+          return `
+            <div 
+              style="position: relative; cursor: pointer;"
+              onclick="openCopilotImage('${imageKey}')"
+            >
+              <img 
+                src="${img.data_url}" 
+                style="max-width: 120px; max-height: 120px; border-radius: 8px; border: 2px solid #e2e8f0; object-fit: contain; transition: all 0.2s;" 
+                onmouseover="this.style.borderColor='#667eea'; this.style.transform='scale(1.05)';" 
+                onmouseout="this.style.borderColor='#e2e8f0'; this.style.transform='scale(1)';" 
+              />
+              ${img.filename ? `<div style="position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6); color: white; font-size: 10px; padding: 2px 4px; border-radius: 0 0 6px 6px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${img.filename}</div>` : ''}
+            </div>
+          `;
+        }).join('')}
       </div>
     ` : '';
     
@@ -2769,6 +2904,16 @@ function renderCopilotMessages() {
   
   // スクロールを一番下へ
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+/**
+ * AI Assistantの画像をモーダルで開く
+ */
+function openCopilotImage(imageKey) {
+  const imageData = window._copilotImageData && window._copilotImageData[imageKey];
+  if (imageData) {
+    showImageModal(imageData.data_url, imageData.filename);
+  }
 }
 
 /**
@@ -2818,9 +2963,13 @@ function handleCopilotKeydown(event) {
 /**
  * 新しい会話を開始
  */
-function startNewConversation() {
+async function startNewConversation() {
   if (copilotMessages.length > 0) {
-    if (confirm('AI Assistantの会話をリセットしますか？')) {
+    const confirmed = await showConfirmModal(
+      'AI Assistantの会話をリセットしますか？',
+      '新しい会話の確認'
+    );
+    if (confirmed) {
       copilotMessages = [];
       copilotImages = [];
       renderCopilotMessages();
@@ -2835,13 +2984,79 @@ function startNewConversation() {
 function addCopilotImagesFromFiles(files) {
   if (!files || files.length === 0) return;
   
-  Array.from(files).forEach(file => {
-    if (file.type.startsWith('image/')) {
+  const MAX_IMAGES = 5;
+  
+  // 既存の画像数を確認
+  if (copilotImages.length >= MAX_IMAGES) {
+    showToast(`画像は最大${MAX_IMAGES}枚までアップロードできます`, 'warning');
+    return;
+  }
+  
+  // 追加可能な枚数を計算
+  const remainingSlots = MAX_IMAGES - copilotImages.length;
+  const filesToAdd = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, remainingSlots);
+  
+  if (filesToAdd.length < files.length) {
+    showToast(`画像は最大${MAX_IMAGES}枚までです。${filesToAdd.length}枚を追加します`, 'warning');
+  }
+  
+  filesToAdd.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      copilotImages.push({
+        data_url: e.target.result,
+        filename: file.name
+      });
+      renderCopilotImagesPreview();
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * クリップボードから画像を追加
+ * @param {ClipboardEvent} event - 貼り付けイベント
+ */
+function handleCopilotPaste(event) {
+  const items = event.clipboardData?.items;
+  if (!items) return;
+  
+  const imageItems = [];
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].type.startsWith('image/')) {
+      imageItems.push(items[i]);
+    }
+  }
+  
+  if (imageItems.length === 0) return;
+  
+  // デフォルトの貼り付け動作を防止
+  event.preventDefault();
+  
+  const MAX_IMAGES = 5;
+  
+  // 既存の画像数を確認
+  if (copilotImages.length >= MAX_IMAGES) {
+    showToast(`画像は最大${MAX_IMAGES}枚までアップロードできます`, 'warning');
+    return;
+  }
+  
+  // 追加可能な枚数を計算
+  const remainingSlots = MAX_IMAGES - copilotImages.length;
+  const itemsToAdd = imageItems.slice(0, remainingSlots);
+  
+  if (itemsToAdd.length < imageItems.length) {
+    showToast(`画像は最大${MAX_IMAGES}枚までです。${itemsToAdd.length}枚を追加します`, 'warning');
+  }
+  
+  itemsToAdd.forEach(item => {
+    const file = item.getAsFile();
+    if (file) {
       const reader = new FileReader();
       reader.onload = (e) => {
         copilotImages.push({
           data_url: e.target.result,
-          filename: file.name
+          filename: file.name || `貼り付け画像_${Date.now()}.png`
         });
         renderCopilotImagesPreview();
       };
@@ -2891,6 +3106,111 @@ function clearCopilotImages() {
   renderCopilotImagesPreview();
 }
 
+/**
+ * 画像モーダルを表示
+ */
+let _imageModalEscapeHandler = null;
+
+function showImageModal(imageUrl, filename = '') {
+  // 既存のモーダルがあれば即座に削除
+  const existingModal = document.getElementById('imageModal');
+  if (existingModal) {
+    existingModal.remove();
+  }
+  
+  // 既存のESCハンドラーを削除
+  if (_imageModalEscapeHandler) {
+    document.removeEventListener('keydown', _imageModalEscapeHandler);
+    _imageModalEscapeHandler = null;
+  }
+  
+  // モーダルを作成
+  const modal = document.createElement('div');
+  modal.id = 'imageModal';
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    cursor: pointer;
+  `;
+  
+  modal.innerHTML = `
+    <div style="position: relative; max-width: 90vw; max-height: 90vh; display: flex; flex-direction: column; align-items: center; cursor: default;">
+      <div style="position: absolute; top: -40px; right: 0; display: flex; gap: 10px; align-items: center;">
+        ${filename ? `<span style="color: white; font-size: 14px; background: rgba(255,255,255,0.1); padding: 6px 12px; border-radius: 6px;">${filename}</span>` : ''}
+        <button 
+          id="imageModalCloseBtn"
+          style="background: rgba(255, 255, 255, 0.2); border: none; color: white; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; transition: all 0.2s;"
+        >×</button>
+      </div>
+      <img 
+        src="${imageUrl}" 
+        style="max-width: 100%; max-height: 90vh; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.5); object-fit: contain;"
+      />
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  
+  // 閉じるボタンのイベント設定
+  const closeBtn = document.getElementById('imageModalCloseBtn');
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeImageModal();
+  });
+  closeBtn.addEventListener('mouseover', function() {
+    this.style.background = 'rgba(255, 255, 255, 0.3)';
+    this.style.transform = 'scale(1.1)';
+  });
+  closeBtn.addEventListener('mouseout', function() {
+    this.style.background = 'rgba(255, 255, 255, 0.2)';
+    this.style.transform = 'scale(1)';
+  });
+  
+  // 内側コンテンツのクリック伝播を停止
+  const innerContent = modal.querySelector('div');
+  innerContent.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+  
+  // 背景クリックで閉じる（1回だけ実行）
+  modal.addEventListener('click', () => {
+    closeImageModal();
+  }, { once: true });
+  
+  // ESCキーで閉じる
+  _imageModalEscapeHandler = (e) => {
+    if (e.key === 'Escape') {
+      closeImageModal();
+    }
+  };
+  document.addEventListener('keydown', _imageModalEscapeHandler);
+}
+
+/**
+ * 画像モーダルを閉じる
+ */
+function closeImageModal() {
+  const modal = document.getElementById('imageModal');
+  if (!modal) return;
+  
+  // ESCハンドラーを削除
+  if (_imageModalEscapeHandler) {
+    document.removeEventListener('keydown', _imageModalEscapeHandler);
+    _imageModalEscapeHandler = null;
+  }
+  
+  // 即座に削除（フラッシュを防ぐためアニメーションなし）
+  modal.remove();
+}
+
 // AI Assistant関数をグローバルスコープに公開
 window.toggleCopilot = toggleCopilot;
 window.toggleCopilotExpand = toggleCopilotExpand;
@@ -2899,8 +3219,20 @@ window.clearCopilotHistory = clearCopilotHistory;
 window.handleCopilotKeydown = handleCopilotKeydown;
 window.startNewConversation = startNewConversation;
 window.addCopilotImagesFromFiles = addCopilotImagesFromFiles;
+window.handleCopilotPaste = handleCopilotPaste;
 window.removeCopilotImageAt = removeCopilotImageAt;
 window.clearCopilotImages = clearCopilotImages;
+window.showImageModal = showImageModal;
+window.closeImageModal = closeImageModal;
+window.showConfirmModal = showConfirmModal;
+window.closeConfirmModal = closeConfirmModal;
+window.openCopilotImage = openCopilotImage;
+
+// AI Assistantテキストエリアにペーストイベントリスナーを追加
+const copilotInput = document.getElementById('copilotInput');
+if (copilotInput) {
+  copilotInput.addEventListener('paste', handleCopilotPaste);
+}
 
 // データベース関連関数をグローバルスコープに公開
 window.refreshDbInfo = refreshDbInfo;
@@ -2923,6 +3255,46 @@ window.toggleSelectAllDbTables = toggleSelectAllDbTables;
 window.selectAllDbTables = selectAllDbTables;
 window.clearAllDbTables = clearAllDbTables;
 window.deleteSelectedDbTables = deleteSelectedDbTables;
+
+// ========================================
+// 確認モーダル機能
+// ========================================
+
+let confirmModalResolve = null;
+
+/**
+ * 確認モーダルを表示
+ * @param {string} message - 確認メッセージ
+ * @param {string} title - タイトル（オプション）
+ * @returns {Promise<boolean>} - ユーザーの選択
+ */
+function showConfirmModal(message, title = '確認') {
+  return new Promise((resolve) => {
+    confirmModalResolve = resolve;
+    
+    const modal = document.getElementById('confirmModal');
+    const titleElement = document.getElementById('confirmModalTitle');
+    const messageElement = document.getElementById('confirmModalMessage');
+    
+    titleElement.textContent = title;
+    messageElement.textContent = message;
+    modal.style.display = 'flex';
+  });
+}
+
+/**
+ * 確認モーダルを閉じる
+ * @param {boolean} result - ユーザーの選択結果
+ */
+function closeConfirmModal(result) {
+  const modal = document.getElementById('confirmModal');
+  modal.style.display = 'none';
+  
+  if (confirmModalResolve) {
+    confirmModalResolve(result);
+    confirmModalResolve = null;
+  }
+}
 
 // ========================================
 // Object Storage設定機能

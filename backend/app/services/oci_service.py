@@ -339,7 +339,7 @@ class OCIService:
             page_token: ページトークン（次ページ取得用）
             
         Returns:
-            オブジェクト一覧とページ情報
+            オブジェクト一覧とページ情報（階層構造情報付き）
         """
         try:
             client = self.get_object_storage_client()
@@ -366,13 +366,27 @@ class OCIService:
                 # フォルダかファイルかを判定
                 is_folder = obj.name.endswith('/')
                 
+                # 階層深度を計算（スラッシュの数で判定）
+                depth = obj.name.count('/')
+                if is_folder:
+                    depth -= 1  # フォルダの場合、末尾の/を除外
+                
+                # 親パスを計算
+                parent = None
+                if '/' in obj.name:
+                    parent = obj.name.rsplit('/', 2 if is_folder else 1)[0]
+                    if parent and not parent.endswith('/'):
+                        parent += '/'
+                
                 objects.append({
                     "name": obj.name,
                     "size": obj.size if obj.size else 0,
                     "time_created": obj.time_created.isoformat() if obj.time_created else None,
                     "md5": obj.md5 if hasattr(obj, 'md5') else None,
                     "is_folder": is_folder,
-                    "type": "folder" if is_folder else "file"
+                    "type": "folder" if is_folder else "file",
+                    "depth": depth,
+                    "parent": parent
                 })
             
             return {

@@ -790,6 +790,33 @@
     </div>
   </div>
 
+  <!-- Toast通知コンテナ -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- 確認モーダル -->
+  <div id="confirmModal" class="confirm-modal" style="display: none;">
+    <div class="confirm-modal-overlay" onclick="closeConfirmModal(false)"></div>
+    <div class="confirm-modal-content">
+      <div class="confirm-modal-header">
+        <svg class="w-12 h-12 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+        </svg>
+        <h3 class="confirm-modal-title" id="confirmModalTitle">確認</h3>
+      </div>
+      <div class="confirm-modal-body">
+        <p id="confirmModalMessage">本当に実行しますか?</p>
+      </div>
+      <div class="confirm-modal-footer">
+        <button onclick="closeConfirmModal(false)" class="apex-button-secondary px-4 py-2">
+          キャンセル
+        </button>
+        <button onclick="closeConfirmModal(true)" class="apex-button px-4 py-2">
+          確定
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="/components.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
