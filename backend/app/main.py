@@ -1157,24 +1157,191 @@ async def search_documents(query: SearchQuery):
     try:
         start_time = time.time()
         
-        # TODO: Oracle Database 23aiのベクトル検索機能を実装
-        # 現在はCohere Embed v4.0を使用した画像ベクトル検索のみ対応
+        logger.info(f"検索開始: query='{query.query}', top_k={query.top_k}, min_score={query.min_score}")
+        
+        # 1. テキストクエリからembeddingベクトルを生成
+        query_embedding = image_vectorizer.generate_text_embedding(query.query)
+        if query_embedding is None:
+            logger.error("クエリのembedding生成に失敗")
+            return SearchResponse(
+                success=False,
+                query=query.query,
+                results=[],
+                total_files=0,
+                total_images=0,
+                processing_time=time.time() - start_time
+            )
+        
+        logger.info(f"Query embedding生成完了: shape={query_embedding.shape}")
+        
+        # 2. ベクトル検索を実行（2テーブルJOIN）
+        search_results = image_vectorizer.search_similar_images(
+            query_embedding=query_embedding,
+            limit=query.top_k * 10,  # ファイル単位で集約するため、多めに取得
+            threshold=query.min_score
+        )
+        
+        if not search_results:
+            logger.info("検索結果がありません")
+            return SearchResponse(
+                success=True,
+                query=query.query,
+                results=[],
+                total_files=0,
+                total_images=0,
+                processing_time=time.time() - start_time
+            )
+        
+        logger.info(f"ベクトル検索完了: {len(search_results)}件の画像がマッチ")
+        
+        # 3. 結果をファイル単位で集約
+        from collections import defaultdict
+        from app.models.search import FileSearchResult, ImageSearchResult
+        
+        files_dict = defaultdict(lambda: {
+            'file_id': None,
+            'bucket': None,
+            'object_name': None,
+            'original_filename': None,
+            'file_size': None,
+            'content_type': None,
+            'uploaded_at': None,
+            'min_distance': float('inf'),
+            'images': []
+        })
+        
+        # 画像をファイルIDでグループ化
+        for result in search_results:
+            file_id = result['file_id']
+            
+            if files_dict[file_id]['file_id'] is None:
+                files_dict[file_id]['file_id'] = result['file_id']
+                files_dict[file_id]['bucket'] = result['file_bucket']
+                files_dict[file_id]['object_name'] = result['file_object_name']
+                files_dict[file_id]['original_filename'] = result.get('original_filename')
+                files_dict[file_id]['file_size'] = result.get('file_size')
+                files_dict[file_id]['content_type'] = result.get('file_content_type')
+                files_dict[file_id]['uploaded_at'] = result.get('uploaded_at')
+            
+            # 最小距離を更新
+            distance = result['vector_distance']
+            if distance < files_dict[file_id]['min_distance']:
+                files_dict[file_id]['min_distance'] = distance
+            
+            # 画像情報を追加
+            image_result = ImageSearchResult(
+                embed_id=result['embed_id'],
+                bucket=result['bucket'],
+                object_name=result['object_name'],
+                page_number=result['page_number'],
+                vector_distance=distance,
+                content_type=result.get('content_type'),
+                file_size=result.get('img_file_size')
+            )
+            files_dict[file_id]['images'].append(image_result)
+        
+        # 4. ファイルを最小距離でソート
+        sorted_files = sorted(files_dict.values(), key=lambda x: x['min_distance'])
+        
+        # 5. 上位top_k件を取得
+        top_files = sorted_files[:query.top_k]
+        
+        # 6. レスポンスを構築
         results = []
+        total_images = 0
+        
+        for file_data in top_files:
+            # 画像を距離でソート（距離が小さいものが前）
+            sorted_images = sorted(file_data['images'], key=lambda x: x.vector_distance)
+            total_images += len(sorted_images)
+            
+            file_result = FileSearchResult(
+                file_id=file_data['file_id'],
+                bucket=file_data['bucket'],
+                object_name=file_data['object_name'],
+                original_filename=file_data['original_filename'],
+                file_size=file_data['file_size'],
+                content_type=file_data['content_type'],
+                uploaded_at=file_data['uploaded_at'],
+                min_distance=file_data['min_distance'],
+                matched_images=sorted_images
+            )
+            results.append(file_result)
         
         processing_time = time.time() - start_time
         
-        logger.info(f"検索完了: クエリ='{query.query}', 結果数={len(results)}, 処理時間={processing_time:.3f}s")
+        logger.info(f"検索完了: ファイル数={len(results)}, 画像数={total_images}, 処理時間={processing_time:.3f}s")
         
         return SearchResponse(
             success=True,
             query=query.query,
             results=results,
-            total_results=len(results),
+            total_files=len(results),
+            total_images=total_images,
             processing_time=processing_time
         )
         
     except Exception as e:
-        logger.error(f"検索エラー: {e}")
+        logger.error(f"検索エラー: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/oci/image/{bucket}/{object_name:path}")
+async def get_oci_image(bucket: str, object_name: str):
+    """
+    OCI Object Storageから画像を取得
+    
+    Args:
+        bucket: バケット名
+        object_name: オブジェクト名（URLエンコード済み）
+        
+    Returns:
+        画像データまたはエラーレスポンス
+    """
+    try:
+        from urllib.parse import unquote
+        
+        # URLデコード（日本語ファイル名対応）
+        decoded_object_name = unquote(object_name)
+        
+        logger.info(f"画像取得開始: bucket={bucket}, object={decoded_object_name}")
+        
+        # Namespaceを取得
+        namespace_result = oci_service.get_namespace()
+        if not namespace_result.get("success"):
+            raise HTTPException(status_code=500, detail=f"Namespace取得エラー: {namespace_result.get('message')}")
+        
+        namespace = namespace_result.get("namespace")
+        
+        # OCI Object Storageから画像を取得
+        client = oci_service.get_object_storage_client()
+        if not client:
+            raise HTTPException(status_code=500, detail="Object Storage Clientの取得に失敗しました")
+        
+        get_obj_response = client.get_object(
+            namespace_name=namespace,
+            bucket_name=bucket,
+            object_name=decoded_object_name
+        )
+        
+        # Content-Typeを取得
+        content_type = get_obj_response.headers.get('Content-Type', 'image/png')
+        
+        logger.info(f"画像取得成功: object={decoded_object_name}, content_type={content_type}")
+        
+        # 画像データを返す
+        return StreamingResponse(
+            io.BytesIO(get_obj_response.data.content),
+            media_type=content_type,
+            headers={
+                'Cache-Control': 'max-age=3600',  # 1時間キャッシュ
+                'Content-Disposition': f'inline; filename="{decoded_object_name.split("/")[-1]}"'
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"画像取得エラー: {e}", exc_info=True)
+        if "404" in str(e) or "NotFound" in str(e):
+            raise HTTPException(status_code=404, detail="画像が見つかりません")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========================================

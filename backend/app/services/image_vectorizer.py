@@ -248,6 +248,55 @@ class ImageVectorizer:
             logger.error(f"予期しないエラー: {e}")
             return None
     
+    def generate_text_embedding(self, text: str) -> Optional[np.ndarray]:
+        """テキストからembeddingベクトルを生成（検索クエリ用）"""
+        if not self.genai_client:
+            logger.error("OCI Generative AIクライアントが初期化されていません")
+            return None
+        
+        try:
+            # Embedding生成リクエストを作成
+            embed_detail = oci.generative_ai_inference.models.EmbedTextDetails()
+            embed_detail.serving_mode = oci.generative_ai_inference.models.OnDemandServingMode(
+                model_id=os.getenv("OCI_COHERE_EMBED_MODEL", "cohere.embed-v4.0")
+            )
+            embed_detail.input_type = "SEARCH_QUERY"  # 検索クエリ用
+            embed_detail.inputs = [text]
+            embed_detail.truncate = os.getenv("OCI_EMBEDDING_TRUNCATE", "END")
+            embed_detail.compartment_id = os.getenv("OCI_COMPARTMENT_OCID")
+            
+            # リトライロジック
+            max_retries = int(os.getenv("OCI_EMBEDDING_MAX_RETRIES", "3"))
+            retry_delay = int(os.getenv("OCI_EMBEDDING_RETRY_DELAY", "1"))
+            
+            for retry in range(max_retries):
+                try:
+                    response = self.genai_client.embed_text(embed_detail)
+                    
+                    if response.data.embeddings:
+                        embedding = response.data.embeddings[0]
+                        embedding_array = np.array(embedding, dtype=np.float32)
+                        
+                        logger.info(f"テキストembedding生成成功: text_len={len(text)}, shape={embedding_array.shape}")
+                        return embedding_array
+                    else:
+                        logger.error("Embeddingが空です")
+                        return None
+                
+                except Exception as e:
+                    if retry < max_retries - 1:
+                        logger.warning(f"テキストembedding生成失敗 (リトライ {retry + 1}/{max_retries}): {e}")
+                        time.sleep(retry_delay)
+                    else:
+                        logger.error(f"テキストembedding生成失敗（最大リトライ回数到達）: {e}")
+                        return None
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"予期しないエラー: {e}")
+            return None
+    
     def save_file_info(self, bucket: str, object_name: str, original_filename: str, 
                       file_size: int, content_type: str) -> Optional[int]:
         """ファイル情報をFILE_INFOテーブルに保存"""
@@ -460,6 +509,93 @@ class ImageVectorizer:
         except Exception as e:
             logger.error(f"ベクトル化状態取得エラー: {e}")
             return result
+        finally:
+            self._release_db_connection()
+    
+    def search_similar_images(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7) -> Optional[List[Dict[str, Any]]]:
+        """
+        類似画像を検索（2テーブルJOIN）
+        
+        Args:
+            query_embedding: 検索用のembeddingベクトル
+            limit: 最大取得件数
+            threshold: 類似度闾値（0.0-1.0）
+            
+        Returns:
+            類似画像のリスト（FILE_INFOとIMG_EMBEDDINGSをJOINした結果）
+        """
+        if not self._ensure_db_connection():
+            logger.error("データベース接続がありません")
+            return None
+        
+        try:
+            # NumPy配列をFLOAT32配列に変換
+            embedding_array = array.array("f", query_embedding.tolist())
+            
+            with self.db_connection.cursor() as cursor:
+                # FILE_INFOとIMG_EMBEDDINGSをJOINしてベクトル検索
+                sql = """
+                SELECT 
+                    ie.ID as embed_id,
+                    ie.FILE_ID as file_id,
+                    ie.BUCKET as bucket,
+                    ie.OBJECT_NAME as object_name,
+                    ie.PAGE_NUMBER as page_number,
+                    ie.CONTENT_TYPE as content_type,
+                    ie.FILE_SIZE as img_file_size,
+                    f.BUCKET as file_bucket,
+                    f.OBJECT_NAME as file_object_name,
+                    f.ORIGINAL_FILENAME as original_filename,
+                    f.FILE_SIZE as file_size,
+                    f.CONTENT_TYPE as file_content_type,
+                    f.UPLOADED_AT as uploaded_at,
+                    VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) as vector_distance
+                FROM 
+                    IMG_EMBEDDINGS ie
+                INNER JOIN 
+                    FILE_INFO f ON ie.FILE_ID = f.FILE_ID
+                WHERE 
+                    VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) <= :threshold
+                ORDER BY 
+                    vector_distance
+                FETCH FIRST :limit ROWS ONLY
+                """
+                
+                cursor.execute(sql, {
+                    'query_embedding': embedding_array,
+                    'threshold': threshold,
+                    'limit': limit
+                })
+                
+                results = []
+                for row in cursor:
+                    # タイムスタンプをISO形式に変換
+                    uploaded_at = row[12]
+                    uploaded_at_str = uploaded_at.isoformat() if uploaded_at else None
+                    
+                    results.append({
+                        'embed_id': row[0],
+                        'file_id': row[1],
+                        'bucket': row[2],
+                        'object_name': row[3],
+                        'page_number': row[4],
+                        'content_type': row[5],
+                        'img_file_size': row[6],
+                        'file_bucket': row[7],
+                        'file_object_name': row[8],
+                        'original_filename': row[9],
+                        'file_size': row[10],
+                        'file_content_type': row[11],
+                        'uploaded_at': uploaded_at_str,
+                        'vector_distance': float(row[13])
+                    })
+                
+                logger.info(f"ベクトル検索完了: {len(results)}件の画像がマッチ, threshold={threshold}")
+                return results
+                
+        except Exception as e:
+            logger.error(f"ベクトル検索エラー: {e}", exc_info=True)
+            return None
         finally:
             self._release_db_connection()
 

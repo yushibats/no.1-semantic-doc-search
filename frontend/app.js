@@ -215,7 +215,7 @@ async function switchTab(tabName) {
 async function performSearch() {
   const query = document.getElementById('searchQuery').value.trim();
   const topK = parseInt(document.getElementById('topK').value) || 10;
-  const minScore = parseFloat(document.getElementById('minScore').value) || 0;
+  const minScore = parseFloat(document.getElementById('minScore').value) || 0.7;
   
   if (!query) {
     showToast('検索クエリを入力してください', 'warning');
@@ -245,7 +245,7 @@ function displaySearchResults(data) {
   const summarySpan = document.getElementById('searchResultsSummary');
   const listDiv = document.getElementById('searchResultsList');
   
-  if (data.results.length === 0) {
+  if (!data.results || data.results.length === 0) {
     resultsDiv.style.display = 'block';
     summarySpan.textContent = '検索結果なし';
     listDiv.innerHTML = `
@@ -259,40 +259,149 @@ function displaySearchResults(data) {
   }
   
   resultsDiv.style.display = 'block';
-  summarySpan.textContent = `${data.total_results}件 (${data.processing_time.toFixed(2)}秒)`;
+  summarySpan.textContent = `${data.total_files}ファイル (${data.total_images}画像, ${data.processing_time.toFixed(2)}秒)`;
   
-  listDiv.innerHTML = data.results.map((result, index) => `
-    <div class="card" style="margin-bottom: 16px;">
-      <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <span class="badge badge-info">#${index + 1}</span>
-          <span style="font-weight: 600;">${result.filename}</span>
+  // ファイル単位で表示
+  listDiv.innerHTML = data.results.map((fileResult, fileIndex) => {
+    const distancePercent = (1 - fileResult.min_distance) * 100;
+    const originalFilename = fileResult.original_filename || fileResult.object_name.split('/').pop();
+    
+    // ファイル情報カード
+    const fileCardHtml = `
+      <div class="card" style="margin-bottom: 24px; border-left: 4px solid #667eea;">
+        <!-- ファイルヘッダー -->
+        <div class="card-header" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div style="display: flex; align-items: center; gap: 12px; flex: 1;">
+              <span class="badge" style="background: rgba(255,255,255,0.3); color: white; font-size: 14px; padding: 6px 12px;">#${fileIndex + 1}</span>
+              <div>
+                <div style="font-weight: 600; font-size: 16px; margin-bottom: 4px;">📄 ${originalFilename}</div>
+                <div style="font-size: 12px; opacity: 0.9;">${fileResult.object_name}</div>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="badge" style="background: rgba(255,255,255,0.25); color: white; font-size: 13px; padding: 6px 12px;">
+                マッチ度: ${distancePercent.toFixed(1)}%
+              </span>
+              <span class="badge" style="background: rgba(255,255,255,0.25); color: white; font-size: 13px; padding: 6px 12px;">
+                ${fileResult.matched_images.length}ページ
+              </span>
+              <button 
+                onclick="downloadFile('${fileResult.bucket}', '${encodeURIComponent(fileResult.object_name)}')"
+                class="btn btn-sm"
+                style="background: white; color: #667eea; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;"
+                title="ファイルをダウンロード"
+              >
+                📥 ダウンロード
+              </button>
+            </div>
+          </div>
         </div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          ${result.page_number ? `<span class="badge badge-neutral">ページ ${result.page_number}</span>` : ''}
-          <span class="badge badge-success">スコア: ${(result.score * 100).toFixed(1)}%</span>
+        
+        <!-- ページ画像グリッド -->
+        <div class="card-body" style="padding: 20px;">
+          <div style="font-weight: 600; margin-bottom: 12px; color: #334155; font-size: 14px;">
+            🖼️ マッチしたページ画像（距離が小さい順）
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px;">
+            ${fileResult.matched_images.map((img, imgIndex) => {
+              const imgDistancePercent = (1 - img.vector_distance) * 100;
+              const imageUrl = `/api/oci/image/${img.bucket}/${encodeURIComponent(img.object_name)}`;
+              
+              return `
+                <div 
+                  class="image-card"
+                  style="
+                    border: 2px solid #e2e8f0; 
+                    border-radius: 8px; 
+                    overflow: hidden; 
+                    cursor: pointer; 
+                    transition: all 0.3s ease;
+                    background: white;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                  "
+                  onclick="showSearchImageModal('${imageUrl}', 'ページ ${img.page_number}', ${img.vector_distance})"
+                  onmouseover="this.style.transform='translateY(-4px)'; this.style.boxShadow='0 8px 16px rgba(102, 126, 234, 0.3)'; this.style.borderColor='#667eea';"
+                  onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 4px rgba(0,0,0,0.1)'; this.style.borderColor='#e2e8f0';"
+                >
+                  <!-- サムネイル画像 -->
+                  <div style="position: relative; width: 100%; padding-top: 141%; background: #f8fafc; overflow: hidden;">
+                    <img 
+                      src="${imageUrl}" 
+                      alt="ページ ${img.page_number}"
+                      style="
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        width: 100%;
+                        height: 100%;
+                        object-fit: contain;
+                      "
+                      onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27200%27 height=%27200%27%3E%3Crect fill=%27%23f1f5f9%27 width=%27200%27 height=%27200%27/%3E%3Ctext x=%2750%25%27 y=%2750%25%27 text-anchor=%27middle%27 dy=%27.3em%27 fill=%27%2394a3b8%27 font-size=%2724%27%3E画像エラー%3C/text%3E%3C/svg%3E'"
+                    />
+                    <!-- マッチ度バッジ -->
+                    <div style="
+                      position: absolute;
+                      top: 8px;
+                      right: 8px;
+                      background: rgba(102, 126, 234, 0.95);
+                      color: white;
+                      padding: 4px 8px;
+                      border-radius: 4px;
+                      font-size: 11px;
+                      font-weight: 600;
+                      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                    ">
+                      ${imgDistancePercent.toFixed(1)}%
+                    </div>
+                  </div>
+                  
+                  <!-- 画像情報 -->
+                  <div style="padding: 12px; background: white; border-top: 1px solid #e2e8f0;">
+                    <div style="font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 4px;">
+                      📄 ページ ${img.page_number}
+                    </div>
+                    <div style="font-size: 11px; color: #64748b;">
+                      距離: ${img.vector_distance.toFixed(4)}
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
         </div>
       </div>
-      <div class="card-body">
-        <div style="white-space: pre-wrap; line-height: 1.6; color: #1e293b; background: #f8fafc; padding: 16px; border-radius: 6px; border-left: 4px solid #667eea;">
-          ${highlightQuery(result.chunk_text, data.query)}
-        </div>
-      </div>
-    </div>
-  `).join('');
+    `;
+    
+    return fileCardHtml;
+  }).join('');
 }
 
-function highlightQuery(text, query) {
-  // シンプルなハイライト処理
-  const words = query.split(/\s+/);
-  let highlighted = text;
+/**
+ * 検索結果用画像モーダルを表示（vectorDistance対応版）
+ */
+function showSearchImageModal(imageUrl, title, vectorDistance) {
+  const matchPercent = (1 - vectorDistance) * 100;
+  const filename = `${title} - マッチ度: ${matchPercent.toFixed(1)}% | 距離: ${vectorDistance.toFixed(4)}`;
   
-  words.forEach(word => {
-    const regex = new RegExp(`(${word})`, 'gi');
-    highlighted = highlighted.replace(regex, '<mark style="background: #fef08a; padding: 2px 4px; border-radius: 2px;">$1</mark>');
-  });
-  
-  return highlighted;
+  // 共通のshowImageModal関数を呼び出す
+  showImageModal(imageUrl, filename);
+}
+
+/**
+ * ファイルをダウンロード
+ */
+async function downloadFile(bucket, encodedObjectName) {
+  try {
+    const imageUrl = `/api/oci/image/${bucket}/${encodedObjectName}`;
+    
+    // 新しいタブで開く
+    window.open(imageUrl, '_blank');
+    
+    showToast('ファイルを開きました', 'success');
+  } catch (error) {
+    showToast(`ダウンロードエラー: ${error.message}`, 'error');
+  }
 }
 
 function clearSearchResults() {
@@ -4467,6 +4576,15 @@ function closeImageModal() {
   // 即座に削除（フラッシュを防ぐためアニメーションなし）
   modal.remove();
 }
+
+// 基本機能をグローバルスコープに公開
+window.switchTab = switchTab;
+
+// 検索機能をグローバルスコープに公開
+window.performSearch = performSearch;
+window.clearSearchResults = clearSearchResults;
+window.showSearchImageModal = showSearchImageModal;
+window.downloadFile = downloadFile;
 
 // AI Assistant関数をグローバルスコープに公開
 window.toggleCopilot = toggleCopilot;
