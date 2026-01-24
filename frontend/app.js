@@ -311,6 +311,9 @@ function isGeneratedPageImage(objectName, allObjects = allOciObjects) {
     return false;
   }
   
+  // デバッグ用ログ
+  console.log('[isGeneratedPageImage] objectName:', objectName);
+  
   // 親ファイル名を抽出（例: "example/page_001.png" → "example"）
   const lastSlashIndex = objectName.lastIndexOf('/');
   if (lastSlashIndex === -1) {
@@ -319,6 +322,7 @@ function isGeneratedPageImage(objectName, allObjects = allOciObjects) {
   }
   
   const parentFolderPath = objectName.substring(0, lastSlashIndex);
+  console.log('[isGeneratedPageImage] parentFolderPath:', parentFolderPath);
   
   // 親フォルダと同名のファイルが存在するかチェック
   // 例: "example/page_001.png" の場合、"example", "example.pdf", "example.pptx" などが存在すればページ画像化されたファイル
@@ -332,6 +336,8 @@ function isGeneratedPageImage(objectName, allObjects = allOciObjects) {
     const objNameWithoutExt = obj.name.replace(/\.[^.]+$/, '');
     return objNameWithoutExt === parentFolderPath;
   });
+  
+  console.log('[isGeneratedPageImage] parentFileExists:', parentFileExists);
   
   return parentFileExists;
 }
@@ -788,6 +794,13 @@ function displayOciObjectsList(data) {
   const objects = data.objects || [];
   const pagination = data.pagination || {};
   
+  // デバッグ: 選択状態を確認
+  console.log('========== displayOciObjectsList ==========');
+  console.log('現在表示中のオブジェクト:', objects.map(o => o.name));
+  console.log('selectedOciObjects:', selectedOciObjects);
+  console.log('selectedOciObjects.length:', selectedOciObjects.length);
+  console.log('allOciObjects.length:', allOciObjects.length);
+  
   if (objects.length === 0) {
     listDiv.innerHTML = `
       <div style="text-align: center; padding: 40px; color: #64748b;">
@@ -827,7 +840,7 @@ function displayOciObjectsList(data) {
         class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-blue-300 text-white cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600 text-white'}" 
         onclick="downloadSelectedOciObjects()" 
         ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
-        title="選択されたファイルをZIPでダウンロード: ${selectedOciObjects.length}件"
+        title="選択されたアイテム（フォルダ配下の子アイテムを含む）をZIPでダウンロード: ${selectedOciObjects.length}件"
       >
         📥 ダウンロード (${selectedOciObjects.length}件)
       </button>
@@ -835,7 +848,7 @@ function displayOciObjectsList(data) {
         class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-purple-300 text-white cursor-not-allowed' : 'bg-purple-500 hover:bg-purple-600 text-white'}" 
         onclick="convertSelectedOciObjectsToImages()" 
         ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
-        title="選択されたファイルをページ毎に画像化: ${selectedOciObjects.length}件"
+        title="選択されたファイル（フォルダ配下の子ファイルを含む）をページ毎に画像化: ${selectedOciObjects.length}件"
       >
         🖼️ ページ画像化 (${selectedOciObjects.length}件)
       </button>
@@ -843,7 +856,7 @@ function displayOciObjectsList(data) {
         class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600 text-white'}" 
         onclick="deleteSelectedOciObjects()" 
         ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
-        title="選択されたアイテム数（フォルダ配下の子アイテムを含む）: ${selectedOciObjects.length}件"
+        title="選択されたアイテム（フォルダ配下の子アイテムを含む）を削除: ${selectedOciObjects.length}件"
       >
         🗑️ 削除 (${selectedOciObjects.length}件)
       </button>
@@ -1327,7 +1340,7 @@ window.convertSelectedOciObjectsToImages = async function() {
   
   try {
     ociObjectsBatchDeleteLoading = true;
-    showLoading(`${selectedOciObjects.length}件のファイルをページ画像化中...`);
+    showLoading('ページ画像化を開始しています...');
     
     const response = await fetch('/api/oci/objects/convert-to-images', {
       method: 'POST',
@@ -1345,24 +1358,129 @@ window.convertSelectedOciObjectsToImages = async function() {
       throw new Error(errorData.detail || 'ページ画像化に失敗しました');
     }
     
-    const data = await response.json();
+    // SSE (Server-Sent Events) を使用して進捗状況を受信
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
     
-    hideLoading();
-    ociObjectsBatchDeleteLoading = false;
+    let currentFileIndex = 0;
+    let totalFiles = selectedOciObjects.length;
+    let currentPageIndex = 0;
+    let totalPages = 0;
+    let results = [];
+    let processedPages = 0; // 全体の処理済みページ数
+    let totalPagesAllFiles = 0; // 全ファイルの総ページ数（動的に計算）
     
-    // 結果表示
-    if (data.success) {
-      showToast(data.message, 'success');
-    } else {
-      showToast(`${data.message}\n成功: ${data.success_count}件、失敗: ${data.failed_count}件`, 'warning');
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        break;
+      }
+      
+      // バッファに追加
+      buffer += decoder.decode(value, { stream: true });
+      
+      // 行ごとに処理
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // 最後の不完全な行をバッファに戸す
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const jsonStr = line.substring(6); // 'data: ' を除去
+            const data = JSON.parse(jsonStr);
+            
+            // イベントタイプごとに処理
+            switch(data.type) {
+              case 'start':
+                totalFiles = data.total_files;
+                updateLoadingMessage(`ファイルをページ画像化中... (0/${totalFiles})`, 0);
+                break;
+                
+              case 'file_start':
+                currentFileIndex = data.file_index;
+                totalFiles = data.total_files;
+                totalPages = 0;
+                currentPageIndex = 0;
+                const fileProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles} を処理中...\n${data.file_name}`, fileProgress);
+                break;
+                
+              case 'cleanup_start':
+                const cleanupStartProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files}\n${data.file_name}\n既存の画像ファイルを確認中...`, cleanupStartProgress);
+                break;
+                
+              case 'cleanup_progress':
+                const cleanupProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files}\n${data.file_name}\n既存画像 ${data.cleanup_count}件を削除中...`, cleanupProgress);
+                break;
+                
+              case 'cleanup_complete':
+                const cleanupCompleteProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files}\n${data.file_name}\n既存画像 ${data.deleted_count}件を削除完了`, cleanupCompleteProgress);
+                break;
+                
+              case 'pages_count':
+                totalPages = data.total_pages;
+                totalPagesAllFiles += totalPages;
+                const pagesCountProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files} を処理中...\n${data.file_name}\n総ページ数: ${totalPages}`, pagesCountProgress);
+                break;
+                
+              case 'page_progress':
+                currentPageIndex = data.page_index;
+                totalPages = data.total_pages;
+                
+                // 全体の進捗率を計算（処理中のページ / 現在までの総ページ数）
+                // 注: processedPagesはアップロード完了後にインクリメントするので、現在処理中のページを含める
+                const currentProgress = (processedPages + 1) / totalPagesAllFiles;
+                const overallProgress = totalPagesAllFiles > 0 ? Math.min(currentProgress, 1.0) : 0;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files} を処理中...\n${data.file_name}\nページ ${currentPageIndex}/${totalPages} を画像化中...`, overallProgress);
+                
+                // ページ処理完了後にカウンタを増やす
+                processedPages++;
+                break;
+                
+              case 'file_complete':
+                const completedFileProgress = currentFileIndex / totalFiles;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files} 完了\n${data.file_name}\n${data.image_count}ページを画像化しました`, completedFileProgress);
+                break;
+                
+              case 'file_error':
+                console.error(`ファイル ${data.file_index}/${data.total_files} エラー: ${data.error}`);
+                // エラー時は現在の進捗率を保持
+                const errorProgress = currentFileIndex > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files} エラー\n${data.file_name}\n${data.error}`, errorProgress);
+                break;
+                
+              case 'complete':
+                results = data.results;
+                hideLoading();
+                ociObjectsBatchDeleteLoading = false;
+                
+                // 結果表示
+                if (data.success) {
+                  showToast(data.message, 'success');
+                } else {
+                  showToast(`${data.message}\n成功: ${data.success_count}件、失敗: ${data.failed_count}件`, 'warning');
+                }
+                
+                // 詳細結果をコンソールに出力
+                console.log('ページ画像化結果:', data.results);
+                
+                // 選択をクリアして一覧を更新
+                selectedOciObjects = [];
+                await loadOciObjects();
+                break;
+            }
+          } catch (parseError) {
+            console.error('JSONパースエラー:', parseError, '行:', line);
+          }
+        }
+      }
     }
-    
-    // 詳細結果をコンソールに出力
-    console.log('ページ画像化結果:', data.results);
-    
-    // 選択をクリアして一覧を更新
-    selectedOciObjects = [];
-    await loadOciObjects();
     
   } catch (error) {
     hideLoading();
@@ -1371,6 +1489,42 @@ window.convertSelectedOciObjectsToImages = async function() {
     showToast(`ページ画像化エラー: ${error.message}`, 'error');
   }
 };
+
+/**
+ * ローディングメッセージを更新（プログレスバー付き）
+ */
+function updateLoadingMessage(message, progress = null) {
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  if (loadingOverlay && loadingOverlay.style.display !== 'none') {
+    const contentDiv = loadingOverlay.querySelector('.bg-white');
+    if (contentDiv) {
+      // プログレスバー付きUI
+      let progressHtml = '';
+      if (progress !== null) {
+        // 進捗率を0-1の範囲に制限
+        const clampedProgress = Math.max(0, Math.min(1, progress));
+        const percentage = Math.round(clampedProgress * 100);
+        progressHtml = `
+          <div class="w-full mt-4">
+            <div class="flex justify-between mb-1">
+              <span class="text-sm font-medium text-gray-700">進捗状況</span>
+              <span class="text-sm font-medium text-purple-600">${percentage}%</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-2.5">
+              <div class="bg-purple-600 h-2.5 rounded-full transition-all duration-300" style="width: ${percentage}%"></div>
+            </div>
+          </div>
+        `;
+      }
+      
+      contentDiv.innerHTML = `
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500 mx-auto"></div>
+        <p class="mt-4 text-gray-700">${message.replace(/\n/g, '<br>')}</p>
+        ${progressHtml}
+      `;
+    }
+  }
+}
 
 function displayDocumentsList(documents) {
   const listDiv = document.getElementById('documentsList');

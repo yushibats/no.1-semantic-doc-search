@@ -153,7 +153,7 @@ class OCIService:
             
             result = {
                 "success": True,
-                "message": "✅ 接続テストが成功しました",
+                "message": "接続テストが成功しました",
                 "details": {
                     "user_name": user.name,
                     "user_ocid": user.id,
@@ -168,7 +168,7 @@ class OCIService:
             logger.error(f"接続テストエラー: {e}")
             return {
                 "success": False,
-                "message": f"❌ 接続エラー: {str(e)}"
+                "message": f"接続エラー: {str(e)}"
             }
     
     def get_oci_config(self) -> Dict[str, Any]:
@@ -565,6 +565,7 @@ class OCIService:
     def delete_objects(self, bucket_name: str, namespace: str, object_names: list) -> Dict[str, Any]:
         """
         Object Storage内のオブジェクトを削除
+        削除順序：画像ファイル → 画像フォルダ → ファイル本体
         
         Args:
             bucket_name: バケット名
@@ -604,8 +605,11 @@ class OCIService:
                                     )
                                     success_count += 1
                                 except Exception as sub_e:
-                                    logger.error(f"サブオブジェクト削除エラー: {sub_obj['name']} - {sub_e}")
-                                    failed_objects.append(sub_obj["name"])
+                                    # ObjectNotFoundエラーは無視（既に削除済み）
+                                    error_str = str(sub_e)
+                                    if "ObjectNotFound" not in error_str and "404" not in error_str:
+                                        logger.error(f"サブオブジェクト削除エラー: {sub_obj['name']} - {sub_e}")
+                                        failed_objects.append(sub_obj["name"])
                         
                         # フォルダ自体も削除
                         try:
@@ -616,17 +620,73 @@ class OCIService:
                             )
                             success_count += 1
                         except Exception as folder_e:
-                            logger.error(f"フォルダ削除エラー: {obj_name} - {folder_e}")
                             # フォルダが存在しない場合はエラーを無視
-                            if "NoSuchKey" not in str(folder_e):
+                            error_str = str(folder_e)
+                            if "ObjectNotFound" not in error_str and "NoSuchKey" not in error_str and "404" not in error_str:
+                                logger.error(f"フォルダ削除エラー: {obj_name} - {folder_e}")
                                 failed_objects.append(obj_name)
                     else:
-                        # ファイルを削除
+                        # ファイルの場合：画像ファイル → 画像フォルダ → ファイル本体の順に削除
+                        # ステップ1: ページ画像化で生成された画像ファイルを削除
+                        image_folder_name = obj_name + '/'
+                        try:
+                            # 画像フォルダ配下のファイルを検索
+                            image_objects = self.list_objects(
+                                bucket_name,
+                                namespace,
+                                prefix=image_folder_name,
+                                page_size=1000,
+                                include_metadata=False
+                            )
+                            
+                            if image_objects.get("success"):
+                                image_files = image_objects.get("objects", [])
+                                if image_files:
+                                    logger.info(f"画像ファイル削除開始: {len(image_files)}件 (フォルダ: {image_folder_name})")
+                                    for img_obj in image_files:
+                                        try:
+                                            client.delete_object(
+                                                namespace_name=namespace,
+                                                bucket_name=bucket_name,
+                                                object_name=img_obj["name"]
+                                            )
+                                            logger.debug(f"画像ファイル削除成功: {img_obj['name']}")
+                                            success_count += 1
+                                        except Exception as img_e:
+                                            # ObjectNotFoundエラーは無視（既に削除済み）
+                                            error_str = str(img_e)
+                                            if "ObjectNotFound" not in error_str and "404" not in error_str:
+                                                logger.error(f"画像ファイル削除エラー: {img_obj['name']} - {img_e}")
+                                                failed_objects.append(img_obj["name"])
+                        except Exception as folder_check_e:
+                            # フォルダが存在しない場合はエラーを無視（画像化されていないファイル）
+                            logger.debug(f"画像フォルダなし: {image_folder_name}")
+                        
+                        # ステップ2: 画像フォルダを削除
+                        try:
+                            client.delete_object(
+                                namespace_name=namespace,
+                                bucket_name=bucket_name,
+                                object_name=image_folder_name
+                            )
+                            logger.info(f"画像フォルダ削除成功: {image_folder_name}")
+                            success_count += 1
+                        except Exception as folder_e:
+                            # フォルダが存在しない場合はエラーを無視（ObjectNotFound or NoSuchKey）
+                            error_str = str(folder_e)
+                            if "ObjectNotFound" in error_str or "NoSuchKey" in error_str or "404" in error_str:
+                                logger.debug(f"画像フォルダは存在しません: {image_folder_name}")
+                            else:
+                                logger.error(f"画像フォルダ削除エラー: {image_folder_name} - {folder_e}")
+                                failed_objects.append(image_folder_name)
+                        
+                        # ステップ3: ファイル本体を削除
                         client.delete_object(
                             namespace_name=namespace,
                             bucket_name=bucket_name,
                             object_name=obj_name
                         )
+                        logger.info(f"ファイル本体削除成功: {obj_name}")
                         success_count += 1
                         
                 except Exception as e:
@@ -655,6 +715,47 @@ class OCIService:
                 "success": False,
                 "message": f"オブジェクト削除エラー: {str(e)}"
             }
+    
+    def download_object(self, object_name: str) -> Optional[bytes]:
+        """
+        Object Storageからオブジェクトをダウンロード
+        
+        Args:
+            object_name: オブジェクト名
+            
+        Returns:
+            オブジェクトのバイナリデータ、失敗時はNone
+        """
+        try:
+            client = self.get_object_storage_client()
+            if not client:
+                raise Exception("Object Storage Clientの取得に失敗しました")
+            
+            # 環境変数から設定を取得
+            bucket_name = os.environ.get("OCI_BUCKET")
+            if not bucket_name:
+                raise Exception("OCI_BUCKETが設定されていません")
+            
+            # Namespaceを取得
+            namespace_result = self.get_namespace()
+            if not namespace_result.get("success"):
+                raise Exception(namespace_result.get("message", "Namespace取得失敗"))
+            
+            namespace = namespace_result.get("namespace")
+            
+            # オブジェクトを取得
+            response = client.get_object(
+                namespace_name=namespace,
+                bucket_name=bucket_name,
+                object_name=object_name
+            )
+            
+            # データを読み込む
+            return response.data.content
+            
+        except Exception as e:
+            logger.error(f"オブジェクトダウンロードエラー: {object_name} - {e}")
+            return None
 
 # シングルトンインスタンス
 oci_service = OCIService()

@@ -121,7 +121,7 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
     if not ORACLEDB_AVAILABLE:
         return {
             'success': False,
-            'message': '❌ oracledbモジュールがインストールされていません'
+            'message': 'oracledbモジュールがインストールされていません'
         }
 
     try:
@@ -135,7 +135,7 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
         if not init_oracle_client():
             return {
                 'success': False,
-                'message': '❌ Oracle Clientの初期化に失敗しました'
+                'message': 'Oracle Clientの初期化に失敗しました'
             }
         
         # Setup environment
@@ -173,7 +173,7 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
                 log_error(f"Missing credentials - username: {bool(username)}, password: {bool(password)}, dsn: {bool(dsn)}")
                 return {
                     'success': False,
-                    'message': '❌ ユーザー名、パスワード、DSNが必要です'
+                    'message': 'ユーザー名、パスワード、DSNが必要です'
                 }
             
             log_info(f"Connecting to: username={username}, dsn={dsn}")
@@ -202,18 +202,18 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
             if result and result[0] == 'OK':
                 return {
                     'success': True,
-                    'message': '✅ データベース接続に成功しました',
+                    'message': 'データベース接続に成功しました',
                     'details': {'status': 'connected'}
                 }
             else:
                 return {
                     'success': False,
-                    'message': '❌ 接続テストが失敗しました'
+                    'message': '接続テストが失敗しました'
                 }
         
         return {
             'success': False,
-            'message': f'❌ 不明な操作: {func_name}'
+            'message': f'不明な操作: {func_name}'
         }
         
     except Exception as e:

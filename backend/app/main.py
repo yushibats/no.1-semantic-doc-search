@@ -8,14 +8,22 @@ import uuid
 import time
 import json
 import secrets
+import io
+import subprocess
+import tempfile
+import zipfile
+import shutil
+import re
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from pdf2image import convert_from_path
+from PIL import Image as PILImage
 
 # ログ設定
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s"
@@ -295,7 +303,7 @@ async def save_oci_settings(settings: OCISettings):
             is_configured=True,
             has_credentials=True,
             status="saved",
-            message="✅ 設定を保存しました"
+            message="設定を保存しました"
         )
             
     except Exception as e:
@@ -367,7 +375,7 @@ async def test_object_storage_connection(request: ObjectStorageSettingsRequest):
         if not namespace_result.get("success"):
             return {
                 "success": False,
-                "message": f"⚠️ Namespace取得エラー: {namespace_result.get('message')}"
+                "message": f"Namespace取得エラー: {namespace_result.get('message')}"
             }
         
         # Bucketへのアクセスをテスト
@@ -375,7 +383,7 @@ async def test_object_storage_connection(request: ObjectStorageSettingsRequest):
         if not client:
             return {
                 "success": False,
-                "message": "⚠️ Object Storage Clientの取得に失敗しました"
+                "message": "Object Storage Clientの取得に失敗しました"
             }
         
         # Bucketの存在確認
@@ -387,7 +395,7 @@ async def test_object_storage_connection(request: ObjectStorageSettingsRequest):
             
             return {
                 "success": True,
-                "message": f"✅ 接続成功: Bucket '{request.bucket_name}' にアクセスできました",
+                "message": f"接続成功: Bucket '{request.bucket_name}' にアクセスできました",
                 "details": {
                     "bucket_name": bucket_response.data.name,
                     "namespace": request.namespace,
@@ -398,14 +406,14 @@ async def test_object_storage_connection(request: ObjectStorageSettingsRequest):
             logger.error(f"Bucketアクセスエラー: {bucket_e}")
             return {
                 "success": False,
-                "message": f"⚠️ Bucket '{request.bucket_name}' へのアクセスに失敗: {str(bucket_e)}"
+                "message": f"Bucket '{request.bucket_name}' へのアクセスに失敗: {str(bucket_e)}"
             }
         
     except Exception as e:
         logger.error(f"Object Storage接続テストエラー: {e}")
         return {
             "success": False,
-            "message": f"⚠️ 接続テストエラー: {str(e)}"
+            "message": f"接続テストエラー: {str(e)}"
         }
 
 @app.get("/api/oci/objects")
@@ -469,6 +477,48 @@ async def list_oci_objects(
         
         total_pages = (total + page_size - 1) // page_size if total > 0 else 1
         
+        # ファイルとページ画像の数を集計
+        def is_generated_page_image(object_name: str, all_objects: list) -> bool:
+            """ページ画像化で生成されたファイルかどうかを判定"""
+            import re
+            # page_001.pngのパターンにマッチするかチェック
+            if not re.search(r'/page_\d{3}\.png$', object_name):
+                return False
+            
+            # 親ファイル名を抽出
+            last_slash_index = object_name.rfind('/')
+            if last_slash_index == -1:
+                return False
+            
+            parent_folder_path = object_name[:last_slash_index]
+            
+            # 親フォルダと同名のファイルが存在するかチェック
+            for obj in all_objects:
+                # フォルダを除外
+                if obj["name"].endswith('/'):
+                    continue
+                
+                # 拡張子を除いたファイル名を比較
+                obj_name_without_ext = re.sub(r'\.[^.]+$', '', obj["name"])
+                if obj_name_without_ext == parent_folder_path:
+                    return True
+            
+            return False
+        
+        # 集計
+        file_count = 0
+        page_image_count = 0
+        for obj in all_objects:
+            # フォルダは除外
+            if obj["name"].endswith('/'):
+                continue
+            
+            # ページ画像かどうかを判定
+            if is_generated_page_image(obj["name"], all_objects):
+                page_image_count += 1
+            else:
+                file_count += 1
+        
         return {
             "success": True,
             "objects": paginated_objects,
@@ -481,6 +531,11 @@ async def list_oci_objects(
                 "end_row": min(end_idx, total),
                 "has_next": page < total_pages,
                 "has_prev": page > 1
+            },
+            "statistics": {
+                "file_count": file_count,
+                "page_image_count": page_image_count,
+                "total_count": file_count + page_image_count
             },
             "bucket_name": bucket_name,
             "namespace": namespace,
@@ -1478,7 +1533,7 @@ def start_target_autonomous_database():
 
     resp = db_client.start_autonomous_database(adb.id)
     work_request_id = getattr(resp, "headers", {}).get("opc-work-request-id") if resp else None
-    return {"status": "accepted", "message": "✅ 起動リクエストを送信しました", "id": adb.id, "work_request_id": work_request_id}
+    return {"status": "accepted", "message": "起動リクエストを送信しました", "id": adb.id, "work_request_id": work_request_id}
 
 @app.post("/api/database/target/stop")
 def stop_target_autonomous_database():
@@ -1499,7 +1554,7 @@ def stop_target_autonomous_database():
 
     resp = db_client.stop_autonomous_database(adb.id)
     work_request_id = getattr(resp, "headers", {}).get("opc-work-request-id") if resp else None
-    return {"status": "accepted", "message": "✅ 停止リクエストを送信しました", "id": adb.id, "work_request_id": work_request_id}
+    return {"status": "accepted", "message": "停止リクエストを送信しました", "id": adb.id, "work_request_id": work_request_id}
 
 @app.post("/api/adb/get", response_model=ADBGetResponse)
 async def get_adb_info(request: ADBGetRequest):
@@ -1541,8 +1596,6 @@ async def stop_adb(request: ADBOperationRequest):
 # AI Assistant エンドポイント
 # ========================================
 
-from fastapi.responses import StreamingResponse
-
 class ChatMessage(BaseModel):
     """チャットメッセージ"""
     message: str
@@ -1569,6 +1622,313 @@ async def copilot_chat_http(request: ChatMessage):
     return StreamingResponse(
         generate(),
         media_type="text/event-stream"
+    )
+
+# ========================================
+# Object Storage 文書操作エンドポイント
+# ========================================
+
+class DocumentDownloadRequest(BaseModel):
+    """文書ダウンロードリクエスト"""
+    object_names: List[str]
+
+class DocumentConvertRequest(BaseModel):
+    """文書ページ画像化リクエスト"""
+    object_names: List[str]
+
+@app.post("/api/oci/objects/download")
+async def download_selected_objects(request: DocumentDownloadRequest, background_tasks: BackgroundTasks):
+    """
+    選択されたファイルをZIPアーカイブとしてダウンロード
+    """
+    try:
+        object_names = request.object_names
+        
+        if not object_names:
+            raise HTTPException(status_code=400, detail="ダウンロードするファイルが指定されていません")
+        
+        logger.info(f"ZIPダウンロード開始: {len(object_names)}件")
+        
+        # 一時ディレクトリ作成
+        temp_dir = tempfile.mkdtemp()
+        zip_path = Path(temp_dir) / "documents.zip"
+        
+        # ZIPファイル作成
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for obj_name in object_names:
+                try:
+                    # Object Storageからファイルを取得
+                    file_content = oci_service.download_object(obj_name)
+                    if file_content:
+                        # ZIPに追加
+                        zipf.writestr(obj_name, file_content)
+                        logger.info(f"ZIPに追加: {obj_name}")
+                    else:
+                        logger.warning(f"ファイルが見つかりません: {obj_name}")
+                except Exception as e:
+                    logger.error(f"ファイル取得エラー ({obj_name}): {e}")
+                    continue
+        
+        logger.info(f"ZIPファイル作成完了: {zip_path}")
+        
+        # ダウンロード後に一時ファイルを削除する関数
+        def cleanup_temp_dir(dir_path: str):
+            try:
+                if dir_path and Path(dir_path).exists():
+                    shutil.rmtree(dir_path)
+                    logger.info(f"一時ディレクトリを削除: {dir_path}")
+            except Exception as e:
+                logger.warning(f"一時ファイル削除エラー: {e}")
+        
+        # バックグラウンドタスクで削除
+        background_tasks.add_task(cleanup_temp_dir, temp_dir)
+        
+        # ZIPファイルを返す
+        return FileResponse(
+            path=str(zip_path),
+            filename="documents.zip",
+            media_type="application/zip"
+        )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"ZIPダウンロードエラー: {e}")
+        raise HTTPException(status_code=500, detail=f"ダウンロードエラー: {str(e)}")
+
+@app.post("/api/oci/objects/convert-to-images")
+async def convert_documents_to_images(request: DocumentConvertRequest):
+    """
+    選択されたファイルをページ毎にPNG画像化して同名フォルダに保存
+    Server-Sent Events (SSE)でリアルタイム進捗状況を送信
+    """
+    object_names = request.object_names
+    
+    if not object_names:
+        raise HTTPException(status_code=400, detail="変換するファイルが指定されていません")
+    
+    logger.info(f"ページ画像化開始: {len(object_names)}件")
+    
+    async def generate_progress():
+        """進捗状況をSSE形式でストリーミング"""
+        results = []
+        success_count = 0
+        failed_count = 0
+        
+        # 開始通知
+        yield f"data: {json.dumps({'type': 'start', 'total_files': len(object_names)}, ensure_ascii=False)}\n\n"
+        
+        for file_idx, obj_name in enumerate(object_names, start=1):
+            result = {
+                "object_name": obj_name,
+                "success": False,
+                "message": "",
+                "image_count": 0,
+                "folder_name": ""
+            }
+            
+            # 一時ディレクトリの初期化（スコープ問題回避）
+            temp_dir = None
+            
+            # ファイル処理開始通知
+            yield f"data: {json.dumps({'type': 'file_start', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name}, ensure_ascii=False)}\n\n"
+            
+            try:
+                # ファイル名と拡張子を取得
+                file_path = Path(obj_name)
+                file_name = file_path.stem
+                file_ext = file_path.suffix.lower().lstrip('.')
+                
+                # 同名フォルダ名（親フォルダがあれば考慮）
+                parent_str = str(file_path.parent)
+                if parent_str and parent_str != '.':
+                    folder_name = f"{parent_str}/{file_name}"
+                else:
+                    folder_name = file_name
+                
+                result["folder_name"] = folder_name
+                
+                # 既存の同名フォルダ内の画像ファイルを削除
+                yield f"data: {json.dumps({'type': 'cleanup_start', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'folder_name': folder_name}, ensure_ascii=False)}\n\n"
+                
+                # Namespaceを取得
+                namespace_result = oci_service.get_namespace()
+                if namespace_result.get("success"):
+                    namespace = namespace_result.get("namespace")
+                    bucket_name = os.getenv("OCI_BUCKET")
+                    
+                    if bucket_name and namespace:
+                        # 同名フォルダ内のpage_*.pngファイルを検索して削除
+                        existing_images_result = oci_service.list_objects(
+                            bucket_name=bucket_name,
+                            namespace=namespace,
+                            prefix=f"{folder_name}/",
+                            page_size=1000
+                        )
+                        
+                        if existing_images_result.get("success"):
+                            existing_objects = existing_images_result.get("objects", [])
+                            images_to_delete = []
+                            
+                            # page_001.png, page_002.png などのパターンにマッチするファイルを抽出
+                            # reモジュールはグローバルでインポート済み
+                            for obj in existing_objects:
+                                obj_name_str = obj.get("name", "")
+                                # フォルダ（末尾が/）を除外し、page_XXX.pngパターンのみを対象
+                                if not obj_name_str.endswith('/') and re.search(r'/page_\d{3}\.png$', obj_name_str):
+                                    images_to_delete.append(obj_name_str)
+                            
+                            # 削除対象がある場合は削除
+                            if images_to_delete:
+                                logger.info(f"既存の画像ファイル {len(images_to_delete)}件を削除: {folder_name}")
+                                yield f"data: {json.dumps({'type': 'cleanup_progress', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'cleanup_count': len(images_to_delete)}, ensure_ascii=False)}\n\n"
+                                
+                                delete_result = oci_service.delete_objects(
+                                    bucket_name=bucket_name,
+                                    namespace=namespace,
+                                    object_names=images_to_delete
+                                )
+                                
+                                if delete_result.get("success"):
+                                    logger.info(f"既存画像の削除完了: {len(images_to_delete)}件")
+                                    yield f"data: {json.dumps({'type': 'cleanup_complete', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'deleted_count': len(images_to_delete)}, ensure_ascii=False)}\n\n"
+                                else:
+                                    logger.warning(f"既存画像の削除に一部失敗: {delete_result.get('message')}")
+                            else:
+                                logger.info(f"削除対象の既存画像なし: {folder_name}")
+                
+                # Object Storageからファイルをダウンロード
+                file_content = oci_service.download_object(obj_name)
+                if not file_content:
+                    result["message"] = "ファイルが見つかりません"
+                    failed_count += 1
+                    results.append(result)
+                    yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                    continue
+                
+                # 一時ファイルに保存
+                temp_dir = tempfile.mkdtemp()
+                temp_file = Path(temp_dir) / f"temp.{file_ext}"
+                temp_file.write_bytes(file_content)
+                
+                images = []
+                
+                try:
+                    # ファイルタイプごとに処理
+                    if file_ext == 'pdf':
+                        # PDFをページ毎にPNG変換
+                        images = convert_from_path(str(temp_file), dpi=200, fmt='PNG')
+                    elif file_ext in ['ppt', 'pptx']:
+                        # PPT/PPTXをまずPDFに変換してからPNG化
+                        subprocess.run(
+                            ['soffice', '--headless', '--convert-to', 'pdf', '--outdir', str(temp_dir), str(temp_file)],
+                            check=True,
+                            timeout=300
+                        )
+                        # 変換されたPDFを画像化
+                        pdf_path = Path(temp_dir) / "temp.pdf"
+                        if pdf_path.exists():
+                            images = convert_from_path(str(pdf_path), dpi=200, fmt='PNG')
+                        else:
+                            raise Exception("PDF変換に失敗しました")
+                    elif file_ext in ['png', 'jpg', 'jpeg']:
+                        # 画像ファイルはメモリに読み込んで1ページとして保存
+                        img = PILImage.open(temp_file)
+                        img_copy = img.copy()
+                        img.close()
+                        images = [img_copy]
+                    else:
+                        result["message"] = f"サポートされていないファイル形式: {file_ext}"
+                        failed_count += 1
+                        results.append(result)
+                        yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                        continue
+                    
+                    total_pages = len(images)
+                    # ページ総数通知
+                    yield f"data: {json.dumps({'type': 'pages_count', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'total_pages': total_pages}, ensure_ascii=False)}\n\n"
+                    
+                    # 各ページをPNG画像としてObject Storageにアップロード
+                    for i, img in enumerate(images, start=1):
+                        # ページ処理開始通知
+                        yield f"data: {json.dumps({'type': 'page_progress', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'page_index': i, 'total_pages': total_pages}, ensure_ascii=False)}\n\n"
+                        
+                        # PNGバイナリに変換
+                        img_bytes = io.BytesIO()
+                        img.save(img_bytes, format='PNG')
+                        img_bytes.seek(0)
+                        
+                        # Object Storageにアップロード
+                        image_object_name = f"{folder_name}/page_{i:03d}.png"
+                        upload_success = oci_service.upload_file(
+                            file_content=img_bytes,
+                            object_name=image_object_name,
+                            content_type="image/png",
+                            original_filename=f"page_{i:03d}.png",
+                            file_size=len(img_bytes.getvalue())
+                        )
+                        
+                        if upload_success:
+                            result["image_count"] += 1
+                        else:
+                            logger.warning(f"画像アップロード失敗: {image_object_name}")
+                    
+                    result["success"] = True
+                    result["message"] = f"{result['image_count']}ページを画像化しました"
+                    success_count += 1
+                    logger.info(f"ページ画像化完了: {obj_name} ({result['image_count']}ページ)")
+                    
+                    # ファイル処理完了通知
+                    yield f"data: {json.dumps({'type': 'file_complete', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'image_count': result['image_count']}, ensure_ascii=False)}\n\n"
+                    
+                except subprocess.TimeoutExpired:
+                    result["message"] = "PDF変換がタイムアウトしました"
+                    failed_count += 1
+                    yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                except Exception as conv_error:
+                    result["message"] = f"変換エラー: {str(conv_error)}"
+                    failed_count += 1
+                    logger.error(f"ページ画像化エラー ({obj_name}): {conv_error}")
+                    yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                finally:
+                    # 一時ファイル削除
+                    try:
+                        if temp_dir and Path(temp_dir).exists():
+                            shutil.rmtree(temp_dir)
+                    except:
+                        pass
+                
+            except Exception as e:
+                result["message"] = f"処理エラー: {str(e)}"
+                failed_count += 1
+                logger.error(f"ページ画像化エラー ({obj_name}): {e}")
+                yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+            
+            results.append(result)
+        
+        # 全体の結果を返す
+        overall_success = failed_count == 0
+        summary_message = f"ページ画像化完了: 成功 {success_count}件、失敗 {failed_count}件"
+        
+        final_result = {
+            "type": "complete",
+            "success": overall_success,
+            "message": summary_message,
+            "total_files": len(object_names),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results
+        }
+        
+        yield f"data: {json.dumps(final_result, ensure_ascii=False)}\n\n"
+    
+    return StreamingResponse(
+        generate_progress(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
     )
 
 # ========================================
