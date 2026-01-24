@@ -939,17 +939,18 @@ async def search_documents(query: SearchQuery):
 
 @app.get("/api/db/settings", response_model=DatabaseSettingsResponse)
 async def get_db_settings():
-    """DB設定を取得"""
+    """DB設定を取得（接続確認なし - パフォーマンス最適化）"""
     try:
         settings_dict = database_service.get_settings()
         settings = DatabaseSettings(**settings_dict)
         
-        is_connected = database_service.is_connected()
+        # 注意: is_connected()はDB接続を試みるため、設定取得時には呼び出さない
+        # 接続確認が必要な場合は明示的に/api/db/testを使用する
         
         return DatabaseSettingsResponse(
             settings=settings,
-            is_connected=is_connected,
-            status="connected" if is_connected else "not_connected"
+            is_connected=False,
+            status="not_checked"
         )
     except Exception as e:
         logger.error(f"DB設定取得エラー: {e}")
@@ -1034,15 +1035,17 @@ async def get_db_tables():
 
 @app.get("/api/settings/database", response_model=DatabaseSettingsResponse)
 async def get_database_settings():
-    """データベース接続設定を取得"""
+    """データベース接続設定を取得（接続確認なし - パフォーマンス最適化）"""
     try:
         settings = database_service.get_settings()
-        is_connected = database_service.is_connected()
+        
+        # 注意: is_connected()はDB接続を試みるため、設定取得時には呼び出さない
+        # 接続確認が必要な場合は明示的に/api/settings/database/testを使用する
         
         return DatabaseSettingsResponse(
             settings=DatabaseSettings(**settings),
-            is_connected=is_connected,
-            status="connected" if is_connected else "not_connected"
+            is_connected=False,
+            status="not_checked"
         )
     except Exception as e:
         logger.error(f"データベース設定取得エラー: {e}")
@@ -1072,7 +1075,7 @@ async def get_database_env_info(include_password: bool = False):
 
 @app.post("/api/settings/database", response_model=DatabaseSettingsResponse)
 async def save_database_settings(settings: DatabaseSettings):
-    """データベース接続設定を保存"""
+    """データベース接続設定を保存（接続確認なし - パフォーマンス最適化）"""
     try:
         # 設定をdict形式に変換
         settings_dict = settings.dict()
@@ -1082,13 +1085,13 @@ async def save_database_settings(settings: DatabaseSettings):
         if not success:
             raise HTTPException(status_code=500, detail="設定の保存に失敗しました")
         
-        # 保存後の接続状態を確認
-        is_connected = database_service.is_connected()
+        # 注意: is_connected()はDB接続を試みるため、設定保存時には呼び出さない
+        # 接続確認が必要な場合は明示的に/api/settings/database/testを使用する
         
         return DatabaseSettingsResponse(
             settings=settings,
-            is_connected=is_connected,
-            status="connected" if is_connected else "saved"
+            is_connected=False,
+            status="saved"
         )
     except Exception as e:
         logger.error(f"データベース設定保存エラー: {e}")

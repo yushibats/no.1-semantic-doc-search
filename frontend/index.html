@@ -353,7 +353,7 @@
             
             <button 
               onclick="testOciConnection()" 
-              class="apex-button px-6 py-2 bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50 transition rounded-md shadow-sm font-medium"
+              class="apex-button-secondary px-6 py-2 bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50 transition rounded-md shadow-sm font-medium"
             >
               🧪 接続テスト
             </button>
@@ -364,7 +364,8 @@
       <!-- Object Storage設定 -->
       <div class="apex-region">
         <div class="apex-region-header">
-          📦 Object Storage設定
+          <span>📦 Object Storage設定</span>
+          <span id="objectStorageStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未設定</span>
         </div>
         <div style="padding: 24px;">
           <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">

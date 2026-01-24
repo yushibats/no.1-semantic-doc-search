@@ -1348,10 +1348,14 @@ function updateOciStatusBadge() {
   
   if (ociSettingsStatus === 'configured' || ociSettingsStatus === 'saved') {
     statusBadge.textContent = '設定済み';
-    statusBadge.className = 'px-2 py-1 text-xs font-semibold rounded-md bg-green-100 text-green-800';
+    statusBadge.className = 'px-2 py-1 text-xs font-semibold rounded-md';
+    statusBadge.style.background = '#10b981';
+    statusBadge.style.color = '#fff';
   } else {
     statusBadge.textContent = '未設定';
-    statusBadge.className = 'px-2 py-1 text-xs font-semibold rounded-md bg-gray-100 text-gray-600';
+    statusBadge.className = 'px-2 py-1 text-xs font-semibold rounded-md';
+    statusBadge.style.background = '#e2e8f0';
+    statusBadge.style.color = '#64748b';
   }
 }
 
@@ -3301,6 +3305,24 @@ function closeConfirmModal(result) {
 // ========================================
 
 /**
+ * Object Storage設定ステータスバッジを更新
+ */
+function updateObjectStorageStatusBadge(bucketName, namespace) {
+  const statusBadge = document.getElementById('objectStorageStatusBadge');
+  if (!statusBadge) return;
+  
+  if (bucketName && namespace) {
+    statusBadge.textContent = '設定済み';
+    statusBadge.style.background = '#10b981';
+    statusBadge.style.color = '#fff';
+  } else {
+    statusBadge.textContent = '未設定';
+    statusBadge.style.background = '#e2e8f0';
+    statusBadge.style.color = '#64748b';
+  }
+}
+
+/**
  * Object Storage設定を読み込む
  */
 async function loadObjectStorageSettings() {
@@ -3347,6 +3369,12 @@ async function loadObjectStorageSettings() {
       }
     }
     
+    // ステータスバッジを更新
+    updateObjectStorageStatusBadge(
+      bucketNameInput?.value,
+      namespaceInput?.value
+    );
+    
   } catch (error) {
     console.error('Object Storage設定読み込みエラー:', error);
     showToast('⚠️ Object Storage設定の読み込みに失敗しました', 'error');
@@ -3386,6 +3414,8 @@ async function saveObjectStorageSettings() {
     
     if (response.success) {
       showToast('✅ Object Storage設定を保存しました', 'success');
+      // ステータスバッジを更新
+      updateObjectStorageStatusBadge(bucketName, namespace);
       // 設定を再読み込み
       await loadObjectStorageSettings();
     } else {
