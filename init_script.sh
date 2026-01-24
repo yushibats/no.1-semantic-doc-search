@@ -140,49 +140,7 @@ else
     exit 1
 fi
 
-# Setup ADB wallet
-echo "ADBウォレットをセットアップ中..."
-if [ -f "${INSTALL_DIR}/wallet.zip" ]; then
-    mkdir -p ./wallet
-    unzip -o "${INSTALL_DIR}/wallet.zip" -d ./wallet
-    mkdir -p "${INSTANTCLIENT_DIR}/network/admin/"
-    cp ./wallet/* "${INSTANTCLIENT_DIR}/network/admin/"
-fi
 
-# Execute User SQL
-echo "ユーザーSQLを実行中..."
-if [ -f "${INSTALL_DIR}/props/db_password.txt" ]; then
-    ADB_PASSWORD=$(cat "${INSTALL_DIR}/props/db_password.txt")
-    
-    # Determine DSN
-    if [ -f "${INSTALL_DIR}/props/adb_dsn.txt" ]; then
-        ADB_DSN=$(cat "${INSTALL_DIR}/props/adb_dsn.txt")
-    elif [ -f "${INSTALL_DIR}/props/db.env" ]; then
-        ADB_DSN=$(cat "${INSTALL_DIR}/props/db.env")
-    else
-        ADB_DSN=""
-    fi
-    
-    if [ -n "$ADB_DSN" ]; then
-        # Configure environment for sqlplus
-        export TNS_ADMIN="${INSTANTCLIENT_DIR}/network/admin"
-        export PATH="${INSTANTCLIENT_DIR}:$PATH"
-        export LD_LIBRARY_PATH="${INSTANTCLIENT_DIR}:${LD_LIBRARY_PATH:-}"
-        
-        echo "sqlplusを使用してSQL接続テストを実行中..."
-        sqlplus -S ADMIN/"${ADB_PASSWORD}"@"${ADB_DSN}" <<EOF
--- データベース接続テスト
-SELECT 'Database connection successful' AS status FROM DUAL;
-
-exit;
-EOF
-        echo "データベース接続テストが完了しました。"
-    else
-         echo "警告: DSNが見つかりません（adb_dsn.txtとdb.envを確認済み）。SQL実行をスキップします。"
-    fi
-else
-    echo "警告: ${INSTALL_DIR}/props にdb_password.txtが見つかりません。SQL実行をスキップします。"
-fi
 
 # Setup no.1-semantic-doc-search project
 PROJECT_DIR="${INSTALL_DIR}/no.1-semantic-doc-search"
@@ -222,6 +180,12 @@ if [ -d "$PROJECT_DIR" ]; then
     ADB_NAME=$(cat "${INSTALL_DIR}/props/adb_name.txt" 2>/dev/null || true)
     if [ -n "$ADB_NAME" ]; then 
         sed -i "s|ADB_NAME=.*|ADB_NAME=$ADB_NAME|g" .env
+    fi
+    
+    # Set ADB OCID (if available)
+    if [ -f "${INSTALL_DIR}/props/adb_ocid.txt" ]; then
+        ADB_OCID=$(cat "${INSTALL_DIR}/props/adb_ocid.txt")
+        sed -i "s|ADB_OCID=.*|ADB_OCID=${ADB_OCID}|g" .env
     fi
     
     # Set Oracle Client Library Directory
