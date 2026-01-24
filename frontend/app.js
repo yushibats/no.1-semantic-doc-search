@@ -3757,6 +3757,12 @@ async function loadConfig() {
       const config = await response.json();
       debugMode = config.debug;
       requireLogin = config.require_login;
+      
+      // appStateにも設定（oci.js等のモジュールから参照されるため）
+      appState.set('debugMode', config.debug);
+      appState.set('requireLogin', config.require_login);
+      appState.set('apiBase', API_BASE);
+      
       // console.log('設定を読み込みました:', config);
     }
   } catch (error) {
