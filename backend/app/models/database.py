@@ -129,3 +129,16 @@ class TableDataResponse(BaseModel):
     page_size: int = 20
     start_row: int = 0
     end_row: int = 0
+
+
+class TableDataDeleteRequest(BaseModel):
+    """テーブルデータ削除リクエスト"""
+    primary_keys: List[Any]  # 主キー値のリスト
+
+
+class TableDataDeleteResponse(BaseModel):
+    """テーブルデータ削除レスポンス"""
+    success: bool
+    deleted_count: int = 0
+    message: Optional[str] = None
+    errors: List[str] = []

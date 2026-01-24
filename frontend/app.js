@@ -3140,22 +3140,19 @@ function showTablePreview(tableName, columns, rows, total, paginationData) {
     end_row: rows.length
   };
   
-  // 現在ページの行のFILE_IDを記録（columns配列から「FILE_ID」のインデックスを取得）
-  const fileIdColumnIndex = columns.indexOf('FILE_ID');
-  const idColumnIndex = columns.indexOf('ID');
-  
-  if (fileIdColumnIndex === -1 && idColumnIndex === -1) {
-    console.warn('FILE_ID and ID column not found in table');
-    // FILE_IDもIDもない場合は、行インデックスをそのまま使用
-    currentPageTableDataRows = rows.map((_, index) => String(safePageData.start_row + index - 1));
-  } else {
-    // IDとFILE_IDを組み合わせて行を一意に識別（文字列に統一）
-    currentPageTableDataRows = rows.map((row, index) => {
-      const id = idColumnIndex !== -1 ? row[idColumnIndex] : index;
-      const fileId = fileIdColumnIndex !== -1 ? row[fileIdColumnIndex] : '';
-      return `${id}_${fileId}`;
-    });
-  }
+  // 現在ページの行を一意に識別する（最初の列を識別子として使用）
+  // ※ どのテーブルでも対応できるよう、特定の列名に依存しない汎用的な処理
+  currentPageTableDataRows = rows.map((row, index) => {
+    if (columns.length > 0 && row.length > 0) {
+      // 最初の列の値を識別子として使用（通常は主キー）
+      const primaryValue = row[0];
+      // ページ番号とインデックスを組み合わせてグローバルに一意にする
+      return `${safePageData.current_page}_${index}_${primaryValue}`;
+    } else {
+      // データがない場合は行インデックスのみ使用
+      return `${safePageData.current_page}_${index}`;
+    }
+  });
   
   // ヘッダーチェックボックスの状態を判定
   const allPageSelected = currentPageTableDataRows.length > 0 && 
@@ -3212,10 +3209,14 @@ function showTablePreview(tableName, columns, rows, total, paginationData) {
           </thead>
           <tbody>
             ${rows.map((row, index) => {
-              // 行を一意に識別するためにIDとFILE_IDを組み合わせる
-              const id = idColumnIndex !== -1 ? row[idColumnIndex] : index;
-              const fileId = fileIdColumnIndex !== -1 ? row[fileIdColumnIndex] : '';
-              const rowId = `${id}_${fileId}`;
+              // 行を一意に識別する（currentPageTableDataRowsと同じロジック）
+              let rowId;
+              if (columns.length > 0 && row.length > 0) {
+                const primaryValue = row[0];
+                rowId = `${safePageData.current_page}_${index}_${primaryValue}`;
+              } else {
+                rowId = `${safePageData.current_page}_${index}`;
+              }
               const isChecked = selectedTableDataRows.includes(rowId);
               // HTMLエスケープしたrowIdを使用
               const escapedRowId = rowId.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
@@ -3321,18 +3322,12 @@ function deleteSelectedTableData() {
     return;
   }
   
-  // FILE_INFOテーブルの場合のみ削除可能
-  if (selectedTableForPreview !== 'FILE_INFO') {
-    utilsShowToast('FILE_INFOテーブルのレコードのみ削除可能です', 'warning');
-    return;
-  }
-  
   const count = selectedTableDataRows.length;
   
   // 確認モーダルを表示
   window.UIComponents.showModal({
     title: 'レコード削除の確認',
-    content: `選択された${count}件のレコードを削除しますか？\n\n※関連するエンベディングデータも削除されます。\n※この操作は元に戻せません。`,
+    content: `選択された${count}件のレコードを削除しますか？\n\n※テーブル「${selectedTableForPreview}」から直接削除されます。\n※この操作は元に戻せません。`,
     confirmText: '削除',
     cancelText: 'キャンセル',
     variant: 'danger',
@@ -3340,11 +3335,18 @@ function deleteSelectedTableData() {
       try {
         utilsShowLoading('レコードを削除中...');
         
-        // 削除APIを呼び出す
-        const response = await authApiCall('/api/database/file-info/batch-delete', {
+        // 選択された行の主キー値を抽出（rowIdから最後の部分を取得）
+        const primaryKeyValues = selectedTableDataRows.map(rowId => {
+          // rowId形式: "page_index_primaryValue"
+          const parts = rowId.split('_');
+          return parts.length >= 3 ? parts.slice(2).join('_') : parts[parts.length - 1];
+        });
+        
+        // 汎用的な削除APIを呼び出す
+        const response = await authApiCall(`/api/database/tables/${encodeURIComponent(selectedTableForPreview)}/delete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file_ids: selectedTableDataRows })
+          body: JSON.stringify({ primary_keys: primaryKeyValues })
         });
         
         utilsHideLoading();

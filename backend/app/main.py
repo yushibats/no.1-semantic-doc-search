@@ -1855,6 +1855,45 @@ async def delete_file_info_records(request: FileInfoDeleteRequest):
             message=str(e)
         )
 
+@app.post("/api/database/tables/{table_name}/delete")
+async def delete_table_data(table_name: str, request: dict):
+    """
+    任意のテーブルのレコードを主キー指定で一括削除（汎用API）
+    
+    Args:
+        table_name: テーブル名
+        request: {"primary_keys": [主キー値のリスト]}
+    
+    Returns:
+        TableDataDeleteResponse
+    """
+    from app.models.database import TableDataDeleteResponse
+    try:
+        primary_keys = request.get("primary_keys", [])
+        
+        if not primary_keys:
+            return TableDataDeleteResponse(
+                success=False,
+                deleted_count=0,
+                message="削除するレコードが指定されていません"
+            )
+        
+        result = database_service.delete_table_data(table_name, primary_keys)
+        
+        return TableDataDeleteResponse(
+            success=result.get("success", False),
+            deleted_count=result.get("deleted_count", 0),
+            message=result.get("message", ""),
+            errors=result.get("errors", [])
+        )
+    except Exception as e:
+        logger.error(f"テーブルデータ削除エラー: table={table_name}, error={e}")
+        return TableDataDeleteResponse(
+            success=False,
+            deleted_count=0,
+            message=str(e)
+        )
+
 @app.get("/api/database/storage", response_model=DatabaseStorageResponse)
 async def get_database_storage():
     """データベースストレージ情報を取得"""

@@ -1292,6 +1292,107 @@ class DatabaseService:
                 self._release_connection(connection)
             return {"success": False, "deleted_count": 0, "message": str(e), "errors": errors}
     
+    def delete_table_data(self, table_name: str, primary_keys: list) -> Dict[str, Any]:
+        """
+        任意のテーブルから主キーを指定してレコードを削除（汎用的）
+        
+        Args:
+            table_name: テーブル名
+            primary_keys: 削除するレコードの主キー値リスト
+        
+        Returns:
+            Dict: {"success": bool, "deleted_count": int, "message": str, "errors": List[str]}
+        """
+        deleted_count = 0
+        errors = []
+        connection = None
+        
+        try:
+            if not ORACLEDB_AVAILABLE:
+                return {"success": False, "deleted_count": 0, "message": "Oracle DBが利用できません", "errors": []}
+            
+            if not primary_keys:
+                return {"success": False, "deleted_count": 0, "message": "削除するレコードが指定されていません", "errors": []}
+            
+            # テーブル名のバリデーション（SQLインジェクション防止）
+            if not table_name.replace('_', '').isalnum():
+                return {"success": False, "deleted_count": 0, "message": f"無効なテーブル名: {table_name}", "errors": []}
+            
+            connection = self._create_connection()
+            if not connection:
+                return {"success": False, "deleted_count": 0, "message": "データベース接続に失敗しました", "errors": []}
+            
+            cursor = connection.cursor()
+            
+            # テーブルの主キー列を取得
+            cursor.execute("""
+                SELECT cols.column_name
+                FROM all_constraints cons
+                JOIN all_cons_columns cols ON cons.constraint_name = cols.constraint_name
+                WHERE cons.constraint_type = 'P'
+                AND cons.table_name = :table_name
+                AND cons.owner = USER
+                ORDER BY cols.position
+            """, {'table_name': table_name.upper()})
+            
+            pk_columns = [row[0] for row in cursor.fetchall()]
+            
+            if not pk_columns:
+                cursor.close()
+                self._release_connection(connection)
+                return {"success": False, "deleted_count": 0, "message": f"テーブル {table_name} に主キーが見つかりません", "errors": []}
+            
+            logger.info(f"テーブル {table_name} の主キー列: {pk_columns}")
+            
+            # 各レコードを削除
+            for pk_value in primary_keys:
+                try:
+                    # 主キーが1列の場合のみDELETE実行（複合主キーはサポートしない）
+                    if len(pk_columns) == 1:
+                        pk_column = pk_columns[0]
+                        delete_sql = f'DELETE FROM "{table_name}" WHERE "{pk_column}" = :pk_value'
+                        cursor.execute(delete_sql, {'pk_value': pk_value})
+                        
+                        row_count = cursor.rowcount
+                        if row_count > 0:
+                            deleted_count += row_count
+                            logger.info(f"レコード削除成功: {table_name}.{pk_column}={pk_value}, deleted={row_count}")
+                        else:
+                            errors.append(f"{pk_column}={pk_value}: レコードが見つかりません")
+                            logger.warning(f"レコードが見つかりません: {table_name}.{pk_column}={pk_value}")
+                    else:
+                        errors.append(f"{pk_value}: 複合主キーはサポートされていません")
+                        logger.warning(f"複合主キーはサポートされていません: {table_name}, pk_columns={pk_columns}")
+                        
+                except Exception as e:
+                    error_msg = f"{pk_value}: {str(e)}"
+                    errors.append(error_msg)
+                    logger.error(f"レコード削除エラー: {error_msg}", exc_info=True)
+            
+            # コミット
+            connection.commit()
+            cursor.close()
+            self._release_connection(connection)
+            
+            result = {
+                "success": deleted_count > 0,
+                "deleted_count": deleted_count,
+                "message": f"{deleted_count}件のレコードを削除しました" if deleted_count > 0 else "削除に失敗しました",
+                "errors": errors
+            }
+            logger.info(f"delete_table_data結果: {result}")
+            return result
+        
+        except Exception as e:
+            logger.error(f"テーブルデータ削除エラー: {e}", exc_info=True)
+            if connection:
+                try:
+                    connection.rollback()
+                except:
+                    pass
+                self._release_connection(connection)
+            return {"success": False, "deleted_count": 0, "message": str(e), "errors": errors}
+    
     def get_env_connection_info(self) -> Dict[str, Any]:
         """環境変数からDB接続情報を取得、Wallet未設定時はADB_OCIDから自動ダウンロード"""
         try:
