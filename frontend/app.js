@@ -853,6 +853,14 @@ function displayOciObjectsList(data) {
         🖼️ ページ画像化 (${selectedOciObjects.length}件)
       </button>
       <button 
+        class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-green-300 text-white cursor-not-allowed' : 'bg-green-500 hover:bg-green-600 text-white'}" 
+        onclick="vectorizeSelectedOciObjects()" 
+        ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
+        title="選択されたファイルの画像をベクトル化してDBに保存: ${selectedOciObjects.length}件"
+      >
+        🔢 ベクトル化 (${selectedOciObjects.length}件)
+      </button>
+      <button 
         class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600 text-white'}" 
         onclick="deleteSelectedOciObjects()" 
         ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
@@ -1487,6 +1495,186 @@ window.convertSelectedOciObjectsToImages = async function() {
     ociObjectsBatchDeleteLoading = false;
     console.error('ページ画像化エラー:', error);
     showToast(`ページ画像化エラー: ${error.message}`, 'error');
+  }
+};
+
+/**
+ * 選択されたOCIオブジェクトをベクトル化してDBに保存
+ */
+window.vectorizeSelectedOciObjects = async function() {
+  if (selectedOciObjects.length === 0) {
+    showToast('ベクトル化するファイルを選択してください', 'warning');
+    return;
+  }
+  
+  if (ociObjectsBatchDeleteLoading) {
+    showToast('処理中です。しばらくお待ちください', 'warning');
+    return;
+  }
+  
+  // 確認モーダルを表示
+  const confirmed = await showConfirmModal(
+    'ベクトル化確認',
+    `選択された${selectedOciObjects.length}件のファイルを画像ベクトル化してデータベースに保存します。
+
+ページ画像化されていないファイルは自動的に画像化されます。
+既存のembeddingがある場合は削除してから再作成します。
+
+処理には時間がかかる場合があります。実行しますか？`
+  );
+  
+  if (!confirmed) {
+    return;
+  }
+  
+  try {
+    ociObjectsBatchDeleteLoading = true;
+    showLoading('ベクトル化を開始しています...');
+    
+    const response = await fetch('/api/oci/objects/vectorize', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sessionStorage.getItem('token')}`,
+      },
+      body: JSON.stringify({
+        object_names: selectedOciObjects
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'ベクトル化に失敗しました');
+    }
+    
+    // SSE (Server-Sent Events) を使用して進捗状況を受信
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    
+    let currentFileIndex = 0;
+    let totalFiles = selectedOciObjects.length;
+    let currentPageIndex = 0;
+    let totalPages = 0;
+    let results = [];
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        break;
+      }
+      
+      // バッファに追加
+      buffer += decoder.decode(value, { stream: true });
+      
+      // 行ごとに処理
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // 最後の不完全な行をバッファに戻す
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const jsonStr = line.substring(6); // 'data: ' を除去
+            const data = JSON.parse(jsonStr);
+            
+            // イベントタイプごとに処理
+            switch(data.type) {
+              case 'start':
+                totalFiles = data.total_files;
+                updateLoadingMessage(`ファイルをベクトル化中... (0/${totalFiles})`, 0);
+                break;
+                
+              case 'file_start':
+                currentFileIndex = data.file_index;
+                totalFiles = data.total_files;
+                totalPages = 0;
+                currentPageIndex = 0;
+                const fileProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles} を処理中...\n${data.file_name}`, fileProgress);
+                break;
+                
+              case 'save_file_info':
+                const saveProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\nファイル情報を保存中...`, saveProgress);
+                break;
+                
+              case 'delete_existing':
+                const deleteProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n既存embeddingを削除中...`, deleteProgress);
+                break;
+                
+              case 'auto_convert_start':
+                const convertProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n画像化を開始...`, convertProgress);
+                break;
+                
+              case 'auto_convert_complete':
+                const convertCompleteProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n画像化完了: ${data.image_count}ページ`, convertCompleteProgress);
+                break;
+                
+              case 'vectorize_start':
+                totalPages = data.total_pages;
+                const vectorizeProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\nベクトル化開始: ${totalPages}ページ`, vectorizeProgress);
+                break;
+                
+              case 'page_progress':
+                currentPageIndex = data.page_index;
+                totalPages = data.total_pages;
+                // file_indexを使用して正確な進捗率を計算
+                const pageProgress = (data.file_index - 1 + currentPageIndex / totalPages) / totalFiles;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files}\nページ ${currentPageIndex}/${totalPages} をベクトル化中...`, pageProgress);
+                break;
+                
+              case 'file_complete':
+                const completedFileProgress = currentFileIndex / totalFiles;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files} 完了\n${data.file_name}\n${data.embedding_count}ページをベクトル化しました`, completedFileProgress);
+                break;
+                
+              case 'file_error':
+                console.error(`ファイル ${data.file_index}/${data.total_files} エラー: ${data.error}`);
+                const errorProgress = currentFileIndex > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+                updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files} エラー\n${data.file_name}\n${data.error}`, errorProgress);
+                break;
+                
+              case 'complete':
+                results = data.results;
+                hideLoading();
+                ociObjectsBatchDeleteLoading = false;
+                
+                // 結果表示
+                if (data.success) {
+                  showToast(data.message, 'success');
+                } else {
+                  showToast(`${data.message}\n成功: ${data.success_count}件、失敗: ${data.failed_count}件`, 'warning');
+                }
+                
+                // 詳細結果をコンソールに出力
+                console.log('ベクトル化結果:', data.results);
+                
+                // 選択をクリアして一覧を更新
+                selectedOciObjects = [];
+                await loadOciObjects();
+                break;
+            }
+          } catch (parseError) {
+            console.error('JSONパースエラー:', parseError, '行:', line);
+          }
+        }
+      }
+    }
+    
+  } catch (error) {
+    hideLoading();
+    ociObjectsBatchDeleteLoading = false;
+    console.error('ベクトル化エラー:', error);
+    showToast(`ベクトル化エラー: ${error.message}`, 'error');
+    
+    // 選択をクリアして一覧を更新
+    selectedOciObjects = [];
+    await loadOciObjects();
   }
 };
 

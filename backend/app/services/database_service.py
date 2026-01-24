@@ -228,12 +228,27 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
 
 
 class DatabaseService:
-    """データベース管理サービス"""
+    """データベース管理サービス（単例モード）"""
+    _instance = None
+    _pool = None
+    _pool_lock = None
+    _initialized = False
+    
+    def __new__(cls):
+        """単例モードの実装"""
+        if cls._instance is None:
+            cls._instance = super(DatabaseService, cls).__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        """初期化"""
-        self.connection = None
-        self.settings = self._load_settings()
+        """初期化（一度だけ実行）"""
+        if not self.__class__._initialized:
+            import threading
+            self.connection = None
+            self.settings = self._load_settings()
+            self.__class__._pool_lock = threading.Lock()
+            self.__class__._initialized = True
+            logger.info("DatabaseService単例モードで初期化しました")
     
     def _load_settings(self) -> Dict[str, Any]:
         """DB設定をファイルから読み込む"""
@@ -281,13 +296,23 @@ class DatabaseService:
             self.settings = settings
             self._save_settings(settings)
             
-            # 既存の接続をクローズ
+            # 既存の接続とプールをクローズ（設定変更時）
             if self.connection:
                 try:
                     self.connection.close()
                 except:
                     pass
                 self.connection = None
+            
+            # プールを無効化（次回再作成）
+            with self.__class__._pool_lock:
+                if self.__class__._pool:
+                    try:
+                        self.__class__._pool.close()
+                        logger.info("設定変更により接続プールをクローズしました")
+                    except Exception as e:
+                        logger.warning(f"プールクローズエラー: {e}")
+                    self.__class__._pool = None
             
             return True
         except Exception as e:
@@ -390,59 +415,119 @@ class DatabaseService:
             logger.error(f"DSN抽出エラー: {e}")
             return []
     
-    def _create_connection(self, settings: Optional[Dict[str, Any]] = None):
+    def _ensure_pool(self, max_retries: int = 3) -> bool:
+        """接続プールを確保（作成または検証）、リトライ機能付き"""
         if not ORACLEDB_AVAILABLE:
-            raise Exception("oracledbモジュールが利用できません")
+            logger.error("oracledbモジュールが利用できません")
+            return False
         
-        if settings is None:
-            settings = self.settings
-        
-        # デバッグログ
-        logger.info(f"=== _create_connection デバッグ ===")
-        logger.info(f"settings type: {type(settings)}")
-        logger.info(f"settings keys: {settings.keys() if settings else 'None'}")
-        logger.info(f"username: {settings.get('username') if settings else 'None'}")
-        logger.info(f"password exists: {bool(settings.get('password')) if settings else False}")
-        logger.info(f"password length: {len(settings.get('password')) if settings and settings.get('password') else 0}")
-        logger.info(f"dsn: {settings.get('dsn') if settings else 'None'}")
-        logger.info(f"===============================")
-        
-        # Wallet接続方式
-        username = settings.get("username")
-        password = settings.get("password")
-        dsn = settings.get("dsn")
-        
-        # 設定が不完全な場合、.envから取得を試みる
-        if not username or not password or not dsn:
-            logger.info(".envから接続情報を取得します...")
-            env_info = self.get_env_connection_info()
-            if env_info.get("success"):
-                username = username or env_info.get("username")
-                password = password or env_info.get("password")
-                dsn = dsn or env_info.get("dsn")
-                logger.info(f".envからの情報: username={username}, dsn={dsn}, password_exists={bool(password)}")
-        
-        if not username or not password or not dsn:
-            raise ValueError("ユーザー名、パスワード、DSNが必要です")
-        
-        # Wallet場所を取得
-        wallet_location = self._get_wallet_location()
-        
-        if wallet_location and os.path.exists(wallet_location):
-            logger.info(f"Wallet場所: {wallet_location}")
-            # TNS_ADMIN環境変数を設定
-            os.environ['TNS_ADMIN'] = wallet_location
+        with self.__class__._pool_lock:
+            # 既存プールが有効かチェック
+            if self.__class__._pool is not None:
+                try:
+                    # プールから接続を取得して検証
+                    test_conn = self.__class__._pool.acquire()
+                    cursor = test_conn.cursor()
+                    cursor.execute("SELECT 1 FROM DUAL")
+                    cursor.close()
+                    self.__class__._pool.release(test_conn)
+                    logger.info("既存の接続プールが有効です")
+                    return True
+                except Exception as e:
+                    logger.warning(f"既存プールが無効です: {e}")
+                    # プールをクローズして再作成
+                    try:
+                        self.__class__._pool.close()
+                    except:
+                        pass
+                    self.__class__._pool = None
             
-            connection = oracledb.connect(
-                user=username,
-                password=password,
-                dsn=dsn,
-                config_dir=wallet_location
-            )
-        else:
-            raise ValueError(f"Walletが見つかりません: {wallet_location}")
+            # プールを作成（リトライ付き）
+            for attempt in range(1, max_retries + 1):
+                try:
+                    logger.info(f"接続プール作成試行 {attempt}/{max_retries}")
+                    
+                    # 接続情報を取得
+                    settings = self.settings
+                    username = settings.get("username")
+                    password = settings.get("password")
+                    dsn = settings.get("dsn")
+                    
+                    # 設定が不完全な場合、.envから取得を試みる
+                    if not username or not password or not dsn:
+                        logger.info(".envから接続情報を取得します...")
+                        env_info = self.get_env_connection_info()
+                        if env_info.get("success"):
+                            username = username or env_info.get("username")
+                            password = password or env_info.get("password")
+                            dsn = dsn or env_info.get("dsn")
+                            logger.info(f".envからの情報: username={username}, dsn={dsn}, password_exists={bool(password)}")
+                    
+                    if not username or not password or not dsn:
+                        raise ValueError("ユーザー名、パスワード、DSNが必要です")
+                    
+                    # Oracle Client初期化（Linuxのみ）
+                    if not init_oracle_client():
+                        raise Exception("Oracle Clientの初期化に失敗しました")
+                    
+                    # TNS_ADMIN設定
+                    wallet_location = self._get_wallet_location()
+                    if not wallet_location or not os.path.exists(wallet_location):
+                        raise ValueError(f"Walletが見つかりません: {wallet_location}")
+                    
+                    os.environ['TNS_ADMIN'] = wallet_location
+                    logger.info(f"Wallet場所: {wallet_location}")
+                    
+                    # 接続プールを作成
+                    self.__class__._pool = oracledb.create_pool(
+                        user=username,
+                        password=password,
+                        dsn=dsn,
+                        config_dir=wallet_location,
+                        min=5,
+                        max=20,
+                        increment=2,
+                        timeout=30,
+                        getmode=oracledb.POOL_GETMODE_WAIT
+                    )
+                    
+                    logger.info(f"接続プール作成成功 (試行{attempt}回目): min=5, max=20")
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"接続プール作成失敗 (試行{attempt}/{max_retries}): {e}")
+                    if attempt == max_retries:
+                        logger.error("接続プール作成の最大リトライ回数に達しました")
+                        return False
+                    # リトライ前に少し待機
+                    import time
+                    time.sleep(1)
+            
+            return False
+    
+    def _get_connection_from_pool(self) -> Optional[Any]:
+        """プールから接続を取得"""
+        if not self._ensure_pool():
+            return None
         
-        return connection
+        try:
+            connection = self.__class__._pool.acquire()
+            return connection
+        except Exception as e:
+            logger.error(f"プールから接続取得失敗: {e}")
+            return None
+    
+    def _release_connection(self, connection):
+        """接続をプールに返却"""
+        if connection and self.__class__._pool:
+            try:
+                self.__class__._pool.release(connection)
+            except Exception as e:
+                logger.error(f"接続の返却失敗: {e}")
+    
+    def _create_connection(self, settings: Optional[Dict[str, Any]] = None):
+        """プールから接続を取得（後方互換性のため維持）"""
+        return self._get_connection_from_pool()
     
     def test_connection(self, settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """接続テストを実行（同期版）"""
@@ -453,12 +538,22 @@ class DatabaseService:
                     "message": "oracledbモジュールが利用できません。pip install oracledb を実行してください。"
                 }
             
+            # settingsがnoneの場合のみself.settingsを使用
             if settings is None:
                 settings = self.settings
             
             username = settings.get("username")
             password = settings.get("password")
             dsn = settings.get("dsn")
+            
+            # 設定が不完全な場合、.envから取得を試みる
+            if not username or not password or not dsn:
+                logger.info(".envから接続情報を取得します...")
+                env_info = self.get_env_connection_info()
+                if env_info.get("success"):
+                    username = username or env_info.get("username")
+                    password = password or env_info.get("password")
+                    dsn = dsn or env_info.get("dsn")
             
             # 同じプロセス内で直接実行
             result = _execute_db_operation(
@@ -479,12 +574,22 @@ class DatabaseService:
     async def test_connection_async(self, settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """接続テストを実行（非同期版）- 同期版を呼び出し"""
         try:
+            # settingsがnoneの場合のみself.settingsを使用
             if settings is None:
                 settings = self.settings
             
             username = settings.get("username")
             password = settings.get("password")
             dsn = settings.get("dsn")
+            
+            # 設定が不完全な場合、.envから取得を試みる
+            if not username or not password or not dsn:
+                logger.info(".envから接続情報を取得します...")
+                env_info = self.get_env_connection_info()
+                if env_info.get("success"):
+                    username = username or env_info.get("username")
+                    password = password or env_info.get("password")
+                    dsn = dsn or env_info.get("dsn")
             
             # 同じプロセス内で直接実行
             result = _execute_db_operation(
@@ -503,11 +608,15 @@ class DatabaseService:
     
     def get_database_info(self) -> Optional[Dict[str, Any]]:
         """データベース情報を取得"""
+        connection = None
         try:
             if not ORACLEDB_AVAILABLE:
                 return None
             
             connection = self._create_connection()
+            if not connection:
+                return None
+            
             cursor = connection.cursor()
             
             # データベースバージョン取得
@@ -531,7 +640,7 @@ class DatabaseService:
             current_user = user_row[0] if user_row else None
             
             cursor.close()
-            connection.close()
+            self._release_connection(connection)
             
             return {
                 "version": version,
@@ -542,15 +651,21 @@ class DatabaseService:
         
         except Exception as e:
             logger.error(f"データベース情報取得エラー: {e}")
+            if connection:
+                self._release_connection(connection)
             return None
     
     def get_tables(self, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
         """テーブル一覧を取得（ページング対応）"""
+        connection = None
         try:
             if not ORACLEDB_AVAILABLE:
                 return {"tables": [], "total": 0}
             
             connection = self._create_connection()
+            if not connection:
+                return {"tables": [], "total": 0}
+            
             cursor = connection.cursor()
             
             # 総件数を取得
@@ -602,18 +717,21 @@ class DatabaseService:
                 tables.append(table_info)
             
             cursor.close()
-            connection.close()
+            self._release_connection(connection)
             
             return {"tables": tables, "total": total}
         
         except Exception as e:
             logger.error(f"テーブル一覧取得エラー: {e}")
+            if connection:
+                self._release_connection(connection)
             return {"tables": [], "total": 0}
     
     def delete_tables(self, table_names: list) -> Dict[str, Any]:
         """テーブルを一括削除"""
         deleted_count = 0
         errors = []
+        connection = None
         
         try:
             if not ORACLEDB_AVAILABLE:
@@ -623,6 +741,9 @@ class DatabaseService:
                 return {"success": False, "deleted_count": 0, "message": "削除するテーブルが指定されていません", "errors": []}
             
             connection = self._create_connection()
+            if not connection:
+                return {"success": False, "deleted_count": 0, "message": "データベース接続に失敗しました", "errors": []}
+            
             cursor = connection.cursor()
             
             for table_name in table_names:
@@ -645,7 +766,7 @@ class DatabaseService:
             # コミット
             connection.commit()
             cursor.close()
-            connection.close()
+            self._release_connection(connection)
             
             return {
                 "success": deleted_count > 0,
@@ -656,6 +777,8 @@ class DatabaseService:
         
         except Exception as e:
             logger.error(f"テーブル一括削除エラー: {e}")
+            if connection:
+                self._release_connection(connection)
             return {"success": False, "deleted_count": 0, "message": str(e), "errors": errors}
     
     def get_env_connection_info(self) -> Dict[str, Any]:
@@ -735,24 +858,34 @@ class DatabaseService:
         if not ORACLEDB_AVAILABLE:
             return False
         
+        connection = None
         try:
             connection = self._create_connection()
+            if not connection:
+                return False
+            
             cursor = connection.cursor()
             cursor.execute("SELECT 1 FROM DUAL")
             cursor.fetchone()
             cursor.close()
-            connection.close()
+            self._release_connection(connection)
             return True
         except:
+            if connection:
+                self._release_connection(connection)
             return False
     
     def get_storage_info(self) -> Optional[Dict[str, Any]]:
         """データベースストレージ情報を取得"""
+        connection = None
         try:
             if not ORACLEDB_AVAILABLE:
                 return None
             
             connection = self._create_connection()
+            if not connection:
+                return None
+            
             cursor = connection.cursor()
             
             # テーブルスペース情報を取得
@@ -805,7 +938,7 @@ class DatabaseService:
                 used_size_mb += used_mb
             
             cursor.close()
-            connection.close()
+            self._release_connection(connection)
             
             free_size_mb = total_size_mb - used_size_mb
             used_percent = (used_size_mb / total_size_mb * 100) if total_size_mb > 0 else 0.0
@@ -820,6 +953,8 @@ class DatabaseService:
         
         except Exception as e:
             logger.error(f"ストレージ情報取得エラー: {e}")
+            if connection:
+                self._release_connection(connection)
             return None
 
 

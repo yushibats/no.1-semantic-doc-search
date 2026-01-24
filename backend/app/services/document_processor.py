@@ -19,6 +19,9 @@ class DocumentProcessor:
             'pdf': self._process_pdf,
             'ppt': self._process_pptx,
             'pptx': self._process_pptx,
+            'docx': self._process_docx,
+            'txt': self._process_txt,
+            'md': self._process_txt,  # Markdownもテキストとして処理
             'png': self._process_image,
             'jpg': self._process_image,
             'jpeg': self._process_image,

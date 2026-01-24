@@ -70,10 +70,10 @@ from app.models.adb import (
 # サービスのインポート
 from app.services.oci_service import oci_service
 from app.services.document_processor import document_processor
-from app.services.vector_search import vector_search_engine
 from app.services.database_service import database_service
 from app.services.adb_service import adb_service
 from app.services.ai_copilot import get_copilot_service
+from app.services.image_vectorizer import image_vectorizer
 from app.utils.auth_util import do_auth, get_username_from_connection_string
 
 # FastAPIアプリケーション初期化
@@ -979,9 +979,6 @@ async def delete_document(document_id: str):
         if not target_doc:
             raise HTTPException(status_code=404, detail="文書が見つかりません")
         
-        # ベクトルインデックスから削除
-        vector_search_engine.delete_document(document_id)
-        
         # ローカルファイルを削除
         local_path = Path(target_doc.get("local_path", ""))
         if local_path.exists():
@@ -1010,17 +1007,13 @@ async def delete_document(document_id: str):
 
 @app.post("/api/search", response_model=SearchResponse)
 async def search_documents(query: SearchQuery):
-    """セマンティック検索を実行"""
+    """セマンティック検索を実行（Oracle Database 23aiのベクトル検索を使用）"""
     try:
         start_time = time.time()
         
-        # 検索実行
-        results = vector_search_engine.search(
-            query=query.query,
-            top_k=query.top_k,
-            min_score=query.min_score,
-            document_ids=query.document_ids
-        )
+        # TODO: Oracle Database 23aiのベクトル検索機能を実装
+        # 現在はCohere Embed v4.0を使用した画像ベクトル検索のみ対応
+        results = []
         
         processing_time = time.time() - start_time
         
@@ -1187,7 +1180,7 @@ async def save_database_settings(settings: DatabaseSettings):
     """データベース接続設定を保存（接続確認なし - パフォーマンス最適化）"""
     try:
         # 設定をdict形式に変換
-        settings_dict = settings.dict()
+        settings_dict = settings.model_dump()
         
         success = database_service.save_settings(settings_dict)
         
@@ -1213,7 +1206,7 @@ async def test_database_connection(request: DatabaseConnectionTestRequest):
         # テスト用の設定を使用（指定されていれば）
         test_settings = None
         if request.settings:
-            test_settings = request.settings.dict()
+            test_settings = request.settings.model_dump()
             # 接続に必要なフィールドのみを抽出
             test_settings = {
                 "username": test_settings.get("username"),
@@ -1695,6 +1688,326 @@ async def download_selected_objects(request: DocumentDownloadRequest, background
     except Exception as e:
         logger.error(f"ZIPダウンロードエラー: {e}")
         raise HTTPException(status_code=500, detail=f"ダウンロードエラー: {str(e)}")
+
+class VectorizeRequest(BaseModel):
+    """画像ベクトル化リクエスト"""
+    object_names: List[str]
+
+@app.post("/api/oci/objects/vectorize")
+async def vectorize_documents(request: VectorizeRequest):
+    """
+    選択されたファイルを画像ベクトル化してDBに保存
+    - ファイルが未画像化の場合は自動的に画像化
+    - 既存のembeddingがある場合は削除してから再作成
+    - Server-Sent Events (SSE)でリアルタイム進捗状況を送信
+    """
+    object_names = request.object_names
+    
+    if not object_names:
+        raise HTTPException(status_code=400, detail="ベクトル化するファイルが指定されていません")
+    
+    logger.info(f"画像ベクトル化開始: {len(object_names)}件")
+    
+    async def generate_progress():
+        """進捗状況をSSE形式でストリーミング"""
+        results = []
+        success_count = 0
+        failed_count = 0
+        
+        # 開始通知
+        yield f"data: {json.dumps({'type': 'start', 'total_files': len(object_names)}, ensure_ascii=False)}\n\n"
+        
+        for file_idx, obj_name in enumerate(object_names, start=1):
+            result = {
+                "object_name": obj_name,
+                "success": False,
+                "message": "",
+                "embedding_count": 0,
+                "folder_name": ""
+            }
+            
+            temp_dir = None
+            file_content = None  # ループ内で初期化
+            
+            # ファイル処理開始通知
+            yield f"data: {json.dumps({'type': 'file_start', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name}, ensure_ascii=False)}\n\n"
+            
+            try:
+                # ファイル名と拡張子を取得
+                file_path = Path(obj_name)
+                file_name = file_path.stem
+                file_ext = file_path.suffix.lower().lstrip('.')
+                
+                # 同名フォルダ名
+                parent_str = str(file_path.parent)
+                if parent_str and parent_str != '.':
+                    folder_name = f"{parent_str}/{file_name}"
+                else:
+                    folder_name = file_name
+                
+                result["folder_name"] = folder_name
+                
+                # Object Storageの設定を取得
+                namespace_result = oci_service.get_namespace()
+                if not namespace_result.get("success"):
+                    result["message"] = "Namespace取得エラー"
+                    failed_count += 1
+                    results.append(result)
+                    yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                    continue
+                
+                namespace = namespace_result.get("namespace")
+                bucket_name = os.getenv("OCI_BUCKET")
+                
+                if not bucket_name:
+                    result["message"] = "OCI_BUCKET環境変数が設定されていません"
+                    failed_count += 1
+                    results.append(result)
+                    yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                    continue
+                
+                # FILE_INFOにファイル情報を保存または取得
+                yield f"data: {json.dumps({'type': 'save_file_info', 'file_index': file_idx, 'file_name': obj_name}, ensure_ascii=False)}\n\n"
+                
+                file_id = image_vectorizer.get_file_id_by_object_name(bucket_name, obj_name)
+                
+                if file_id:
+                    # 既存のembeddingを削除
+                    logger.info(f"既存のembedding削除: FILE_ID={file_id}")
+                    yield f"data: {json.dumps({'type': 'delete_existing', 'file_index': file_idx, 'file_name': obj_name, 'file_id': file_id}, ensure_ascii=False)}\n\n"
+                    image_vectorizer.delete_file_embeddings(file_id)
+                else:
+                    # 新規ファイル情報を保存
+                    # ファイルサイズとcontent_typeを取得するためにダウンロード
+                    file_content = oci_service.download_object(obj_name)
+                    if not file_content:
+                        result["message"] = "ファイルが見つかりません"
+                        failed_count += 1
+                        results.append(result)
+                        yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                        continue
+                    
+                    file_size = len(file_content)
+                    content_type = f"application/{file_ext}"
+                    
+                    file_id = image_vectorizer.save_file_info(
+                        bucket=bucket_name,
+                        object_name=obj_name,
+                        original_filename=file_path.name,
+                        file_size=file_size,
+                        content_type=content_type
+                    )
+                    
+                    if not file_id:
+                        result["message"] = "ファイル情報保存エラー"
+                        failed_count += 1
+                        results.append(result)
+                        yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                        continue
+                
+                logger.info(f"FILE_ID: {file_id}")
+                
+                # ページ画像化されているかチェック
+                page_images_result = oci_service.list_objects(
+                    bucket_name=bucket_name,
+                    namespace=namespace,
+                    prefix=f"{folder_name}/",
+                    page_size=1000
+                )
+                
+                page_images = []
+                if page_images_result.get("success"):
+                    objects = page_images_result.get("objects", [])
+                    for obj in objects:
+                        obj_name_str = obj.get("name", "")
+                        if not obj_name_str.endswith('/') and re.search(r'/page_\d{3}\.png$', obj_name_str):
+                            page_images.append(obj_name_str)
+                
+                page_images.sort()
+                
+                # ページ画像がない場合は自動生成
+                if not page_images:
+                    yield f"data: {json.dumps({'type': 'auto_convert_start', 'file_index': file_idx, 'file_name': obj_name}, ensure_ascii=False)}\n\n"
+                    
+                    # Object Storageからファイルをダウンロード（新規ファイルの場合は既にダウンロード済み）
+                    if not file_content:
+                        file_content = oci_service.download_object(obj_name)
+                    
+                    if not file_content:
+                        result["message"] = "ファイルが見つかりません"
+                        failed_count += 1
+                        results.append(result)
+                        yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                        continue
+                    
+                    # 一時ファイルに保存
+                    temp_dir = tempfile.mkdtemp()
+                    temp_file = Path(temp_dir) / f"temp.{file_ext}"
+                    temp_file.write_bytes(file_content)
+                    
+                    images = []
+                    auto_convert_success = False
+                    
+                    try:
+                        if file_ext == 'pdf':
+                            images = convert_from_path(str(temp_file), dpi=200, fmt='PNG')
+                        elif file_ext in ['ppt', 'pptx']:
+                            subprocess.run(
+                                ['soffice', '--headless', '--convert-to', 'pdf', '--outdir', str(temp_dir), str(temp_file)],
+                                check=True,
+                                timeout=300
+                            )
+                            pdf_path = Path(temp_dir) / "temp.pdf"
+                            if pdf_path.exists():
+                                images = convert_from_path(str(pdf_path), dpi=200, fmt='PNG')
+                            else:
+                                raise Exception("PDF変換に失敗しました")
+                        elif file_ext in ['png', 'jpg', 'jpeg']:
+                            img = PILImage.open(temp_file)
+                            img_copy = img.copy()
+                            img.close()
+                            images = [img_copy]
+                        else:
+                            result["message"] = f"サポートされていないファイル形式: {file_ext}"
+                            failed_count += 1
+                            results.append(result)
+                            yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                            # continueの代わりにauto_convert_successをFalseのままにする
+                        
+                        if images:  # 画像が生成された場合のみアップロード
+                            # 各ページをアップロード
+                            for i, img in enumerate(images, start=1):
+                                img_bytes = io.BytesIO()
+                                img.save(img_bytes, format='PNG')
+                                img_bytes.seek(0)
+                                
+                                image_object_name = f"{folder_name}/page_{i:03d}.png"
+                                upload_success = oci_service.upload_file(
+                                    file_content=img_bytes,
+                                    object_name=image_object_name,
+                                    content_type="image/png",
+                                    original_filename=f"page_{i:03d}.png",
+                                    file_size=len(img_bytes.getvalue())
+                                )
+                                
+                                if upload_success:
+                                    page_images.append(image_object_name)
+                            
+                            yield f"data: {json.dumps({'type': 'auto_convert_complete', 'file_index': file_idx, 'file_name': obj_name, 'image_count': len(page_images)}, ensure_ascii=False)}\n\n"
+                            auto_convert_success = True
+                        
+                    except Exception as conv_error:
+                        result["message"] = f"画像変換エラー: {str(conv_error)}"
+                        failed_count += 1
+                        logger.error(f"画像変換エラー ({obj_name}): {conv_error}")
+                        yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                    finally:
+                        # 一時ディレクトリを削除
+                        if temp_dir and Path(temp_dir).exists():
+                            try:
+                                shutil.rmtree(temp_dir)
+                                temp_dir = None
+                            except Exception as cleanup_error:
+                                logger.warning(f"一時ディレクトリ削除エラー: {cleanup_error}")
+                    
+                    # 自動変換に失敗した場合はこのファイルをスキップ
+                    if not auto_convert_success:
+                        results.append(result)
+                        continue
+                
+                # 各ページ画像をベクトル化
+                total_pages = len(page_images)
+                
+                if total_pages == 0:
+                    result["message"] = "ページ画像が見つかりません。画像化に失敗した可能性があります"
+                    failed_count += 1
+                    results.append(result)
+                    yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+                    continue
+                
+                yield f"data: {json.dumps({'type': 'vectorize_start', 'file_index': file_idx, 'file_name': obj_name, 'total_pages': total_pages}, ensure_ascii=False)}\n\n"
+                
+                for page_idx, page_image_name in enumerate(page_images, start=1):
+                    try:
+                        yield f"data: {json.dumps({'type': 'page_progress', 'file_index': file_idx, 'file_name': obj_name, 'page_index': page_idx, 'total_pages': total_pages}, ensure_ascii=False)}\n\n"
+                        
+                        # 画像をダウンロード
+                        image_content = oci_service.download_object(page_image_name)
+                        if not image_content:
+                            logger.warning(f"画像が見つかりません: {page_image_name}")
+                            continue
+                        
+                        image_bytes = io.BytesIO(image_content)
+                        
+                        # Embeddingを生成
+                        embedding = image_vectorizer.generate_embedding(image_bytes, "image/png")
+                        if embedding is None:
+                            logger.warning(f"Embedding生成失敗: {page_image_name}")
+                            continue
+                        
+                        # DBに保存
+                        embedding_id = image_vectorizer.save_image_embedding(
+                            file_id=file_id,
+                            bucket=bucket_name,
+                            object_name=page_image_name,
+                            page_number=page_idx,
+                            content_type="image/png",
+                            file_size=len(image_content),
+                            embedding=embedding
+                        )
+                        
+                        if embedding_id:
+                            result["embedding_count"] += 1
+                        
+                    except Exception as page_error:
+                        logger.error(f"ページベクトル化エラー ({page_image_name}): {page_error}")
+                        continue
+                
+                result["success"] = True
+                result["message"] = f"{result['embedding_count']}ページをベクトル化しました"
+                success_count += 1
+                logger.info(f"ベクトル化完了: {obj_name} ({result['embedding_count']}ページ)")
+                
+                yield f"data: {json.dumps({'type': 'file_complete', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'embedding_count': result['embedding_count']}, ensure_ascii=False)}\n\n"
+                
+            except Exception as e:
+                result["message"] = f"処理エラー: {str(e)}"
+                failed_count += 1
+                logger.error(f"ベクトル化エラー ({obj_name}): {e}")
+                yield f"data: {json.dumps({'type': 'file_error', 'file_index': file_idx, 'total_files': len(object_names), 'file_name': obj_name, 'error': result['message']}, ensure_ascii=False)}\n\n"
+            finally:
+                if temp_dir and Path(temp_dir).exists():
+                    try:
+                        shutil.rmtree(temp_dir)
+                    except:
+                        pass
+            
+            results.append(result)
+        
+        # 完了通知
+        overall_success = failed_count == 0
+        summary_message = f"ベクトル化完了: 成功 {success_count}件、失敗 {failed_count}件"
+        
+        final_result = {
+            "type": "complete",
+            "success": overall_success,
+            "message": summary_message,
+            "total_files": len(object_names),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results
+        }
+        
+        yield f"data: {json.dumps(final_result, ensure_ascii=False)}\n\n"
+    
+    return StreamingResponse(
+        generate_progress(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 @app.post("/api/oci/objects/convert-to-images")
 async def convert_documents_to_images(request: DocumentConvertRequest):
