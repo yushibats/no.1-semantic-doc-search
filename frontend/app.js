@@ -3142,14 +3142,19 @@ function showTablePreview(tableName, columns, rows, total, paginationData) {
   
   // 現在ページの行のFILE_IDを記録（columns配列から「FILE_ID」のインデックスを取得）
   const fileIdColumnIndex = columns.indexOf('FILE_ID');
+  const idColumnIndex = columns.indexOf('ID');
   
-  if (fileIdColumnIndex === -1) {
-    console.warn('FILE_ID column not found in table');
-    // FILE_IDがない場合は、行インデックスをそのまま使用
+  if (fileIdColumnIndex === -1 && idColumnIndex === -1) {
+    console.warn('FILE_ID and ID column not found in table');
+    // FILE_IDもIDもない場合は、行インデックスをそのまま使用
     currentPageTableDataRows = rows.map((_, index) => String(safePageData.start_row + index - 1));
   } else {
-    // FILE_IDを使用して行を識別（文字列に統一）
-    currentPageTableDataRows = rows.map(row => String(row[fileIdColumnIndex]));
+    // IDとFILE_IDを組み合わせて行を一意に識別（文字列に統一）
+    currentPageTableDataRows = rows.map((row, index) => {
+      const id = idColumnIndex !== -1 ? row[idColumnIndex] : index;
+      const fileId = fileIdColumnIndex !== -1 ? row[fileIdColumnIndex] : '';
+      return `${id}_${fileId}`;
+    });
   }
   
   // ヘッダーチェックボックスの状態を判定
@@ -3207,12 +3212,16 @@ function showTablePreview(tableName, columns, rows, total, paginationData) {
           </thead>
           <tbody>
             ${rows.map((row, index) => {
-              // 行を一意に識別するためにFILE_IDを使用（文字列に統一）
-              const rowId = fileIdColumnIndex !== -1 ? String(row[fileIdColumnIndex]) : String(safePageData.start_row + index - 1);
+              // 行を一意に識別するためにIDとFILE_IDを組み合わせる
+              const id = idColumnIndex !== -1 ? row[idColumnIndex] : index;
+              const fileId = fileIdColumnIndex !== -1 ? row[fileIdColumnIndex] : '';
+              const rowId = `${id}_${fileId}`;
               const isChecked = selectedTableDataRows.includes(rowId);
+              // HTMLエスケープしたrowIdを使用
+              const escapedRowId = rowId.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
               return `
               <tr>
-                <td><input type="checkbox" onchange="toggleTableDataRowSelection('${rowId}')" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded"></td>
+                <td><input type="checkbox" onchange="toggleTableDataRowSelection('${escapedRowId}')" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded"></td>
                 ${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}
               </tr>
             `;
@@ -3364,12 +3373,15 @@ function deleteSelectedTableData() {
 
 // テーブルデータ - 個別チェックボックス切り替え
 function toggleTableDataRowSelection(rowId) {
+  // HTMLエスケープされた値をデコード
+  const decodedRowId = rowId.replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+  
   // スクロール位置を保存
   const scrollableArea = document.querySelector('#tableDataPreview .table-wrapper-scrollable');
   const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
   
   // 文字列に統一
-  const rowIdStr = String(rowId);
+  const rowIdStr = String(decodedRowId);
   const index = selectedTableDataRows.indexOf(rowIdStr);
   if (index > -1) {
     selectedTableDataRows.splice(index, 1);
