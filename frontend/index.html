@@ -199,7 +199,7 @@
         </div>
         <div style="padding: 24px;">
           <div style="margin-bottom: 16px;">
-            <label class="form-label">ファイル選択 (PDF, PPT, PPTX, PNG, JPG, JPEG) - 最大5ファイル</label>
+            <label class="form-label">ファイル選択 (PDF, PPT, PPTX, PNG, JPG, JPEG) - 最大10ファイル</label>
             <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-purple-400 transition cursor-pointer" 
                  onclick="document.getElementById('fileInputMultiple').click()"
                  ondragover="handleDragOver(event)"
@@ -210,7 +210,7 @@
               </svg>
               <p class="text-gray-600 font-medium mb-2">ファイルをドラッグ＆ドロップまたはクリックしてアップロード</p>
               <p class="text-sm text-gray-500">対応形式: PDF, PPT, PPTX, PNG, JPG, JPEG</p>
-              <p class="text-xs text-purple-600 font-semibold mt-2">☆ 最大5ファイルまで同時アップロード可能</p>
+              <p class="text-xs text-purple-600 font-semibold mt-2">☆ 最大10ファイルまで同時アップロード可能</p>
               <input type="file" id="fileInputMultiple" class="hidden" accept=".pdf,.ppt,.pptx,.png,.jpg,.jpeg" multiple onchange="handleMultipleFileSelect(event)">
             </div>
           </div>
@@ -219,7 +219,7 @@
           <div id="selectedFilesList" style="margin-bottom: 16px; display: none;">
             <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
               <div class="flex items-center justify-between mb-3">
-                <span class="text-sm font-semibold text-gray-700">選択されたファイル (<span id="selectedFilesCount">0</span>/5)</span>
+                <span class="text-sm font-semibold text-gray-700">選択されたファイル (<span id="selectedFilesCount">0</span>/10)</span>
                 <button onclick="clearMultipleFileSelection()" class="text-xs text-red-600 hover:text-red-800 hover:underline">すべてクリア</button>
               </div>
               <div id="selectedFilesListContent" class="space-y-2"></div>
@@ -239,11 +239,28 @@
       <div class="apex-region">
         <div class="apex-region-header">
           📁 登録済み文書
-          <button class="apex-button-secondary apex-button-xs" onclick="loadOciObjects()">
-            🔄 更新
-          </button>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="apex-button-secondary apex-button-xs" onclick="refreshDocumentsWithNotification()" style="display: flex; align-items: center; gap: 4px;">
+              🔄 更新
+            </button>
+            <span id="documentsStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未取得</span>
+          </div>
         </div>
-        <div style="padding: 20px;">
+        <div style="padding: 24px;">
+          <div class="bg-blue-50 border border-blue-200 rounded-md p-4 mb-5" style="background-color: #eff6ff; border-color: #bfdbfe;">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+              </svg>
+              <div style="flex: 1;">
+                <div class="text-sm font-medium text-blue-900" style="color: #1e3a8a; margin-bottom: 4px;">登録済み文書について</div>
+                <div class="text-sm text-blue-800" style="color: #1e40af;">
+                  OCI Object Storage に保存されている文書一覧を表示します。各ファイルのサイズや作成日時を確認できます。
+                </div>
+              </div>
+            </div>
+          </div>
+          
           <div id="documentsList"></div>
         </div>
         </div>
@@ -485,7 +502,7 @@
             <button class="apex-button-secondary apex-button-xs" onclick="refreshDbConnectionFromEnv()" style="display: flex; align-items: center; gap: 4px;">
               🔄 更新
             </button>
-            <span id="dbConnectionStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未設定</span>
+            <span id="dbConnectionStatusBadge" class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">未取得</span>
           </div>
         </div>
         <div style="padding: 24px;">

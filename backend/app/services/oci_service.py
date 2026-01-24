@@ -362,13 +362,14 @@ class OCIService:
             
             # レスポンスを整形
             objects = []
+            
             for obj in response.data.objects:
                 # フォルダかファイルかを判定
                 is_folder = obj.name.endswith('/')
                 
                 # 階層深度を計算（スラッシュの数で判定）
                 depth = obj.name.count('/')
-                if is_folder:
+                if is_folder and depth > 0:
                     depth -= 1  # フォルダの場合、末尾の/を除外
                 
                 # 親パスを計算

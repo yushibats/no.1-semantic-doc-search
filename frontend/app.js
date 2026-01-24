@@ -168,9 +168,8 @@ function switchTab(tabName) {
   document.getElementById(`tab-${tabName}`).style.display = 'block';
   
   // タブに応じた初期化処理
-  if (tabName === 'documents') {
-    loadOciObjects();
-  } else if (tabName === 'settings') {
+  // 注: 文書管理タブの自動刷新は無効（🔄 更新ボタンで手動刷新）
+  if (tabName === 'settings') {
     loadOciSettings();
     loadObjectStorageSettings(); // Object Storage設定も読み込む
   } else if (tabName === 'database') {
@@ -276,7 +275,7 @@ function clearSearchResults() {
 
 // 複数ファイルアップロード用の状態管理
 let selectedMultipleFiles = [];
-const MAX_FILES = 5;
+const MAX_FILES = 10;
 
 /**
  * 複数ファイル選択ハンドラー
@@ -288,7 +287,7 @@ function handleMultipleFileSelect(event) {
     return;
   }
   
-  // 最大5ファイルチェック
+  // 最大10ファイルチェック
   if (files.length > MAX_FILES) {
     showToast(`アップロード可能なファイル数は最大${MAX_FILES}個です`, 'warning');
     event.target.value = '';
@@ -314,7 +313,7 @@ function handleDropForMultipleInput(event) {
     return;
   }
   
-  // 最大5ファイルチェック
+  // 最大10ファイルチェック
   if (files.length > MAX_FILES) {
     showToast(`アップロード可能なファイル数は最大${MAX_FILES}個です`, 'warning');
     return;
@@ -453,11 +452,10 @@ async function uploadMultipleDocuments() {
       showToast(`⚠️ ${data.message}`, 'warning');
     }
     
-    // フォームをリセット
+    // フォームをリセット（3秒後）
     setTimeout(() => {
       clearMultipleFileSelection();
-      // 文書リストを更新
-      loadOciObjects();
+      // 注: 文書リストの自動刷新は行わない（🔄 更新ボタンで手動刷新）
     }, 3000);
     
   } catch (error) {
@@ -599,6 +597,37 @@ function getChildObjects(folderName) {
 }
 
 /**
+ * 文書一覧を更新(通知付き)
+ */
+window.refreshDocumentsWithNotification = function() {
+  showToast('🔄 文書一覧を更新します...', 'info');
+  loadOciObjects();
+}
+
+/**
+ * 文書ステータスバッジを更新
+ */
+function updateDocumentsStatusBadge(text, type = 'info') {
+  const badge = document.getElementById('documentsStatusBadge');
+  if (!badge) return;
+  
+  badge.textContent = text;
+  
+  // タイプに応じてスタイルを変更
+  badge.style.background = '';
+  badge.style.color = '';
+  badge.classList.remove('bg-green-100', 'text-green-800', 'bg-red-100', 'text-red-800', 'bg-gray-100', 'text-gray-600');
+  
+  if (type === 'success') {
+    badge.classList.add('bg-green-100', 'text-green-800');
+  } else if (type === 'error') {
+    badge.classList.add('bg-red-100', 'text-red-800');
+  } else {
+    badge.classList.add('bg-gray-100', 'text-gray-600');
+  }
+}
+
+/**
  * OCI Object Storage一覧を読み込む
  */
 async function loadOciObjects() {
@@ -617,6 +646,7 @@ async function loadOciObjects() {
     
     if (!data.success) {
       showToast(`エラー: ${data.message || 'オブジェクト一覧取得失敗'}`, 'error');
+      updateDocumentsStatusBadge('エラー', 'error');
       return;
     }
     
@@ -633,9 +663,14 @@ async function loadOciObjects() {
     
     displayOciObjectsList(data);
     
+    // バッジを更新
+    const totalCount = data.pagination?.total || 0;
+    updateDocumentsStatusBadge(`${totalCount}件`, 'success');
+    
   } catch (error) {
     hideLoading();
     showToast(`OCI Object Storage一覧取得エラー: ${error.message}`, 'error');
+    updateDocumentsStatusBadge('エラー', 'error');
   }
 }
 
@@ -683,8 +718,9 @@ function displayOciObjectsList(data) {
         class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600 text-white'}" 
         onclick="deleteSelectedOciObjects()" 
         ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
+        title="選択されたアイテム数（フォルダ配下の子アイテムを含む）: ${selectedOciObjects.length}件"
       >
-        🗑️ 削除 (${selectedOciObjects.length})
+        🗑️ 削除 (${selectedOciObjects.length}件)
       </button>
     </div>
   `;

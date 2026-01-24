@@ -601,7 +601,7 @@ async def upload_document(file: UploadFile = File(...)):
             safe_basename = 'unnamed_file'
         
         safe_filename = f"{timestamp}_{document_id[:8]}_{safe_basename}"
-        oci_object_name = f"uploads/{safe_filename}"
+        oci_object_name = safe_filename
         
         # Object Storageにアップロード
         logger.info(f"Object Storageにアップロード中: {file.filename} ({file_size} バイト)")
@@ -650,14 +650,14 @@ async def upload_document(file: UploadFile = File(...)):
 @app.post("/api/documents/upload/multiple")
 async def upload_multiple_documents(files: List[UploadFile] = File(...)):
     """
-    複数の文書をObject Storageにアップロード（最大5ファイル）
+    複数の文書をObject Storageにアップロード（最大10ファイル）
     - ファイル検証（サイズ、拡張子、MIMEタイプ）
     - Object Storageに保存
     - ファイル名衝突回避（UUID）
     """
     try:
         # ファイル数チェック
-        max_files = 5
+        max_files = 10
         if len(files) > max_files:
             raise HTTPException(status_code=400, detail=f"アップロード可能なファイル数は最大{max_files}個です")
         
@@ -752,7 +752,7 @@ async def upload_multiple_documents(files: List[UploadFile] = File(...)):
                     safe_basename = 'unnamed_file'
                 
                 safe_filename = f"{timestamp}_{document_id[:8]}_{safe_basename}"
-                oci_object_name = f"uploads/{safe_filename}"
+                oci_object_name = safe_filename
                 
                 # OCI Object Storageにアップロード（ストリーミング）
                 logger.info(f"Object Storageにアップロード中 [{idx}/{len(files)}]: {file.filename}")
