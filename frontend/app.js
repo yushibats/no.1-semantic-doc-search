@@ -154,7 +154,7 @@ function formatDateTime(isoString) {
 // タブ切り替え
 // ========================================
 
-function switchTab(tabName) {
+async function switchTab(tabName) {
   // タブボタンのアクティブ状態を更新
   document.querySelectorAll('.apex-tab').forEach(tab => {
     tab.classList.remove('active');
@@ -167,13 +167,36 @@ function switchTab(tabName) {
   });
   document.getElementById(`tab-${tabName}`).style.display = 'block';
   
-  // タブに応じた初期化処理
+  // ページ全体のスクロールコンテナをトップにスクロール
+  const tabScrollContainer = document.querySelector('.tab-scroll-container');
+  if (tabScrollContainer) {
+    tabScrollContainer.scrollTop = 0;
+  }
+  
+  // タブ内のすべてのスクロール可能なテーブルもトップにスクロール
+  const scrollableTables = document.querySelectorAll('.table-wrapper-scrollable');
+  scrollableTables.forEach(table => {
+    if (table.offsetParent !== null) { // 表示中のエリアのみ
+      table.scrollTop = 0;
+    }
+  });
+  
+  // タブに応じた初期化処理（バックエンドAPI呼び出し時はオーバーレイ表示）
   // 注: 文書管理タブの自動刷新は無効（🔄 更新ボタンで手動刷新）
-  if (tabName === 'settings') {
-    loadOciSettings();
-    loadObjectStorageSettings(); // Object Storage設定も読み込む
-  } else if (tabName === 'database') {
-    loadDbConnectionSettings();
+  try {
+    if (tabName === 'settings') {
+      showLoading('OCI設定を読み込み中...');
+      await loadOciSettings();
+      await loadObjectStorageSettings();
+      hideLoading();
+    } else if (tabName === 'database') {
+      showLoading('データベース設定を読み込み中...');
+      await loadDbConnectionSettings();
+      hideLoading();
+    }
+  } catch (error) {
+    hideLoading();
+    showToast(`設定読み込みエラー: ${error.message}`, 'error');
   }
 }
 
@@ -270,8 +293,48 @@ function clearSearchResults() {
 }
 
 // ========================================
-// 文書管理
+// ページ画像化されたファイルの判定
 // ========================================
+
+/**
+ * ページ画像化で生成されたファイルかどうかを判定
+ * 構造: 親ファイル名/page_001.png, 親ファイル名/page_002.png ...
+ * 例: "example.pdf" → "example/page_001.png"
+ * 
+ * @param {string} objectName - オブジェクト名
+ * @param {Array} allObjects - 全オブジェクトのリスト（親ファイルの存在確認用）
+ * @returns {boolean} ページ画像化されたファイルの場合true
+ */
+function isGeneratedPageImage(objectName, allObjects = allOciObjects) {
+  // page_001.pngのパターンにマッチするかチェック
+  if (!/\/page_\d{3}\.png$/.test(objectName)) {
+    return false;
+  }
+  
+  // 親ファイル名を抽出（例: "example/page_001.png" → "example"）
+  const lastSlashIndex = objectName.lastIndexOf('/');
+  if (lastSlashIndex === -1) {
+    // ルート直下のpage_001.pngはページ画像化されたファイルではない
+    return false;
+  }
+  
+  const parentFolderPath = objectName.substring(0, lastSlashIndex);
+  
+  // 親フォルダと同名のファイルが存在するかチェック
+  // 例: "example/page_001.png" の場合、"example", "example.pdf", "example.pptx" などが存在すればページ画像化されたファイル
+  const parentFileExists = allObjects.some(obj => {
+    // フォルダを除外
+    if (obj.name.endsWith('/')) {
+      return false;
+    }
+    
+    // 拡張子を除いたファイル名を比較
+    const objNameWithoutExt = obj.name.replace(/\.[^.]+$/, '');
+    return objNameWithoutExt === parentFolderPath;
+  });
+  
+  return parentFileExists;
+}
 
 // 複数ファイルアップロード用の状態管理
 let selectedMultipleFiles = [];
@@ -436,9 +499,9 @@ async function uploadMultipleDocuments() {
     
     // 成功した場合のトースト
     if (data.success) {
-      showToast(`✅ ${data.success_count}件のファイルアップロードが完了しました`, 'success');
+      showToast(`${data.success_count}件のファイルアップロードが完了しました`, 'success');
     } else {
-      showToast(`⚠️ ${data.message}`, 'warning');
+      showToast(data.message, 'warning');
     }
     
     // フォームをリセット（5秒後：showToastと同じタイミング）
@@ -590,9 +653,16 @@ function getChildObjects(folderName) {
 /**
  * 文書一覧を更新(通知付き)
  */
-window.refreshDocumentsWithNotification = function() {
-  showToast('🔄 文書一覧を更新します...', 'info');
-  loadOciObjects();
+window.refreshDocumentsWithNotification = async function() {
+  try {
+    showLoading('文書一覧を更新中...');
+    await loadOciObjects();
+    hideLoading();
+    showToast('文書一覧を更新しました', 'success');
+  } catch (error) {
+    hideLoading();
+    showToast(`文書一覧更新エラー: ${error.message}`, 'error');
+  }
 }
 
 /**
@@ -615,6 +685,47 @@ function updateDocumentsStatusBadge(text, type = 'info') {
     badge.classList.add('bg-red-100', 'text-red-800');
   } else {
     badge.classList.add('bg-gray-100', 'text-gray-600');
+  }
+}
+
+/**
+ * 文書統計情報バッジを更新
+ */
+function updateDocumentsStatisticsBadges(statistics, type = 'success') {
+  // ファイル数バッジ
+  const fileBadge = document.getElementById('documentsFileCountBadge');
+  if (fileBadge && statistics) {
+    fileBadge.textContent = `ファイル: ${statistics.file_count}件`;
+    fileBadge.style.background = '';
+    fileBadge.style.color = '';
+    fileBadge.classList.remove('bg-green-100', 'text-green-800', 'bg-red-100', 'text-red-800', 'bg-gray-100', 'text-gray-600');
+    
+    if (type === 'success') {
+      fileBadge.classList.add('bg-blue-100', 'text-blue-800');
+    } else if (type === 'error') {
+      fileBadge.classList.add('bg-red-100', 'text-red-800');
+    } else {
+      fileBadge.classList.add('bg-gray-100', 'text-gray-600');
+    }
+    fileBadge.style.display = 'inline-block';
+  }
+  
+  // ページ画像数バッジ
+  const pageImageBadge = document.getElementById('documentsPageImageCountBadge');
+  if (pageImageBadge && statistics) {
+    pageImageBadge.textContent = `ページ画像: ${statistics.page_image_count}件`;
+    pageImageBadge.style.background = '';
+    pageImageBadge.style.color = '';
+    pageImageBadge.classList.remove('bg-green-100', 'text-green-800', 'bg-red-100', 'text-red-800', 'bg-gray-100', 'text-gray-600');
+    
+    if (type === 'success') {
+      pageImageBadge.classList.add('bg-purple-100', 'text-purple-800');
+    } else if (type === 'error') {
+      pageImageBadge.classList.add('bg-red-100', 'text-red-800');
+    } else {
+      pageImageBadge.classList.add('bg-gray-100', 'text-gray-600');
+    }
+    pageImageBadge.style.display = 'inline-block';
   }
 }
 
@@ -656,7 +767,10 @@ async function loadOciObjects() {
     
     // バッジを更新
     const totalCount = data.pagination?.total || 0;
+    const statistics = data.statistics || { file_count: 0, page_image_count: 0, total_count: 0 };
+    
     updateDocumentsStatusBadge(`${totalCount}件`, 'success');
+    updateDocumentsStatisticsBadges(statistics, 'success');
     
   } catch (error) {
     hideLoading();
@@ -685,8 +799,12 @@ function displayOciObjectsList(data) {
     return;
   }
   
-  // 全ページ選択状態をチェック
-  const allPageSelected = objects.every(obj => selectedOciObjects.includes(obj.name));
+  // 全ページ選択状態をチェック（チェックボックスを持つオブジェクトのみ対象）
+  // ページ画像化で生成されたファイル（page_*.png）はチェックボックスを持たないため除外
+  const selectableObjects = objects.filter(obj => {
+    return !isGeneratedPageImage(obj.name, objects);
+  });
+  const allPageSelected = selectableObjects.length > 0 && selectableObjects.every(obj => selectedOciObjects.includes(obj.name));
   
   // 選択ボタンHTML
   const selectionButtonsHtml = `
@@ -704,6 +822,22 @@ function displayOciObjectsList(data) {
         ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}
       >
         すべて解除
+      </button>
+      <button 
+        class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-blue-300 text-white cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600 text-white'}" 
+        onclick="downloadSelectedOciObjects()" 
+        ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
+        title="選択されたファイルをZIPでダウンロード: ${selectedOciObjects.length}件"
+      >
+        📥 ダウンロード (${selectedOciObjects.length}件)
+      </button>
+      <button 
+        class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-purple-300 text-white cursor-not-allowed' : 'bg-purple-500 hover:bg-purple-600 text-white'}" 
+        onclick="convertSelectedOciObjectsToImages()" 
+        ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'disabled' : ''}
+        title="選択されたファイルをページ毎に画像化: ${selectedOciObjects.length}件"
+      >
+        🖼️ ページ画像化 (${selectedOciObjects.length}件)
       </button>
       <button 
         class="px-3 py-1 text-xs rounded transition-colors ${selectedOciObjects.length === 0 || ociObjectsBatchDeleteLoading ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600 text-white'}" 
@@ -748,8 +882,7 @@ function displayOciObjectsList(data) {
           <tbody>
             ${objects.map(obj => {
               const isFolder = obj.type === 'folder';
-              const icon = isFolder ? '📁' : '📄';
-              const typeLabel = isFolder ? 'フォルダ' : 'ファイル';
+              
               // HTML属性用にエスケープ
               const escapedNameForHtml = obj.name.replace(/"/g, '&quot;');
               
@@ -770,9 +903,25 @@ function displayOciObjectsList(data) {
                 }
               }
               
+              // ページ画像化で生成されたファイル（page_001.png, page_002.pngなど）かどうかを判定
+              const isPageImage = !isFolder && isGeneratedPageImage(obj.name, objects);
+              
+              // タイプラベルとアイコンを設定
+              let icon, typeLabel;
+              if (isFolder) {
+                icon = '📁';
+                typeLabel = 'フォルダ';
+              } else if (isPageImage) {
+                icon = '🖼️';
+                typeLabel = 'ページ画像';
+              } else {
+                icon = '📄';
+                typeLabel = 'ファイル';
+              }
+              
               return `
                 <tr>
-                  <td><input type="checkbox" data-object-name="${escapedNameForHtml}" onchange="toggleOciObjectSelection(this.getAttribute('data-object-name'))" ${selectedOciObjects.includes(obj.name) ? 'checked' : ''} class="w-4 h-4 rounded" ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}></td>
+                  <td>${isPageImage ? '' : `<input type="checkbox" data-object-name="${escapedNameForHtml}" onchange="toggleOciObjectSelection(this.getAttribute('data-object-name'))" ${selectedOciObjects.includes(obj.name) ? 'checked' : ''} class="w-4 h-4 rounded" ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}>`}</td>
                   <td>${icon} ${typeLabel}</td>
                   <td style="font-weight: 500; font-family: monospace; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                     <span style="display: inline-block; padding-left: ${indentPx}px;">${displayName}</span>
@@ -825,10 +974,14 @@ function handleOciObjectsJumpPage() {
 }
 
 /**
- * オブジェクト選択状態をトグル（親子関係対応）
+ * オブジェクト選択状態をトグル（親子関係対応、page_*.png除外）
  */
 function toggleOciObjectSelection(objectName) {
   if (ociObjectsBatchDeleteLoading) return;
+  
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
   
   const index = selectedOciObjects.indexOf(objectName);
   const isCurrentlySelected = index > -1;
@@ -837,10 +990,15 @@ function toggleOciObjectSelection(objectName) {
     // 選択解除
     selectedOciObjects.splice(index, 1);
     
-    // フォルダの場合、子オブジェクトも解除
+    // フォルダの場合、子オブジェクトも解除（page_*.png除外）
     if (objectName.endsWith('/')) {
       const children = getChildObjects(objectName);
       children.forEach(child => {
+        // ページ画像化されたファイルは除外
+        if (isGeneratedPageImage(child.name)) {
+          return;
+        }
+        
         const childIndex = selectedOciObjects.indexOf(child.name);
         if (childIndex > -1) {
           selectedOciObjects.splice(childIndex, 1);
@@ -851,10 +1009,15 @@ function toggleOciObjectSelection(objectName) {
     // 選択
     selectedOciObjects.push(objectName);
     
-    // フォルダの場合、子オブジェクトも選択
+    // フォルダの場合、子オブジェクトも選択（page_*.png除外）
     if (objectName.endsWith('/')) {
       const children = getChildObjects(objectName);
       children.forEach(child => {
+        // ページ画像化されたファイルは除外
+        if (isGeneratedPageImage(child.name)) {
+          return;
+        }
+        
         if (!selectedOciObjects.includes(child.name)) {
           selectedOciObjects.push(child.name);
         }
@@ -862,8 +1025,17 @@ function toggleOciObjectSelection(objectName) {
     }
   }
   
-  // 再描画
-  loadOciObjects();
+  // 再描画（非同期処理を同期的に待つ）
+  loadOciObjects().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      // 少し遅延させてDOMが完全にレンダリングされるのを待つ
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 /**
@@ -872,7 +1044,11 @@ function toggleOciObjectSelection(objectName) {
 function toggleSelectAllOciObjects(checked) {
   if (ociObjectsBatchDeleteLoading) return;
   
-  // 現在表示中のオブジェクトを取得
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
+  // 現在表示中のオブジェクトを取得（ページ画像化されたファイルは除外）
   const checkboxes = document.querySelectorAll('#documentsList tbody input[type="checkbox"]');
   const currentPageObjects = Array.from(checkboxes).map(cb => {
     return cb.getAttribute('data-object-name');
@@ -881,6 +1057,11 @@ function toggleSelectAllOciObjects(checked) {
   if (checked) {
     // 現在ページのオブジェクトをすべて選択（親子関係を考慮）
     currentPageObjects.forEach(objName => {
+      // ページ画像化されたファイルは除外
+      if (isGeneratedPageImage(objName)) {
+        return;
+      }
+      
       if (!selectedOciObjects.includes(objName)) {
         selectedOciObjects.push(objName);
       }
@@ -889,6 +1070,11 @@ function toggleSelectAllOciObjects(checked) {
       if (objName.endsWith('/')) {
         const children = getChildObjects(objName);
         children.forEach(child => {
+          // 子オブジェクトもページ画像化されたファイルを除外
+          if (isGeneratedPageImage(child.name)) {
+            return;
+          }
+          
           if (!selectedOciObjects.includes(child.name)) {
             selectedOciObjects.push(child.name);
           }
@@ -898,6 +1084,11 @@ function toggleSelectAllOciObjects(checked) {
   } else {
     // 現在ページのオブジェクトをすべて解除（親子関係を考慮）
     currentPageObjects.forEach(objName => {
+      // ページ画像化されたファイルは除外
+      if (isGeneratedPageImage(objName)) {
+        return;
+      }
+      
       const index = selectedOciObjects.indexOf(objName);
       if (index > -1) {
         selectedOciObjects.splice(index, 1);
@@ -907,6 +1098,11 @@ function toggleSelectAllOciObjects(checked) {
       if (objName.endsWith('/')) {
         const children = getChildObjects(objName);
         children.forEach(child => {
+          // 子オブジェクトもページ画像化されたファイルを除外
+          if (isGeneratedPageImage(child.name)) {
+            return;
+          }
+          
           const childIndex = selectedOciObjects.indexOf(child.name);
           if (childIndex > -1) {
             selectedOciObjects.splice(childIndex, 1);
@@ -916,16 +1112,29 @@ function toggleSelectAllOciObjects(checked) {
     });
   }
   
-  // 再描画
-  loadOciObjects();
+  // 再描画（非同期処理を同期的に待つ）
+  loadOciObjects().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 /**
- * すべて選択（親子関係対応）
+ * すべて選択（親子関係対応、page_*.png除外）
  */
 function selectAllOciObjects() {
   if (ociObjectsBatchDeleteLoading) return;
   
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
+  // チェックボックスを持つオブジェクトのみを取得（page_*.pngを除外）
   const checkboxes = document.querySelectorAll('#documentsList tbody input[type="checkbox"]');
   const currentPageObjects = Array.from(checkboxes).map(cb => {
     return cb.getAttribute('data-object-name');
@@ -936,10 +1145,15 @@ function selectAllOciObjects() {
       selectedOciObjects.push(objName);
     }
     
-    // フォルダの場合、子オブジェクトも選択
+    // フォルダの場合、子オブジェクトも選択（page_*.pngを除外）
     if (objName.endsWith('/')) {
       const children = getChildObjects(objName);
       children.forEach(child => {
+        // ページ画像化されたファイルを除外
+        if (isGeneratedPageImage(child.name)) {
+          return;
+        }
+        
         if (!selectedOciObjects.includes(child.name)) {
           selectedOciObjects.push(child.name);
         }
@@ -947,7 +1161,15 @@ function selectAllOciObjects() {
     }
   });
   
-  loadOciObjects();
+  loadOciObjects().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 /**
@@ -955,8 +1177,21 @@ function selectAllOciObjects() {
  */
 function clearAllOciObjects() {
   if (ociObjectsBatchDeleteLoading) return;
+  
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
   selectedOciObjects = [];
-  loadOciObjects();
+  loadOciObjects().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 /**
@@ -1008,6 +1243,134 @@ async function deleteSelectedOciObjects() {
     loadOciObjects();
   }
 }
+
+/**
+ * 選択されたOCIオブジェクトをZIPでダウンロード
+ */
+window.downloadSelectedOciObjects = async function() {
+  if (selectedOciObjects.length === 0) {
+    showToast('ダウンロードするファイルを選択してください', 'warning');
+    return;
+  }
+  
+  if (ociObjectsBatchDeleteLoading) {
+    showToast('処理中です。しばらくお待ちください', 'warning');
+    return;
+  }
+  
+  try {
+    ociObjectsBatchDeleteLoading = true;
+    showLoading(`${selectedOciObjects.length}件のファイルをZIPに圧縮中...`);
+    
+    const response = await fetch('/api/oci/objects/download', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sessionStorage.getItem('token')}`,
+      },
+      body: JSON.stringify({
+        object_names: selectedOciObjects
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'ダウンロードに失敗しました');
+    }
+    
+    // ZIPファイルをダウンロード
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'documents.zip';
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    
+    hideLoading();
+    ociObjectsBatchDeleteLoading = false;
+    showToast(`${selectedOciObjects.length}件のファイルをダウンロードしました`, 'success');
+    
+  } catch (error) {
+    hideLoading();
+    ociObjectsBatchDeleteLoading = false;
+    console.error('ダウンロードエラー:', error);
+    showToast(`ダウンロードエラー: ${error.message}`, 'error');
+  }
+};
+
+/**
+ * 選択されたOCIオブジェクトをページ毎に画像化
+ */
+window.convertSelectedOciObjectsToImages = async function() {
+  if (selectedOciObjects.length === 0) {
+    showToast('変換するファイルを選択してください', 'warning');
+    return;
+  }
+  
+  if (ociObjectsBatchDeleteLoading) {
+    showToast('処理中です。しばらくお待ちください', 'warning');
+    return;
+  }
+  
+  // 確認モーダルを表示
+  const confirmed = await showConfirmModal(
+    'ページ画像化確認',
+    `選択された${selectedOciObjects.length}件のファイルを各ページPNG画像として同名フォルダに保存します。\n\n処理には時間がかかる場合があります。実行しますか？`
+  );
+  
+  if (!confirmed) {
+    return;
+  }
+  
+  try {
+    ociObjectsBatchDeleteLoading = true;
+    showLoading(`${selectedOciObjects.length}件のファイルをページ画像化中...`);
+    
+    const response = await fetch('/api/oci/objects/convert-to-images', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sessionStorage.getItem('token')}`,
+      },
+      body: JSON.stringify({
+        object_names: selectedOciObjects
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'ページ画像化に失敗しました');
+    }
+    
+    const data = await response.json();
+    
+    hideLoading();
+    ociObjectsBatchDeleteLoading = false;
+    
+    // 結果表示
+    if (data.success) {
+      showToast(data.message, 'success');
+    } else {
+      showToast(`${data.message}\n成功: ${data.success_count}件、失敗: ${data.failed_count}件`, 'warning');
+    }
+    
+    // 詳細結果をコンソールに出力
+    console.log('ページ画像化結果:', data.results);
+    
+    // 選択をクリアして一覧を更新
+    selectedOciObjects = [];
+    await loadOciObjects();
+    
+  } catch (error) {
+    hideLoading();
+    ociObjectsBatchDeleteLoading = false;
+    console.error('ページ画像化エラー:', error);
+    showToast(`ページ画像化エラー: ${error.message}`, 'error');
+  }
+};
 
 function displayDocumentsList(documents) {
   const listDiv = document.getElementById('documentsList');
@@ -1973,18 +2336,35 @@ function handleDbTablesJumpPage() {
 
 // テーブル一覧 - 個別チェックボックス切り替え
 function toggleDbTableSelection(tableName) {
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#dbTablesContent .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
   const index = selectedDbTables.indexOf(tableName);
   if (index > -1) {
     selectedDbTables.splice(index, 1);
   } else {
     selectedDbTables.push(tableName);
   }
+  
   // UIを更新
-  loadDbTables();
+  loadDbTables().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#dbTablesContent .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 // テーブル一覧 - ヘッダーチェックボックス切り替え（現在ページ全選択/解除）
 function toggleSelectAllDbTables(checked) {
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#dbTablesContent .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
   if (checked) {
     // 現在ページのすべてを選択に追加
     currentPageDbTables.forEach(tableName => {
@@ -2001,8 +2381,17 @@ function toggleSelectAllDbTables(checked) {
       }
     });
   }
+  
   // UIを更新
-  loadDbTables();
+  loadDbTables().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#dbTablesContent .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 // テーブル一覧 - すべて選択
@@ -2015,12 +2404,25 @@ function selectAllDbTables() {
 
 // テーブル一覧 - すべて解除
 function clearAllDbTables() {
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#dbTablesContent .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
   selectedDbTables = [];
   // ヘッダーチェックボックスを更新
   const headerCheckbox = document.getElementById('dbTablesHeaderCheckbox');
   if (headerCheckbox) headerCheckbox.checked = false;
+  
   // UIを更新
-  loadDbTables();
+  loadDbTables().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#dbTablesContent .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 // テーブル一覧 - 選択されたテーブルを削除
@@ -2070,45 +2472,27 @@ async function deleteSelectedDbTables() {
 
 // データベース情報更新ボタン
 async function refreshDbInfo() {
-  const btn = document.getElementById('refreshDbInfoBtn');
-  if (!btn) return;
-  
-  const originalText = btn.innerHTML;
-  
   try {
-    // ボタンを処理中状態に
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner spinner-sm" style="border-top-color: #667eea;"></span> 処理中';
-    
+    showLoading('データベース情報を更新中...');
     await loadDbInfo();
-    
-  } finally {
-    // ボタンを元に戻す
-    btn.disabled = false;
-    btn.innerHTML = originalText;
+    hideLoading();
+  } catch (error) {
+    hideLoading();
+    showToast(`更新エラー: ${error.message}`, 'error');
   }
 }
 
 // テーブル一覧更新ボタン
 async function refreshDbTables() {
-  const btn = document.getElementById('refreshDbTablesBtn');
-  if (!btn) return;
-  
-  const originalText = btn.innerHTML;
-  
   try {
-    // ボタンを処理中状態に
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner spinner-sm" style="border-top-color: #667eea;"></span> 処理中';
-    
+    showLoading('テーブル一覧を更新中...');
     // ページを1にリセット
     dbTablesPage = 1;
     await loadDbTables();
-    
-  } finally {
-    // ボタンを元に戻す
-    btn.disabled = false;
-    btn.innerHTML = originalText;
+    hideLoading();
+  } catch (error) {
+    hideLoading();
+    showToast(`更新エラー: ${error.message}`, 'error');
   }
 }
 
@@ -2247,22 +2631,13 @@ async function loadDbStorage() {
 
 // ストレージ情報更新ボタン
 async function refreshDbStorage() {
-  const btn = document.getElementById('refreshDbStorageBtn');
-  if (!btn) return;
-  
-  const originalText = btn.innerHTML;
-  
   try {
-    // ボタンを処理中状態に
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner spinner-sm" style="border-top-color: #667eea;"></span> 処理中';
-    
+    showLoading('ストレージ情報を更新中...');
     await loadDbStorage();
-    
-  } finally {
-    // ボタンを元に戻す
-    btn.disabled = false;
-    btn.innerHTML = originalText;
+    hideLoading();
+  } catch (error) {
+    hideLoading();
+    showToast(`更新エラー: ${error.message}`, 'error');
   }
 }
 
@@ -3356,8 +3731,6 @@ function updateObjectStorageStatusBadge(bucketName, namespace) {
  */
 async function loadObjectStorageSettings() {
   try {
-    showLoading('Object Storage設定を読み込み中...');
-    
     // OCI設定を取得
     const settingsData = await apiCall('/api/oci/settings');
     
@@ -3406,9 +3779,7 @@ async function loadObjectStorageSettings() {
     
   } catch (error) {
     console.error('Object Storage設定読み込みエラー:', error);
-    showToast('⚠️ Object Storage設定の読み込みに失敗しました', 'error');
-  } finally {
-    hideLoading();
+    showToast('Object Storage設定の読み込みに失敗しました', 'error');
   }
 }
 
@@ -3421,12 +3792,12 @@ async function saveObjectStorageSettings() {
     const namespace = document.getElementById('namespace').value.trim();
     
     if (!bucketName) {
-      showToast('⚠️ Bucket Nameを入力してください', 'warning');
+      showToast('Bucket Nameを入力してください', 'warning');
       return;
     }
     
     if (!namespace) {
-      showToast('⚠️ Namespaceが取得されていません', 'warning');
+      showToast('Namespaceが取得されていません', 'warning');
       return;
     }
     
@@ -3442,18 +3813,18 @@ async function saveObjectStorageSettings() {
     });
     
     if (response.success) {
-      showToast('✅ Object Storage設定を保存しました', 'success');
+      showToast('Object Storage設定を保存しました', 'success');
       // ステータスバッジを更新
       updateObjectStorageStatusBadge(bucketName, namespace);
       // 設定を再読み込み
       await loadObjectStorageSettings();
     } else {
-      showToast(`⚠️ ${response.message || '保存に失敗しました'}`, 'error');
+      showToast(response.message || '保存に失敗しました', 'error');
     }
     
   } catch (error) {
     console.error('Object Storage設定保存エラー:', error);
-    showToast(`⚠️ 保存エラー: ${error.message}`, 'error');
+    showToast(`保存エラー: ${error.message}`, 'error');
   } finally {
     hideLoading();
   }
@@ -3468,12 +3839,12 @@ async function testObjectStorageConnection() {
     const namespace = document.getElementById('namespace').value.trim();
     
     if (!bucketName) {
-      showToast('⚠️ Bucket Nameを入力してください', 'warning');
+      showToast('Bucket Nameを入力してください', 'warning');
       return;
     }
     
     if (!namespace) {
-      showToast('⚠️ Namespaceが取得されていません', 'warning');
+      showToast('Namespaceが取得されていません', 'warning');
       return;
     }
     
@@ -3489,14 +3860,14 @@ async function testObjectStorageConnection() {
     });
     
     if (response.success) {
-      showToast(response.message || '✅ 接続テストに成功しました', 'success');
+      showToast(response.message || '接続テストに成功しました', 'success');
     } else {
-      showToast(response.message || '⚠️ 接続テストに失敗しました', 'error');
+      showToast(response.message || '接続テストに失敗しました', 'error');
     }
     
   } catch (error) {
     console.error('Object Storage接続テストエラー:', error);
-    showToast(`⚠️ テストエラー: ${error.message}`, 'error');
+    showToast(`テストエラー: ${error.message}`, 'error');
   } finally {
     hideLoading();
   }

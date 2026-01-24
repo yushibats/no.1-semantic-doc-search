@@ -24,6 +24,7 @@ dependencies = [
     "transformers>=4.30.0",
     "oci-openai>=1.0.0",
     "oracledb>=3.4.1",
+    "pdf2image>=1.16.0",
 ]
 
 [tool.uv]
