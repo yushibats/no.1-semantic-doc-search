@@ -565,11 +565,12 @@ export async function downloadSelectedOciObjects() {
     });
     
     if (!response.ok) {
-      // 401エラーの場合は強制ログアウト
+      // 401エラーの場合は強制ログアウト（referenceプロジェクトに準拠）
       if (response.status === 401) {
         hideLoading();
         appState.set('ociObjectsBatchDeleteLoading', false);
-        if (!debugMode) {
+        const requireLogin = appState.get('requireLogin');
+        if (requireLogin) {
           forceLogout();
         }
         throw new Error('無効または期限切れのトークンです');
@@ -663,11 +664,12 @@ export async function convertSelectedOciObjectsToImages() {
     });
     
     if (!response.ok) {
-      // 401エラーの場合は強制ログアウト
+      // 401エラーの場合は強制ログアウト（referenceプロジェクトに準拠）
       if (response.status === 401) {
         hideLoading();
         appState.set('ociObjectsBatchDeleteLoading', false);
-        if (!debugMode) {
+        const requireLogin = appState.get('requireLogin');
+        if (requireLogin) {
           forceLogout();
         }
         throw new Error('無効または期限切れのトークンです');
@@ -754,11 +756,12 @@ export async function vectorizeSelectedOciObjects() {
     });
     
     if (!response.ok) {
-      // 401エラーの場合は強制ログアウト
+      // 401エラーの場合は強制ログアウト（referenceプロジェクトに準拠）
       if (response.status === 401) {
         hideLoading();
         appState.set('ociObjectsBatchDeleteLoading', false);
-        if (!debugMode) {
+        const requireLogin = appState.get('requireLogin');
+        if (requireLogin) {
           forceLogout();
         }
         throw new Error('無効または期限切れのトークンです');

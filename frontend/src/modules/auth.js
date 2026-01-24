@@ -260,10 +260,9 @@ export async function apiCall(endpoint, options = {}) {
     headers
   });
   
-  // 401エラーの場合、デバッグモードでなければ強制ログアウト
-  const debugMode = appState.get('debugMode');
-  if (response.status === 401 && !debugMode) {
-    const requireLogin = appState.get('requireLogin');
+  // 401エラーの場合、ログインが必要な場合は強制ログアウト（referenceプロジェクトに準拠）
+  const requireLogin = appState.get('requireLogin');
+  if (response.status === 401) {
     if (requireLogin) {
       forceLogout();
     } else {
