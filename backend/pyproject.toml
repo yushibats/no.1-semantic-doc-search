@@ -3,23 +3,23 @@ name = "semantic-doc-search-backend"
 version = "0.1.0"
 description = "セマンティック文書検索システムAPI"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
-    "fastapi[standard]>=0.110",
-    "uvicorn>=0.29",
-    "numpy>=2.0.1,<2.4",
-    "pandas>=2.2.2",
-    "python-multipart>=0.0.20",
+    "fastapi[standard]>=0.128.0",
+    "uvicorn>=0.40.0",
+    "numpy>=2.4.1",
+    "pandas>=2.3.3,<3.0.0",
+    "python-multipart>=0.0.21",
     "python-dotenv>=1.2.1",
     "oci>=2.165.1",
-    "pydantic>=2.0.0",
-    "pypdf2>=3.0.0",
-    "python-pptx>=0.6.21",
-    "python-docx>=1.1.0",
-    "pillow>=10.0.0",
+    "pydantic>=2.12.5",
+    "pypdf2>=3.0.1",
+    "python-pptx>=1.0.2",
+    "python-docx>=1.2.0",
+    "pillow>=12.1.0",
     "oci-openai>=1.0.0",
     "oracledb>=3.4.1",
-    "pdf2image>=1.16.0",
+    "pdf2image>=1.17.0",
 ]
 
 [tool.uv]
