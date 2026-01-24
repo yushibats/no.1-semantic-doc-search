@@ -1175,9 +1175,10 @@ async def search_documents(query: SearchQuery):
         logger.info(f"Query embedding生成完了: shape={query_embedding.shape}")
         
         # 2. ベクトル検索を実行（2テーブルJOIN）
+        # SQLで距離順にソートされた画像を取得（top_k件のみ）
         search_results = image_vectorizer.search_similar_images(
             query_embedding=query_embedding,
-            limit=query.top_k * 10,  # ファイル単位で集約するため、多めに取得
+            limit=query.top_k,  # 指定された件数の画像を取得
             threshold=query.min_score
         )
         
@@ -1243,40 +1244,27 @@ async def search_documents(query: SearchQuery):
         # 4. ファイルを最小距離でソート
         sorted_files = sorted(files_dict.values(), key=lambda x: x['min_distance'])
         
-        # 5. top_k件の画像を収集（ファイル単位で）
-        # 各ファイル内の画像も距離でソート
+        # 5. ファイル単位で結果を構築
+        # 注：search_resultsは既にtop_k件に制限されているため、全て含める
         results = []
-        total_images = 0
+        total_images = len(search_results)
         
         for file_data in sorted_files:
             # 画像を距離でソート（距離が小さいものが前）
             sorted_images = sorted(file_data['images'], key=lambda x: x.vector_distance)
             
-            # top_k制限チェック：残りの画像数を計算
-            remaining_slots = query.top_k - total_images
-            
-            if remaining_slots <= 0:
-                # 既にtop_k件に達している場合は終了
-                break
-            
-            # このファイルから取得する画像数を決定
-            images_to_include = sorted_images[:remaining_slots] if remaining_slots < len(sorted_images) else sorted_images
-            
-            if len(images_to_include) > 0:
-                total_images += len(images_to_include)
-                
-                file_result = FileSearchResult(
-                    file_id=file_data['file_id'],
-                    bucket=file_data['bucket'],
-                    object_name=file_data['object_name'],
-                    original_filename=file_data['original_filename'],
-                    file_size=file_data['file_size'],
-                    content_type=file_data['content_type'],
-                    uploaded_at=file_data['uploaded_at'],
-                    min_distance=file_data['min_distance'],
-                    matched_images=images_to_include
-                )
-                results.append(file_result)
+            file_result = FileSearchResult(
+                file_id=file_data['file_id'],
+                bucket=file_data['bucket'],
+                object_name=file_data['object_name'],
+                original_filename=file_data['original_filename'],
+                file_size=file_data['file_size'],
+                content_type=file_data['content_type'],
+                uploaded_at=file_data['uploaded_at'],
+                min_distance=file_data['min_distance'],
+                matched_images=sorted_images
+            )
+            results.append(file_result)
         
         # 6. ログ出力（total_imagesは既に計算済み）
         
