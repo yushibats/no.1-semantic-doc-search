@@ -62,7 +62,7 @@ retry_command apt-get install -y \
 # Install Node.js
 echo "Node.js $NODE_VERSION LTS をインストール中..."
 if ! command -v node >/dev/null 2>&1; then
-    retry_command curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION} | bash -
+    curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION} | bash -
     retry_command apt-get update -y
     retry_command apt-get install -y nodejs
 else

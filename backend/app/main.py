@@ -142,7 +142,7 @@ async def root():
         "status": "running"
     }
 
-@app.get("/api/health")
+@app.get("/health")
 async def health_check():
     """ヘルスチェック"""
     return {
@@ -157,9 +157,18 @@ async def health_check():
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """認証チェックミドルウェア"""
-    # 除外パス
-    if request.url.path in ["/api/login", "/api/logout", "/api/config", "/", "/api/health"] or \
-       request.url.path.startswith("/public/") or \
+    # 除外パス（nginxプロキシ経由を想定: /api/* -> /*）
+    path = request.url.path
+    excluded_paths = [
+        "/",
+        "/health",
+        "/login",
+        "/logout",
+        "/config"
+    ]
+    
+    if path in excluded_paths or \
+       path.startswith("/public/") or \
        request.method == "OPTIONS":
         return await call_next(request)
         
@@ -195,7 +204,7 @@ async def auth_middleware(request: Request, call_next):
 # 認証エンドポイント
 # ========================================
 
-@app.get("/api/config")
+@app.get("/config")
 def get_config():
     """フロントエンドに設定情報を公開"""
     return {
@@ -203,7 +212,7 @@ def get_config():
         "require_login": not debug_mode
     }
 
-@app.post("/api/login")
+@app.post("/login")
 def login(request: LoginRequest):
     """ログイン認証"""
     if debug_mode:
@@ -240,7 +249,7 @@ def login(request: LoginRequest):
     else:
         raise HTTPException(status_code=401, detail="ユーザー名またはパスワードが正しくありません")
 
-@app.post("/api/logout")
+@app.post("/logout")
 def logout(request: Request):
     """ログアウト処理"""
     if debug_mode:
@@ -259,7 +268,7 @@ def logout(request: Request):
 # OCI設定管理
 # ========================================
 
-@app.get("/api/oci/settings", response_model=OCISettingsResponse)
+@app.get("/oci/settings", response_model=OCISettingsResponse)
 async def get_oci_settings():
     """OCI設定を取得"""
     try:
@@ -281,7 +290,7 @@ async def get_oci_settings():
         logger.error(f"OCI設定取得エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/oci/settings", response_model=OCISettingsResponse)
+@app.post("/oci/settings", response_model=OCISettingsResponse)
 async def save_oci_settings(settings: OCISettings):
     """OCI設定を保存"""
     try:
@@ -310,7 +319,7 @@ async def save_oci_settings(settings: OCISettings):
         logger.error(f"OCI設定保存エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/oci/test", response_model=OCIConnectionTestResponse)
+@app.post("/oci/test", response_model=OCIConnectionTestResponse)
 async def test_oci_connection(request: OCIConnectionTestRequest):
     """OCI接続テスト"""
     try:
@@ -328,7 +337,7 @@ async def test_oci_connection(request: OCIConnectionTestRequest):
             message=f"接続テストエラー: {str(e)}"
         )
 
-@app.get("/api/oci/namespace")
+@app.get("/oci/namespace")
 async def get_oci_namespace():
     """OCI Object StorageのNamespaceを取得"""
     try:
@@ -353,7 +362,7 @@ class ObjectStorageSettingsRequest(BaseModel):
     bucket_name: str
     namespace: str
 
-@app.post("/api/oci/object-storage/save")
+@app.post("/oci/object-storage/save")
 async def save_object_storage_settings(request: ObjectStorageSettingsRequest):
     """Object Storage設定を保存"""
     try:
@@ -366,7 +375,7 @@ async def save_object_storage_settings(request: ObjectStorageSettingsRequest):
         logger.error(f"Object Storage設定保存エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/oci/object-storage/test")
+@app.post("/oci/object-storage/test")
 async def test_object_storage_connection(request: ObjectStorageSettingsRequest):
     """Object Storage接続テスト"""
     try:
@@ -416,7 +425,7 @@ async def test_object_storage_connection(request: ObjectStorageSettingsRequest):
             "message": f"接続テストエラー: {str(e)}"
         }
 
-@app.get("/api/oci/objects")
+@app.get("/oci/objects")
 async def list_oci_objects(
     prefix: str = Query(default="", description="プレフィックス（フォルダパス）"),
     page: int = Query(default=1, ge=1, description="ページ番号"),
@@ -669,7 +678,7 @@ async def list_oci_objects(
 class ObjectDeleteRequest(BaseModel):
     object_names: List[str]
 
-@app.get("/api/oci/objects/{object_name:path}/metadata")
+@app.get("/oci/objects/{object_name:path}/metadata")
 async def get_object_metadata(object_name: str):
     """オブジェクトのメタデータ（原始ファイル名など）を取得"""
     try:
@@ -716,7 +725,7 @@ async def get_object_metadata(object_name: str):
         logger.error(f"メタデータ取得エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/oci/objects/delete")
+@app.post("/oci/objects/delete")
 async def delete_oci_objects(request: ObjectDeleteRequest):
     """
     OCI Object Storage内のオブジェクトを削除
@@ -799,7 +808,7 @@ async def delete_oci_objects(request: ObjectDeleteRequest):
 # 文書管理
 # ========================================
 
-@app.post("/api/documents/upload", response_model=DocumentUploadResponse)
+@app.post("/documents/upload", response_model=DocumentUploadResponse)
 async def upload_document(file: UploadFile = File(...)):
     """
     文書をObject Storageにアップロード
@@ -916,7 +925,7 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"文書アップロードエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-@app.post("/api/documents/upload/multiple")
+@app.post("/documents/upload/multiple")
 async def upload_multiple_documents(files: List[UploadFile] = File(...)):
     """
     複数の文書をObject Storageにアップロード（最大10ファイル）
@@ -1095,7 +1104,7 @@ async def upload_multiple_documents(files: List[UploadFile] = File(...)):
         logger.error(f"複数ファイルアップロードエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/documents", response_model=DocumentListResponse)
+@app.get("/documents", response_model=DocumentListResponse)
 async def list_documents():
     """文書リストを取得"""
     try:
@@ -1125,7 +1134,7 @@ async def list_documents():
         logger.error(f"文書リスト取得エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/documents/{document_id}", response_model=DocumentDeleteResponse)
+@app.delete("/documents/{document_id}", response_model=DocumentDeleteResponse)
 async def delete_document(document_id: str):
     """文書を削除
     
@@ -1261,7 +1270,7 @@ async def delete_document(document_id: str):
 # セマンティック検索
 # ========================================
 
-@app.post("/api/search", response_model=SearchResponse)
+@app.post("/search", response_model=SearchResponse)
 async def search_documents(query: SearchQuery):
     """セマンティック検索を実行（Oracle Database 23aiのベクトル検索を使用）"""
     try:
@@ -1395,7 +1404,7 @@ async def search_documents(query: SearchQuery):
         logger.error(f"検索エラー: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/oci/image/{bucket}/{object_name:path}")
+@app.get("/oci/image/{bucket}/{object_name:path}")
 async def get_oci_image(bucket: str, object_name: str):
     """
     OCI Object Storageから画像を取得
@@ -1476,7 +1485,7 @@ async def get_oci_image(bucket: str, object_name: str):
 # DB管理
 # ========================================
 
-@app.get("/api/db/settings", response_model=DatabaseSettingsResponse)
+@app.get("/db/settings", response_model=DatabaseSettingsResponse)
 async def get_db_settings():
     """DB設定を取得（接続確認なし - パフォーマンス最適化）"""
     try:
@@ -1495,7 +1504,7 @@ async def get_db_settings():
         logger.error(f"DB設定取得エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/db/settings")
+@app.post("/db/settings")
 async def save_db_settings(settings: DatabaseSettings):
     """DB設定を保存"""
     try:
@@ -1511,7 +1520,7 @@ async def save_db_settings(settings: DatabaseSettings):
         logger.error(f"DB設定保存エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/db/test", response_model=DatabaseConnectionTestResponse)
+@app.post("/db/test", response_model=DatabaseConnectionTestResponse)
 async def test_db_connection(request: DatabaseConnectionTestRequest):
     """DB接続テスト"""
     try:
@@ -1534,7 +1543,7 @@ async def test_db_connection(request: DatabaseConnectionTestRequest):
             message=f"接続テストエラー: {str(e)}"
         )
 
-@app.get("/api/db/info", response_model=DatabaseInfoResponse)
+@app.get("/db/info", response_model=DatabaseInfoResponse)
 async def get_db_info():
     """データベース情報を取得"""
     try:
@@ -1550,7 +1559,7 @@ async def get_db_info():
         logger.error(f"データベース情報取得エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/db/tables", response_model=DatabaseTablesResponse)
+@app.get("/db/tables", response_model=DatabaseTablesResponse)
 async def get_db_tables():
     """テーブル一覧を取得"""
     try:
@@ -1572,7 +1581,7 @@ async def get_db_tables():
 # データベース接続設定
 # ========================================
 
-@app.get("/api/settings/database", response_model=DatabaseSettingsResponse)
+@app.get("/settings/database", response_model=DatabaseSettingsResponse)
 async def get_database_settings():
     """データベース接続設定を取得（接続確認なし - パフォーマンス最適化）"""
     try:
@@ -1590,7 +1599,7 @@ async def get_database_settings():
         logger.error(f"データベース設定取得エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/settings/database/env")
+@app.get("/settings/database/env")
 async def get_database_env_info(include_password: bool = False):
     """環境変数からDB接続情報を取得"""
     try:
@@ -1612,7 +1621,7 @@ async def get_database_env_info(include_password: bool = False):
             "available_services": []
         }
 
-@app.post("/api/settings/database", response_model=DatabaseSettingsResponse)
+@app.post("/settings/database", response_model=DatabaseSettingsResponse)
 async def save_database_settings(settings: DatabaseSettings):
     """データベース接続設定を保存（接続確認なし - パフォーマンス最適化）"""
     try:
@@ -1636,7 +1645,7 @@ async def save_database_settings(settings: DatabaseSettings):
         logger.error(f"データベース設定保存エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/settings/database/test", response_model=DatabaseConnectionTestResponse)
+@app.post("/settings/database/test", response_model=DatabaseConnectionTestResponse)
 async def test_database_connection(request: DatabaseConnectionTestRequest):
     """データベース接続テスト"""
     try:
@@ -1667,7 +1676,7 @@ async def test_database_connection(request: DatabaseConnectionTestRequest):
             message=f"接続テストエラー: {str(e)}"
         )
 
-@app.get("/api/database/info", response_model=DatabaseInfoResponse)
+@app.get("/database/info", response_model=DatabaseInfoResponse)
 async def get_database_info():
     """データベース情報を取得"""
     try:
@@ -1690,7 +1699,7 @@ async def get_database_info():
             info=None
         )
 
-@app.get("/api/database/tables", response_model=DatabaseTablesResponse)
+@app.get("/database/tables", response_model=DatabaseTablesResponse)
 async def get_database_tables(
     page: int = Query(1, ge=1, description="ページ番号"),
     page_size: int = Query(20, ge=1, le=100, description="1ページあたりの件数")
@@ -1725,7 +1734,7 @@ async def get_database_tables(
             total=0
         )
 
-@app.post("/api/database/tables/refresh-statistics")
+@app.post("/database/tables/refresh-statistics")
 async def refresh_table_statistics():
     """テーブルの統計情報を更新"""
     try:
@@ -1739,7 +1748,7 @@ async def refresh_table_statistics():
             "updated_count": 0
         }
 
-@app.post("/api/database/tables/batch-delete")
+@app.post("/database/tables/batch-delete")
 async def delete_database_tables(request: dict):
     """データベースのテーブルを一括削除"""
     from app.models.database import TableBatchDeleteResponse
@@ -1769,7 +1778,7 @@ async def delete_database_tables(request: dict):
             message=str(e)
         )
 
-@app.get("/api/database/tables/{table_name}/data", response_model=None)
+@app.get("/database/tables/{table_name}/data", response_model=None)
 async def get_table_data(
     table_name: str,
     page: int = Query(1, ge=1, description="ページ番号"),
@@ -1825,7 +1834,7 @@ class FileInfoDeleteRequest(BaseModel):
     """ファイル情報削除リクエスト"""
     file_ids: List[str]
 
-@app.post("/api/database/file-info/batch-delete")
+@app.post("/database/file-info/batch-delete")
 async def delete_file_info_records(request: FileInfoDeleteRequest):
     """FILE_INFOテーブルのレコードを一括削除"""
     from app.models.database import TableBatchDeleteResponse
@@ -1855,7 +1864,7 @@ async def delete_file_info_records(request: FileInfoDeleteRequest):
             message=str(e)
         )
 
-@app.post("/api/database/tables/{table_name}/delete")
+@app.post("/database/tables/{table_name}/delete")
 async def delete_table_data(table_name: str, request: dict):
     """
     任意のテーブルのレコードを主キー指定で一括削除（汎用API）
@@ -1894,7 +1903,7 @@ async def delete_table_data(table_name: str, request: dict):
             message=str(e)
         )
 
-@app.get("/api/database/storage", response_model=DatabaseStorageResponse)
+@app.get("/database/storage", response_model=DatabaseStorageResponse)
 async def get_database_storage():
     """データベースストレージ情報を取得"""
     try:
@@ -1932,7 +1941,7 @@ async def get_database_storage():
             message=f"エラー: {str(e)}"
         )
 
-@app.post("/api/settings/database/wallet", response_model=WalletUploadResponse)
+@app.post("/settings/database/wallet", response_model=WalletUploadResponse)
 async def upload_wallet(file: UploadFile = File(...)):
     """Walletファイルをアップロード"""
     try:
@@ -2054,7 +2063,7 @@ def find_target_autonomous_database(db_client, compartment_id: str, adb_name: st
             return adb
     return candidates[0]
 
-@app.get("/api/database/target/ocid")
+@app.get("/database/target/ocid")
 def get_target_autonomous_database_ocid():
     """ターゲットAutonomous DatabaseのOCIDのみを取得（軽量版）"""
     adb_ocid = os.environ.get("ADB_OCID")
@@ -2066,7 +2075,7 @@ def get_target_autonomous_database_ocid():
         "ocid": adb_ocid
     }
 
-@app.get("/api/database/connection-info")
+@app.get("/database/connection-info")
 def get_database_connection_info():
     """.envファイルからデータベース接続情報を取得（軽量版）"""
     conn_string = os.environ.get("ORACLE_26AI_CONNECTION_STRING")
@@ -2106,7 +2115,7 @@ def get_database_connection_info():
             "message": f"解析エラー: {str(e)}"
         }
 
-@app.get("/api/database/target")
+@app.get("/database/target")
 def get_target_autonomous_database():
     """ターゲットAutonomous Database情報を取得"""
     adb_ocid = os.environ.get("ADB_OCID")
@@ -2136,7 +2145,7 @@ def get_target_autonomous_database():
         "time_created": getattr(adb, "time_created", None),
     }
 
-@app.post("/api/database/target/start")
+@app.post("/database/target/start")
 def start_target_autonomous_database():
     """ターゲットAutonomous Databaseを起動"""
     adb_ocid = os.environ.get("ADB_OCID")
@@ -2160,7 +2169,7 @@ def start_target_autonomous_database():
     work_request_id = getattr(resp, "headers", {}).get("opc-work-request-id") if resp else None
     return {"status": "accepted", "message": "起動リクエストを送信しました", "id": adb.id, "work_request_id": work_request_id}
 
-@app.post("/api/database/target/stop")
+@app.post("/database/target/stop")
 def stop_target_autonomous_database():
     """ターゲットAutonomous Databaseを停止"""
     adb_ocid = os.environ.get("ADB_OCID")
@@ -2184,7 +2193,7 @@ def stop_target_autonomous_database():
     work_request_id = getattr(resp, "headers", {}).get("opc-work-request-id") if resp else None
     return {"status": "accepted", "message": "停止リクエストを送信しました", "id": adb.id, "work_request_id": work_request_id}
 
-@app.post("/api/adb/get", response_model=ADBGetResponse)
+@app.post("/adb/get", response_model=ADBGetResponse)
 async def get_adb_info(request: ADBGetRequest):
     """Autonomous Database情報を取得（旧エンドポイント、互換性のため残す）"""
     try:
@@ -2196,7 +2205,7 @@ async def get_adb_info(request: ADBGetRequest):
             message=f"エラー: {str(e)}"
         )
 
-@app.post("/api/adb/start", response_model=ADBOperationResponse)
+@app.post("/adb/start", response_model=ADBOperationResponse)
 async def start_adb(request: ADBOperationRequest):
     """Autonomous Databaseを起動（旧エンドポイント、互換性のため残す）"""
     try:
@@ -2208,7 +2217,7 @@ async def start_adb(request: ADBOperationRequest):
             message=f"起動エラー: {str(e)}"
         )
 
-@app.post("/api/adb/stop", response_model=ADBOperationResponse)
+@app.post("/adb/stop", response_model=ADBOperationResponse)
 async def stop_adb(request: ADBOperationRequest):
     """Autonomous Databaseを停止（旧エンドポイント、互換性のため残す）"""
     try:
@@ -2231,7 +2240,7 @@ class ChatMessage(BaseModel):
     history: Optional[List[dict]] = None
     images: Optional[List[dict]] = None
 
-@app.post("/api/copilot/chat")
+@app.post("/copilot/chat")
 async def copilot_chat_http(request: ChatMessage):
     """AI Assistant チャット（HTTP ストリーミング）"""
     copilot = get_copilot_service()
@@ -2264,7 +2273,7 @@ class DocumentConvertRequest(BaseModel):
     """文書ページ画像化リクエスト"""
     object_names: List[str]
 
-@app.post("/api/oci/objects/download")
+@app.post("/oci/objects/download")
 async def download_selected_objects(request: DocumentDownloadRequest, background_tasks: BackgroundTasks):
     """
     選択されたファイルをZIPアーカイブとしてダウンロード
@@ -2328,7 +2337,7 @@ class VectorizeRequest(BaseModel):
     """画像ベクトル化リクエスト"""
     object_names: List[str]
 
-@app.post("/api/oci/objects/vectorize")
+@app.post("/oci/objects/vectorize")
 async def vectorize_documents(request: VectorizeRequest):
     """
     選択されたファイルを画像ベクトル化してDBに保存
@@ -2657,7 +2666,7 @@ async def vectorize_documents(request: VectorizeRequest):
         }
     )
 
-@app.post("/api/oci/objects/convert-to-images")
+@app.post("/oci/objects/convert-to-images")
 async def convert_documents_to_images(request: DocumentConvertRequest):
     """
     選択されたファイルをページ毎にPNG画像化して同名フォルダに保存
