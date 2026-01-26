@@ -147,7 +147,42 @@ else
     exit 1
 fi
 
-
+# Setup ADB wallet
+WALLET_DIR="${INSTALL_DIR}/props/wallet"
+echo "ADBウォレットをセットアップ中..."
+if [ -f "${INSTALL_DIR}/wallet.zip" ]; then
+    mkdir -p "${WALLET_DIR}"
+    unzip -o "${INSTALL_DIR}/wallet.zip" -d "${WALLET_DIR}"
+    
+    # 必須ウォレットファイルのチェック
+    echo "必須ウォレットファイルをチェック中..."
+    REQUIRED_FILES=("cwallet.sso" "ewallet.p12" "sqlnet.ora" "tnsnames.ora")
+    MISSING_FILES=()
+    
+    for file in "${REQUIRED_FILES[@]}"; do
+        if [ ! -f "${WALLET_DIR}/${file}" ]; then
+            MISSING_FILES+=("$file")
+        fi
+    done
+    
+    if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+        echo "エラー: 以下の必須ウォレットファイルが見つかりません:"
+        for file in "${MISSING_FILES[@]}"; do
+            echo "  ⚠️ $file"
+        done
+        exit 1
+    fi
+    
+    echo "✓ すべての必須ウォレットファイルが確認されました"
+    echo "  - cwallet.sso (自動ログイン)"
+    echo "  - ewallet.p12 (パスワード認証)"
+    echo "  - sqlnet.ora (ネットワーク設定)"
+    echo "  - tnsnames.ora (接続文字列)"
+    
+    echo "ADBウォレットのセットアップが完了しました"
+else
+    echo "警告: ${INSTALL_DIR}/wallet.zip が見つかりません。ウォレットのセットアップをスキップします。"
+fi
 
 # Setup no.1-semantic-doc-search project
 PROJECT_DIR="${INSTALL_DIR}/no.1-semantic-doc-search"
@@ -197,6 +232,9 @@ if [ -d "$PROJECT_DIR" ]; then
     
     # Set Oracle Client Library Directory
     sed -i "s|ORACLE_CLIENT_LIB_DIR=.*|ORACLE_CLIENT_LIB_DIR=${INSTANTCLIENT_DIR}|g" .env
+    
+    # Set TNS_ADMIN to wallet directory
+    sed -i "s|TNS_ADMIN=.*|TNS_ADMIN=${WALLET_DIR}|g" .env
     
     # Set OCI Region (if available)
     if [ -n "${OCI_REGION:-}" ]; then
@@ -350,6 +388,9 @@ if [ -f .env ]; then
   source .env
   set +a
 fi
+
+# Set TNS_ADMIN for Oracle Wallet
+export TNS_ADMIN="/u01/aipoc/props/wallet"
 
 echo "セマンティック文書検索バックエンドサービスを起動中..."
 # 環境変数からAPI_HOSTとAPI_PORTを読み取る（デフォルト値付き）

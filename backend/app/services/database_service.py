@@ -24,24 +24,34 @@ def setup_tns_admin() -> str:
         str: TNS_ADMIN path
     """
     if not os.environ.get('TNS_ADMIN'):
-        lib_dir = os.environ.get('ORACLE_CLIENT_LIB_DIR')
-        if not lib_dir:
-            # Try to find valid instant client path
-            candidates = [
-                '/u01/aipoc/instantclient_23_8',
-                '/u01/aipoc/instantclient_23_9',
-                '/u01/aipoc/instantclient_23_26'
-            ]
-            for path in candidates:
-                if os.path.exists(path):
-                    lib_dir = path
-                    break
-            
-            # Fallback to default if not found
+        # 優先順位: /u01/aipoc/props/wallet > ORACLE_CLIENT_LIB_DIR/network/admin
+        wallet_location = None
+        
+        # デフォルトのウォレットディレクトリ
+        default_wallet = '/u01/aipoc/props/wallet'
+        if os.path.exists(default_wallet):
+            wallet_location = default_wallet
+        else:
+            # フォールバック: ORACLE_CLIENT_LIB_DIR
+            lib_dir = os.environ.get('ORACLE_CLIENT_LIB_DIR')
             if not lib_dir:
-                lib_dir = '/u01/aipoc/instantclient_23_26'
+                # Try to find valid instant client path
+                candidates = [
+                    '/u01/aipoc/instantclient_23_8',
+                    '/u01/aipoc/instantclient_23_9',
+                    '/u01/aipoc/instantclient_23_26'
+                ]
+                for path in candidates:
+                    if os.path.exists(path):
+                        lib_dir = path
+                        break
+                
+                # Fallback to default if not found
+                if not lib_dir:
+                    lib_dir = '/u01/aipoc/instantclient_23_26'
 
-        wallet_location = os.path.join(lib_dir, "network", "admin")
+            wallet_location = os.path.join(lib_dir, "network", "admin")
+        
         os.environ['TNS_ADMIN'] = wallet_location
         logger.info(f"Set TNS_ADMIN to: {wallet_location}")
     
@@ -140,12 +150,18 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
     wallet_files = os.listdir(tns_admin)
     logger.info(f"  Walletファイル: {wallet_files}")
     
-    required_files = ['cwallet.sso', 'tnsnames.ora']
+    # 必須ウォレットファイルのチェック（4つ）
+    required_files = ['cwallet.sso', 'ewallet.p12', 'sqlnet.ora', 'tnsnames.ora']
     missing = [f for f in required_files if f not in wallet_files]
     if missing:
         logger.error(f"  ✘ 必要なWalletファイルが不足: {missing}")
+        logger.error("  必須: cwallet.sso (自動ログイン), ewallet.p12 (パスワード認証), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)")
         return {'success': False, 'message': f'必要なWalletファイルが不足: {missing}'}
-    logger.info("  ✔ WalletファイルOK")
+    logger.info("  ✔ すべての必須Walletファイルが確認されました")
+    logger.info("    - cwallet.sso (自動ログイン)")
+    logger.info("    - ewallet.p12 (パスワード認証)")
+    logger.info("    - sqlnet.ora (ネットワーク設定)")
+    logger.info("    - tnsnames.ora (接続文字列)")
     
     # 利用可能なサービス確認
     import re
@@ -445,11 +461,14 @@ class DatabaseService:
         wallet_files = os.listdir(wallet_location)
         logger.info(f"  Walletファイル: {wallet_files}")
         
-        required_files = ['cwallet.sso', 'tnsnames.ora']
+        # 必須ウォレットファイルのチェック（4つ）
+        required_files = ['cwallet.sso', 'ewallet.p12', 'sqlnet.ora', 'tnsnames.ora']
         missing_files = [f for f in required_files if f not in wallet_files]
         if missing_files:
             logger.error(f"  ✘ 必要なWalletファイルが不足: {missing_files}")
+            logger.error("  必須: cwallet.sso (自動ログイン), ewallet.p12 (パスワード認証), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)")
             return None
+        logger.info("  ✔ すべての必須Walletファイルが確認されました")
         
         # TNS_ADMIN設定
         os.environ['TNS_ADMIN'] = wallet_location
@@ -665,6 +684,19 @@ class DatabaseService:
         Returns:
             Walletのパス、またはNone
         """
+        # 優先順位: 環境変数 TNS_ADMIN > /u01/aipoc/props/wallet > ORACLE_CLIENT_LIB_DIR/network/admin
+        wallet_location = os.getenv('TNS_ADMIN')
+        
+        if wallet_location:
+            if create_if_missing or os.path.exists(wallet_location):
+                return wallet_location
+        
+        # デフォルトのウォレットディレクトリ
+        default_wallet = '/u01/aipoc/props/wallet'
+        if create_if_missing or os.path.exists(default_wallet):
+            return default_wallet
+        
+        # フォールバック: ORACLE_CLIENT_LIB_DIR
         lib_dir = os.getenv('ORACLE_CLIENT_LIB_DIR')
         if lib_dir:
             wallet_location = os.path.join(lib_dir, "network", "admin")
@@ -676,15 +708,27 @@ class DatabaseService:
     def upload_wallet(self, wallet_file_path: str) -> Dict[str, Any]:
         """�Walletファイルをアップロードして解凍"""
         try:
-            lib_dir = os.getenv('ORACLE_CLIENT_LIB_DIR')
-            if not lib_dir:
-                return {
-                    "success": False,
-                    "message": "ORACLE_CLIENT_LIB_DIR環境変数が設定されていません",
-                    "available_services": []
-                }
+            # 優先順位に従ってウォレット場所を決定
+            wallet_location = None
             
-            wallet_location = os.path.join(lib_dir, "network", "admin")
+            # TNS_ADMINが設定されている場合はそれを使用
+            if os.getenv('TNS_ADMIN'):
+                wallet_location = os.getenv('TNS_ADMIN')
+            # デフォルトのウォレットディレクトリが存在するか、作成する
+            elif os.path.exists('/u01/aipoc/props'):
+                wallet_location = '/u01/aipoc/props/wallet'
+            else:
+                # フォールバック: ORACLE_CLIENT_LIB_DIR
+                lib_dir = os.getenv('ORACLE_CLIENT_LIB_DIR')
+                if not lib_dir:
+                    return {
+                        "success": False,
+                        "message": "ORACLE_CLIENT_LIB_DIR環境変数が設定されていません",
+                        "available_services": []
+                    }
+                wallet_location = os.path.join(lib_dir, "network", "admin")
+            
+            logger.info(f"Walletアップロード先: {wallet_location}")
             
             # ディレクトリが存在する場合はバックアップ
             if os.path.exists(wallet_location):
@@ -701,8 +745,8 @@ class DatabaseService:
             
             logger.info(f"Walletを解凍しました: {wallet_location}")
             
-            # 必要なファイルの存在確認
-            required_files = ['cwallet.sso', 'tnsnames.ora', 'sqlnet.ora']
+            # 必須ウォレットファイルの存在確認（4つ）
+            required_files = ['cwallet.sso', 'ewallet.p12', 'sqlnet.ora', 'tnsnames.ora']
             missing_files = []
             for file in required_files:
                 if not os.path.exists(os.path.join(wallet_location, file)):
@@ -711,9 +755,15 @@ class DatabaseService:
             if missing_files:
                 return {
                     "success": False,
-                    "message": f"必要なファイルが見つかりません: {', '.join(missing_files)}",
+                    "message": f"必要なファイルが見つかりません: {', '.join(missing_files)}\n必須: cwallet.sso (自動ログイン), ewallet.p12 (パスワード認証), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)",
                     "available_services": []
                 }
+            
+            logger.info("✓ すべての必須ウォレットファイルが確認されました")
+            logger.info("  - cwallet.sso (自動ログイン)")
+            logger.info("  - ewallet.p12 (パスワード認証)")
+            logger.info("  - sqlnet.ora (ネットワーク設定)")
+            logger.info("  - tnsnames.ora (接続文字列)")
             
             # tnsnames.oraからDSNを抽出
             available_services = self._extract_dsn_from_tnsnames(wallet_location)
