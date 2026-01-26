@@ -6,6 +6,9 @@ exec > >(tee -a /var/log/init_script.log) 2>&1
 
 echo "アプリケーションのセットアップを初期化中..."
 
+# Configuration
+INSTALL_DIR="/u01/aipoc"
+
 # Read configuration flags
 ENABLE_DIFY="false"
 
@@ -14,9 +17,6 @@ if [ -f "${INSTALL_DIR}/props/enable_dify.txt" ]; then
 fi
 
 echo "Difyインストール有効: $ENABLE_DIFY"
-
-# Configuration
-INSTALL_DIR="/u01/aipoc"
 NODE_VERSION="20.x"
 INSTANTCLIENT_VERSION="23.26.0.0.0"
 INSTANTCLIENT_ZIP="instantclient-basic-linux.x64-${INSTANTCLIENT_VERSION}.zip"
