@@ -609,12 +609,23 @@ services:
   api:
     ports:
       - '${DIFY_PORT:-5001}:${DIFY_PORT:-5001}'
+    environment:
+      - NLTK_DATA=/tmp/nltk_data
+    volumes:
+      - ./volumes/nltk_data:/tmp/nltk_data
+  worker:
+    environment:
+      - NLTK_DATA=/tmp/nltk_data
+    volumes:
+      - ./volumes/nltk_data:/tmp/nltk_data
 EOL
         
         # Set permissions for storage directories
         echo "ストレージディレクトリの権限を設定中..."
         mkdir -p volumes/app/storage
+        mkdir -p volumes/nltk_data
         chown -R 1001:1001 volumes/app/storage
+        chown -R 1001:1001 volumes/nltk_data
         
         # Start Docker Compose
         echo "Difyサービスを起動中..."
@@ -643,11 +654,13 @@ EOL
             echo "NLTKダウンロード問題を修正中..."
             API_CONTAINER=$(docker ps --filter "name=api" --format "{{.Names}}" | head -n 1)
             if [ -n "$API_CONTAINER" ]; then
-                docker exec "$API_CONTAINER" python -c 'import nltk; nltk.download("punkt", quiet=True); nltk.download("punkt_tab", quiet=True)' || true
+                # Set NLTK_DATA to writable directory and download
+                docker exec "$API_CONTAINER" bash -c 'mkdir -p /tmp/nltk_data && export NLTK_DATA=/tmp/nltk_data && python -c "import nltk; nltk.download(\"punkt\", download_dir=\"/tmp/nltk_data\", quiet=True); nltk.download(\"punkt_tab\", download_dir=\"/tmp/nltk_data\", quiet=True)"' || true
             fi
             
             if [ -n "$WORKER_CONTAINER" ]; then
-                docker exec "$WORKER_CONTAINER" python -c 'import nltk; nltk.download("punkt", quiet=True); nltk.download("punkt_tab", quiet=True)' || true
+                # Set NLTK_DATA to writable directory and download
+                docker exec "$WORKER_CONTAINER" bash -c 'mkdir -p /tmp/nltk_data && export NLTK_DATA=/tmp/nltk_data && python -c "import nltk; nltk.download(\"punkt\", download_dir=\"/tmp/nltk_data\", quiet=True); nltk.download(\"punkt_tab\", download_dir=\"/tmp/nltk_data\", quiet=True)"' || true
             fi
             
             # Restart containers to apply configuration
