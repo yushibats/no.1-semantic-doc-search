@@ -3686,12 +3686,6 @@ async function refreshDbTables() {
       }
     });
     
-    if (!statsResult.success) {
-      utilsShowToast(`統計情報更新エラー: ${statsResult.message}`, 'error');
-    } else {
-      utilsShowToast(statsResult.message, 'success');
-    }
-    
     // ページを1にリセット
     dbTablesPage = 1;
     
@@ -3699,6 +3693,13 @@ async function refreshDbTables() {
     utilsShowLoading('テーブル一覧を更新中...');
     await loadDbTables();
     utilsHideLoading();
+    
+    // オーバーレイが非表示になった後にトーストを表示
+    if (!statsResult.success) {
+      utilsShowToast(`統計情報更新エラー: ${statsResult.message}`, 'error');
+    } else {
+      utilsShowToast(statsResult.message, 'success');
+    }
   } catch (error) {
     utilsHideLoading();
     utilsShowToast(`更新エラー: ${error.message}`, 'error');
@@ -5030,11 +5031,15 @@ async function refreshObjectStorageSettings() {
     const namespaceInput = document.getElementById('namespace');
     const namespaceStatus = document.getElementById('namespaceStatus');
     
+    let toastMessage = '';
+    let toastType = 'success';
+    
     if (bucketNameInput && settingsData.settings.bucket_name) {
       bucketNameInput.value = settingsData.settings.bucket_name;
-      utilsShowToast('Bucket Nameを更新しました', 'success');
+      toastMessage = 'Bucket Nameを更新しました';
     } else {
-      utilsShowToast('Bucket Nameが.envに設定されていません', 'warning');
+      toastMessage = 'Bucket Nameが.envに設定されていません';
+      toastType = 'warning';
     }
     
     // Namespaceを取得（.env優先、空ならAPI）
@@ -5043,7 +5048,9 @@ async function refreshObjectStorageSettings() {
       namespaceInput.value = settingsData.settings.namespace;
       namespaceStatus.textContent = '環境変数から読み込み済み';
       namespaceStatus.className = 'text-xs text-green-600';
-      utilsShowToast('Namespaceを更新しました', 'success');
+      if (toastMessage && bucketNameInput && settingsData.settings.bucket_name) {
+        toastMessage = 'Bucket NameとNamespaceを更新しました';
+      }
     } else {
       // 空の場合、APIで取得を試みる
       namespaceStatus.textContent = 'Namespaceを取得中...';
@@ -5055,17 +5062,19 @@ async function refreshObjectStorageSettings() {
           namespaceInput.value = namespaceData.namespace;
           namespaceStatus.textContent = `OCI APIから自動取得済み`;
           namespaceStatus.className = 'text-xs text-green-600';
-          utilsShowToast('NamespaceをAPIから取得しました', 'success');
+          toastMessage = 'NamespaceをAPIから取得しました';
         } else {
           namespaceStatus.textContent = '⚠️ Namespaceの取得に失敗しました';
           namespaceStatus.className = 'text-xs text-red-600';
-          utilsShowToast(namespaceData.message || 'Namespaceの取得に失敗しました', 'error');
+          toastMessage = namespaceData.message || 'Namespaceの取得に失敗しました';
+          toastType = 'error';
         }
       } catch (namespaceError) {
         // console.error('Namespace取得エラー:', namespaceError);
         namespaceStatus.textContent = `⚠️ 取得エラー: ${namespaceError.message}`;
         namespaceStatus.className = 'text-xs text-red-600';
-        utilsShowToast(`Namespace取得エラー: ${namespaceError.message}`, 'error');
+        toastMessage = `Namespace取得エラー: ${namespaceError.message}`;
+        toastType = 'error';
       }
     }
     
@@ -5075,11 +5084,17 @@ async function refreshObjectStorageSettings() {
       namespaceInput?.value
     );
     
+    utilsHideLoading();
+    
+    // オーバーレイが非表示になった後にトーストを表示
+    if (toastMessage) {
+      utilsShowToast(toastMessage, toastType);
+    }
+    
   } catch (error) {
     // console.error('Object Storage設定更新エラー:', error);
-    utilsShowToast(`設定更新エラー: ${error.message}`, 'error');
-  } finally {
     utilsHideLoading();
+    utilsShowToast(`設定更新エラー: ${error.message}`, 'error');
   }
 }
 

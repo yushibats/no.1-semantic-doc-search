@@ -59,52 +59,13 @@ try:
     import platform
     ORACLEDB_AVAILABLE = True
     
-    # Linux の場合、Oracle Client ライブラリを初期化
-    _oracle_client_initialized = False
+    # Thin modeを使用（Oracle Clientは不要）
 except ImportError:
     logger.warning("oracledb モジュールが利用できません。pip install oracledb を実行してください。")
     ORACLEDB_AVAILABLE = False
-    _oracle_client_initialized = False
 
 
-def init_oracle_client():
-    """
-    Initialize Oracle Client library (Thick mode)
-    
-    Thick modeはOracle Clientが必要ですが、Wallet接続が安定しており推奨されます。
-    TNS_ADMIN環境変数でWalletの場所を指定します。
-    """
-    global _oracle_client_initialized
-    
-    if _oracle_client_initialized:
-        return True
-    
-    try:
-        # ORACLE_CLIENT_LIB_DIRからOracle Clientの場所を取得
-        lib_dir = os.getenv('ORACLE_CLIENT_LIB_DIR')
-        
-        if lib_dir and os.path.exists(lib_dir):
-            logger.info(f"Oracle Client初期化中 (Thick mode): {lib_dir}")
-            oracledb.init_oracle_client(lib_dir=lib_dir)
-        else:
-            # lib_dirがない場合、デフォルトパスを使用
-            logger.info("Oracle Client初期化中 (Thick mode): デフォルトパス")
-            oracledb.init_oracle_client()
-        
-        _oracle_client_initialized = True
-        logger.info("Oracle Client初期化成功 (Thick mode)")
-        return True
-        
-    except Exception as e:
-        error_str = str(e)
-        # 既に初期化済みの場合は成功とみなす
-        if "already been initialized" in error_str or "DPY-2019" in error_str:
-            _oracle_client_initialized = True
-            logger.info("Oracle Clientは既に初期化済み (Thick mode)")
-            return True
-        
-        logger.error(f"Oracle Client初期化エラー: {e}")
-        return False
+# Thin modeでは init_oracle_client() は不要（削除済み）
 
 
 def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
@@ -130,17 +91,10 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
     if not ORACLEDB_AVAILABLE:
         logger.error("  ✘ oracledbモジュールが利用できません")
         return {'success': False, 'message': 'oracledbモジュールがインストールされていません'}
-    logger.info(f"  ✔ oracledb version: {oracledb.__version__}")
+    logger.info(f"  ✔ oracledb version: {oracledb.__version__} (Thin mode)")
     
-    # Step 2: Oracle Client初期化
-    logger.info("[Step 2] Oracle Client初期化")
-    if not init_oracle_client():
-        logger.error("  ✘ Oracle Clientの初期化に失敗")
-        return {'success': False, 'message': 'Oracle Clientの初期化に失敗しました'}
-    logger.info("  ✔ Oracle Client初期化成功")
-    
-    # Step 3: TNS_ADMIN設定
-    logger.info("[Step 3] TNS_ADMIN設定")
+    # Step 2: Wallet場所設定（Thin mode）
+    logger.info("[Step 2] Wallet場所設定（Thin mode）")
     tns_admin = setup_tns_admin()
     logger.info(f"  TNS_ADMIN: {tns_admin}")
     
@@ -153,15 +107,15 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
     logger.info(f"  Walletファイル: {wallet_files}")
     
     # 必須ウォレットファイルのチェック（4つ）
-    required_files = ['cwallet.sso', 'ewallet.p12', 'sqlnet.ora', 'tnsnames.ora']
+    required_files = ['cwallet.sso', 'ewallet.pem', 'sqlnet.ora', 'tnsnames.ora']
     missing = [f for f in required_files if f not in wallet_files]
     if missing:
         logger.error(f"  ✘ 必要なWalletファイルが不足: {missing}")
-        logger.error("  必須: cwallet.sso (自動ログイン), ewallet.p12 (パスワード認証), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)")
+        logger.error("  必須: cwallet.sso (自動ログイン), ewallet.pem (PEM形式証明書), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)")
         return {'success': False, 'message': f'必要なWalletファイルが不足: {missing}'}
     logger.info("  ✔ すべての必須Walletファイルが確認されました")
     logger.info("    - cwallet.sso (自動ログイン)")
-    logger.info("    - ewallet.p12 (パスワード認証)")
+    logger.info("    - ewallet.pem (PEM形式証明書)")
     logger.info("    - sqlnet.ora (ネットワーク設定)")
     logger.info("    - tnsnames.ora (接続文字列)")
     
@@ -218,13 +172,17 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
                 logger.info(f"  接続開始時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}")
                 start_time = time.time()
                 
-                # シンプルな接続（参照プロジェクトと同じ方式）
-                logger.info("  >>> oracledb.connect()呼び出し中... (ハングする場合はDB停止の可能性)")
+                # Thin mode接続(Wallet使用)
+                # 注: Walletのパスワードは ORACLE_26AI_CONNECTION_STRING のパスワードを使用
+                logger.info("  >>> oracledb.connect()呼び出し中... (Thin mode, タイムアウト: 10秒)")
                 connection = oracledb.connect(
                     user=username,
                     password=password,
                     dsn=dsn,
-                    tcp_connect_timeout=10  # 10秒でタイムアウト（推奨値）
+                    config_dir=tns_admin,  # Wallet場所
+                    wallet_location=tns_admin,  # Wallet場所
+                    wallet_password=password,  # Walletのパスワード
+                    tcp_connect_timeout=10  # 10秒でタイムアウト(推奨値)
                 )
                 
                 elapsed = time.time() - start_time
@@ -438,15 +396,8 @@ class DatabaseService:
             return None
         logger.info(f"  ✔ 接続情報OK: username={username}, dsn={dsn}")
         
-        # Step 3: Oracle Client初期化
-        logger.info("[Step 3] Oracle Client初期化")
-        if not init_oracle_client():
-            logger.error("  ✘ Oracle Clientの初期化に失敗しました")
-            return None
-        logger.info("  ✔ Oracle Client初期化成功")
-        
-        # Step 4: Wallet場所確認とTNS_ADMIN設定
-        logger.info("[Step 4] Wallet場所確認とTNS_ADMIN設定")
+        # Step 3: Wallet場所確認（Thin mode）
+        logger.info("[Step 3] Wallet場所確認（Thin mode）")
         wallet_location = self._get_wallet_location()
         logger.info(f"  ORACLE_CLIENT_LIB_DIR: {os.getenv('ORACLE_CLIENT_LIB_DIR')}")
         logger.info(f"  Wallet場所: {wallet_location}")
@@ -464,11 +415,11 @@ class DatabaseService:
         logger.info(f"  Walletファイル: {wallet_files}")
         
         # 必須ウォレットファイルのチェック（4つ）
-        required_files = ['cwallet.sso', 'ewallet.p12', 'sqlnet.ora', 'tnsnames.ora']
+        required_files = ['cwallet.sso', 'ewallet.pem', 'sqlnet.ora', 'tnsnames.ora']
         missing_files = [f for f in required_files if f not in wallet_files]
         if missing_files:
             logger.error(f"  ✘ 必要なWalletファイルが不足: {missing_files}")
-            logger.error("  必須: cwallet.sso (自動ログイン), ewallet.p12 (パスワード認証), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)")
+            logger.error("  必須: cwallet.sso (自動ログイン), ewallet.pem (PEM形式証明書), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)")
             return None
         logger.info("  ✔ すべての必須Walletファイルが確認されました")
         
@@ -487,8 +438,8 @@ class DatabaseService:
             if dsn not in services:
                 logger.warning(f"  ⚠ 指定されたDSN '{dsn}' がtnsnames.oraに見つかりません")
         
-        # Step 5: データベース接続
-        logger.info("[Step 5] データベース接続")
+        # Step 4: データベース接続（Thin mode）
+        logger.info("[Step 4] データベース接続（Thin mode）")
         logger.info(f"  接続パラメータ: user={username}, dsn={dsn}")
         
         try:
@@ -501,15 +452,17 @@ class DatabaseService:
             logger.info(f"  環境変数 ORACLE_CLIENT_LIB_DIR: {os.environ.get('ORACLE_CLIENT_LIB_DIR')}")
             
             start_time = time.time()
-            logger.info("  >>> oracledb.connect()を呼び出し中... (tcp_connect_timeout: 10秒)")
+            logger.info("  >>> oracledb.connect()を呼び出し中... (Thin mode, tcp_connect_timeout: 10秒)")
             
-            # tcp_connect_timeoutのみを使用（スレッドセーフ）
-            # 注: SIGALRMはメインスレッドでのみ動作するため、uvicornのワーカースレッドでは使用できない
-            # 上位レイヤー（test_connection_async）でasyncio.wait_for()を使用してタイムアウトを制御
+            # Thin mode接続(Wallet使用)
+            # 注: Walletのパスワードは ORACLE_26AI_CONNECTION_STRING のパスワードを使用
             connection = oracledb.connect(
                 user=username,
                 password=password,
                 dsn=dsn,
+                config_dir=wallet_location,  # Wallet場所
+                wallet_location=wallet_location,  # Wallet場所
+                wallet_password=password,  # Walletのパスワード
                 tcp_connect_timeout=10  # TCP接続タイムアウト: 10秒
             )
             
@@ -517,8 +470,8 @@ class DatabaseService:
             logger.info(f"  <<< oracledb.connect()完了 ({elapsed:.2f}秒)")
             logger.info(f"  ✔ 接続成功")
             
-            # Step 6: 接続テスト
-            logger.info("[Step 6] 接続テスト")
+            # Step 5: 接続テスト
+            logger.info("[Step 5] 接続テスト")
             with connection.cursor() as cursor:
                 cursor.execute("SELECT 1 FROM DUAL")
                 result = cursor.fetchone()
@@ -595,37 +548,32 @@ class DatabaseService:
                 logger.error(f"接続クローズエラー: {e}")
     
     async def _release_connection_async(self, connection):
-        """非同期接続をクローズ (Thick mode対応)"""
+        """非同期接続をクローズ (Thin mode対応)"""
         if connection:
             try:
-                # Thick modeでは同期close()を使用
-                connection.close()
+                # Thin modeでは非同期close()を使用
+                await connection.close()
                 logger.info("非同期DB接続をクローズしました")
             except Exception as e:
                 logger.error(f"非同期接続クローズエラー: {e}")
     
     async def _create_connection_async(self) -> Optional[Any]:
-        """非同期DB接続を作成 (Thick mode対応)
+        """非同期DB接続を作成 (Thin mode対応)
         
-        Thick modeではoracledb.connect_async()が使用できないため、
-        asyncio.to_thread()で同期接続をラップして非ブロッキングで実行
+        Thin modeではoracledb.connect_async()が使用でき、
+        真の非同期接続を実現します。
         
         Returns:
             Connectionオブジェクト、または失敗時はNone
         """
-        logger.info("========== 非同期接続作成開始 (Thick mode) ===========")
+        logger.info("========== 非同期接続作成開始 (Thin mode) ===========")
         
         # Step 1: oracledbモジュール確認
         if not ORACLEDB_AVAILABLE:
             logger.error("非同期接続: oracledbモジュールが利用できません")
             return None
         
-        # Step 2: Oracle Client初期化 (Thick mode)
-        if not init_oracle_client():
-            logger.error("非同期接続: Oracle Clientの初期化に失敗")
-            return None
-        
-        # Step 3: 接続情報取得
+        # Step 2: 接続情報取得
         username = self.settings.get("username")
         password = self.settings.get("password")
         dsn = self.settings.get("dsn")
@@ -642,32 +590,33 @@ class DatabaseService:
             logger.error("非同期接続: 接続情報が不完全です")
             return None
         
-        # Step 4: TNS_ADMIN設定
+        # Step 3: Wallet場所設定
         wallet_location = self._get_wallet_location()
-        if wallet_location and os.path.exists(wallet_location):
-            os.environ['TNS_ADMIN'] = wallet_location
-        else:
+        if not wallet_location or not os.path.exists(wallet_location):
             logger.error(f"非同期接続: Walletディレクトリが存在しません: {wallet_location}")
             return None
         
-        # Step 5: 非同期接続作成 (asyncio.to_thread()でラップ)
+        # Step 4: 非同期接続作成 (Thin mode)
         try:
             import time
             start_time = time.time()
-            logger.info(f"  >>> oracledb.connect()を非同期実行中... (user={username}, dsn={dsn})")
+            logger.info(f"  >>> oracledb.connect_async()を実行中... (user={username}, dsn={dsn})")
             
-            # Thick modeの同期接続をバックグラウンドスレッドで実行
-            connection = await asyncio.to_thread(
-                oracledb.connect,
+            # Thin modeの真の非同期接続
+            # 注: Walletのパスワードは ORACLE_26AI_CONNECTION_STRING のパスワードを使用
+            connection = await oracledb.connect_async(
                 user=username,
                 password=password,
                 dsn=dsn,
+                config_dir=wallet_location,  # Wallet場所
+                wallet_location=wallet_location,  # Wallet場所
+                wallet_password=password,  # Walletのパスワード
                 tcp_connect_timeout=10
             )
             
             elapsed = time.time() - start_time
-            logger.info(f"  <<< oracledb.connect()完了 ({elapsed:.2f}秒)")
-            logger.info("========== 非同期接続作成完了 (Thick mode) ===========")
+            logger.info(f"  <<< oracledb.connect_async()完了 ({elapsed:.2f}秒)")
+            logger.info("========== 非同期接続作成完了 (Thin mode) ===========")
             return connection
             
         except Exception as e:
@@ -675,7 +624,7 @@ class DatabaseService:
             return None
     
     async def execute_query_async(self, sql: str, params: dict = None) -> Optional[List[Dict[str, Any]]]:
-        """非同期でSQLクエリを実行 (Thick mode対応)
+        """非同期でSQLクエリを実行 (Thin mode対応)
         
         Args:
             sql: SQLクエリ
@@ -696,28 +645,22 @@ class DatabaseService:
                 logger.error("非同期クエリ実行: 接続取得失敗")
                 return None
             
-            # Thick modeでは同期カーソルを使用
-            # クエリ実行をasyncio.to_thread()でラップ
-            def _execute_query():
-                with connection.cursor() as cursor:
-                    if params:
-                        cursor.execute(sql, params)
-                    else:
-                        cursor.execute(sql)
-                    
-                    # 結果取得
-                    columns = [col[0] for col in cursor.description] if cursor.description else []
-                    rows = cursor.fetchall()
-                    
-                    results = []
-                    for row in rows:
-                        results.append(dict(zip(columns, row)))
-                    
-                    return results
-            
-            # バックグラウンドスレッドで実行
-            results = await asyncio.to_thread(_execute_query)
-            return results
+            # Thin modeでは非同期カーソルを使用
+            async with connection.cursor() as cursor:
+                if params:
+                    await cursor.execute(sql, params)
+                else:
+                    await cursor.execute(sql)
+                
+                # 結果取得
+                columns = [col[0] for col in cursor.description] if cursor.description else []
+                rows = await cursor.fetchall()
+                
+                results = []
+                for row in rows:
+                    results.append(dict(zip(columns, row)))
+                
+                return results
                 
         except asyncio.TimeoutError:
             logger.error("非同期クエリ実行: 接続タイムアウト")
@@ -727,12 +670,7 @@ class DatabaseService:
             return None
         finally:
             if connection:
-                # Thick modeでは同期close()を使用
-                try:
-                    connection.close()
-                    logger.info("非同期クエリ: 接続をクローズしました")
-                except Exception as e:
-                    logger.error(f"非同期接続クローズエラー: {e}")
+                await self._release_connection_async(connection)
     
     def _load_settings(self) -> Dict[str, Any]:
         """DB設定を.envのORACLE_26AI_CONNECTION_STRINGから読み込む
@@ -896,8 +834,19 @@ class DatabaseService:
             
             logger.info(f"Walletを解凍しました: {wallet_location}")
             
+            # 不要なファイルを削除
+            unnecessary_files = ['README', 'keystore.jks', 'truststore.jks', 'ojdbc.properties', 'ewallet.p12']
+            for file in unnecessary_files:
+                file_path = os.path.join(wallet_location, file)
+                if os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                        logger.info(f"不要なファイルを削除: {file}")
+                    except Exception as e:
+                        logger.warning(f"ファイル削除失敗: {file} - {e}")
+            
             # 必須ウォレットファイルの存在確認（4つ）
-            required_files = ['cwallet.sso', 'ewallet.p12', 'sqlnet.ora', 'tnsnames.ora']
+            required_files = ['cwallet.sso', 'ewallet.pem', 'sqlnet.ora', 'tnsnames.ora']
             missing_files = []
             for file in required_files:
                 if not os.path.exists(os.path.join(wallet_location, file)):
@@ -906,13 +855,13 @@ class DatabaseService:
             if missing_files:
                 return {
                     "success": False,
-                    "message": f"必要なファイルが見つかりません: {', '.join(missing_files)}\n必須: cwallet.sso (自動ログイン), ewallet.p12 (パスワード認証), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)",
+                    "message": f"必要なファイルが見つかりません: {', '.join(missing_files)}\n必須: cwallet.sso (自動ログイン), ewallet.pem (PEM形式証明書), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)",
                     "available_services": []
                 }
             
             logger.info("✓ すべての必須ウォレットファイルが確認されました")
             logger.info("  - cwallet.sso (自動ログイン)")
-            logger.info("  - ewallet.p12 (パスワード認証)")
+            logger.info("  - ewallet.pem (パスワード認証)")
             logger.info("  - sqlnet.ora (ネットワーク設定)")
             logger.info("  - tnsnames.ora (接続文字列)")
             
@@ -1003,77 +952,13 @@ class DatabaseService:
             }
     
     async def test_connection_async(self, settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """接続テストを実行（非同期版 - Thick mode）
+        """接続テストを実行（非同期版 - Thin mode）
         
-        Thick modeでは oracledb.connect() を asyncio.to_thread() でラップし、
-        イベントループをブロックしないようにします。
+        Thin modeでは oracledb.connect_async() を使用し、
+        真の非同期接続を実現します。
         タイムアウトは15秒以上を推奨。
         """
         CONNECTION_TIMEOUT = 15  # 接続タイムアウト: 15秒（推奨値）
-        
-        def _sync_connect(username: str, password: str, dsn: str) -> Dict[str, Any]:
-            """同期接続（バックグラウンドスレッドで実行）"""
-            import time
-            start_time = time.time()
-            connection = None
-            
-            try:
-                # Thick modeで接続（TNS_ADMIN環境変数を使用）
-                connection = oracledb.connect(
-                    user=username,
-                    password=password,
-                    dsn=dsn,
-                    tcp_connect_timeout=10  # 10秒でタイムアウト（推奨値）
-                )
-                
-                elapsed = time.time() - start_time
-                logger.info(f"接続成功 ({elapsed:.2f}秒)")
-                
-                # テストクエリ実行
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT 1 FROM DUAL")
-                    result = cursor.fetchone()
-                    logger.info(f"テストクエリ成功: {result}")
-                
-                connection.close()
-                
-                return {
-                    "success": True,
-                    "message": "データベース接続に成功しました",
-                    "details": {"status": "connected", "elapsed": f"{elapsed:.2f}s"}
-                }
-                
-            except Exception as e:
-                elapsed = time.time() - start_time
-                error_str = str(e)
-                logger.error(f"接続エラー (経過: {elapsed:.2f}秒): {error_str}")
-                
-                # エラー原因を解析
-                if "DPY-6005" in error_str or "DPY-6000" in error_str:
-                    user_msg = "接続エラー: データベースが停止している可能性があります。ADBの起動状態を確認してください。"
-                elif "ORA-01017" in error_str:
-                    user_msg = "接続エラー: ユーザー名またはパスワードが正しくありません。"
-                elif "ORA-12154" in error_str:
-                    user_msg = "接続エラー: DSNが見つかりません。Walletとtnsnames.oraを確認してください。"
-                elif "ORA-12541" in error_str:
-                    user_msg = "接続エラー: データベースサーバーに接続できません。"
-                elif "Broken pipe" in error_str:
-                    user_msg = "接続エラー: ネットワーク接続が切断されました。"
-                elif "DPY-4011" in error_str:
-                    user_msg = f"接続エラー: WalletまたはTNS設定に問題があります。DSN '{dsn}' を確認してください。"
-                else:
-                    user_msg = f"接続エラー: {error_str}"
-                
-                return {
-                    "success": False,
-                    "message": user_msg
-                }
-            finally:
-                if connection:
-                    try:
-                        connection.close()
-                    except:
-                        pass
         
         try:
             # settingsがnoneの場合のみself.settingsを使用
@@ -1099,40 +984,82 @@ class DatabaseService:
                     "message": "接続情報が不完全です。ユーザー名、パスワード、DSNを設定してください。"
                 }
             
-            # Oracle Client初期化 (Thick mode)
-            if not init_oracle_client():
-                return {
-                    "success": False,
-                    "message": "Oracle Clientの初期化に失敗しました。ORACLE_CLIENT_LIB_DIRを確認してください。"
-                }
-            
-            # TNS_ADMIN設定
+            # Wallet場所設定
             wallet_location = self._get_wallet_location()
-            if wallet_location and os.path.exists(wallet_location):
-                os.environ['TNS_ADMIN'] = wallet_location
-                logger.info(f"TNS_ADMIN設定: {wallet_location}")
-            else:
+            if not wallet_location or not os.path.exists(wallet_location):
                 return {
                     "success": False,
                     "message": f"Walletディレクトリが存在しません: {wallet_location}"
                 }
             
-            logger.info(f"接続テスト開始 (Thick mode, タイムアウト: {CONNECTION_TIMEOUT}秒)")
+            logger.info(f"接続テスト開始 (Thin mode, タイムアウト: {CONNECTION_TIMEOUT}秒)")
             logger.info(f"  user={username}, dsn={dsn}, password_len={len(password) if password else 0}")
             
             try:
-                # 同期接続をバックグラウンドスレッドで実行し、タイムアウトを設定
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(_sync_connect, username, password, dsn),
+                import time
+                start_time = time.time()
+                
+                # Thin modeの非同期接続をタイムアウト付きで実行
+                # 注: Walletのパスワードは ORACLE_26AI_CONNECTION_STRING のパスワードを使用
+                connection = await asyncio.wait_for(
+                    oracledb.connect_async(
+                        user=username,
+                        password=password,
+                        dsn=dsn,
+                        config_dir=wallet_location,
+                        wallet_location=wallet_location,
+                        wallet_password=password,  # Walletのパスワード
+                        tcp_connect_timeout=10
+                    ),
                     timeout=CONNECTION_TIMEOUT
                 )
-                return result
+                
+                elapsed = time.time() - start_time
+                logger.info(f"接続成功 ({elapsed:.2f}秒)")
+                
+                # テストクエリ実行
+                async with connection.cursor() as cursor:
+                    await cursor.execute("SELECT 1 FROM DUAL")
+                    result = await cursor.fetchone()
+                    logger.info(f"テストクエリ成功: {result}")
+                
+                await connection.close()
+                
+                return {
+                    "success": True,
+                    "message": "データベース接続に成功しました",
+                    "details": {"status": "connected", "elapsed": f"{elapsed:.2f}s"}
+                }
                 
             except asyncio.TimeoutError:
                 logger.error(f"接続テストがタイムアウトしました ({CONNECTION_TIMEOUT}秒)")
                 return {
                     "success": False,
                     "message": f"接続テストがタイムアウトしました。データベースが起動していない可能性があります。"
+                }
+            except Exception as e:
+                error_str = str(e)
+                logger.error(f"接続エラー: {error_str}")
+                
+                # エラー原因を解析
+                if "DPY-6005" in error_str or "DPY-6000" in error_str:
+                    user_msg = "接続エラー: データベースが停止している可能性があります。ADBの起動状態を確認してください。"
+                elif "ORA-01017" in error_str:
+                    user_msg = "接続エラー: ユーザー名またはパスワードが正しくありません。"
+                elif "ORA-12154" in error_str:
+                    user_msg = "接続エラー: DSNが見つかりません。Walletとtnsnames.oraを確認してください。"
+                elif "ORA-12541" in error_str:
+                    user_msg = "接続エラー: データベースサーバーに接続できません。"
+                elif "Broken pipe" in error_str:
+                    user_msg = "接続エラー: ネットワーク接続が切断されました。"
+                elif "DPY-4011" in error_str:
+                    user_msg = f"接続エラー: WalletまたはTNS設定に問題があります。DSN '{dsn}' を確認してください。"
+                else:
+                    user_msg = f"接続エラー: {error_str}"
+                
+                return {
+                    "success": False,
+                    "message": user_msg
                 }
                 
         except Exception as e:
@@ -1876,11 +1803,22 @@ class DatabaseService:
             
             logger.info(f"Walletを展開しました: {wallet_location}")
             
+            # 不要なファイルを削除
+            unnecessary_files = ['README', 'keystore.jks', 'truststore.jks', 'ojdbc.properties', 'ewallet.p12']
+            for file in unnecessary_files:
+                file_path = os.path.join(wallet_location, file)
+                if os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                        logger.info(f"不要なファイルを削除: {file}")
+                    except Exception as e:
+                        logger.warning(f"ファイル削除失敗: {file} - {e}")
+            
             # 一時ファイルを削除
             os.unlink(temp_wallet_file.name)
             
             # 必要なファイルの存在確認
-            required_files = ['cwallet.sso', 'tnsnames.ora', 'sqlnet.ora']
+            required_files = ['cwallet.sso', 'ewallet.pem', 'tnsnames.ora', 'sqlnet.ora']
             missing_files = []
             for file in required_files:
                 if not os.path.exists(os.path.join(wallet_location, file)):

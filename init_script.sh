@@ -163,9 +163,9 @@ if [ -f "${INSTALL_DIR}/wallet.zip" ]; then
     mkdir -p "${WALLET_DIR}"
     unzip -o "${INSTALL_DIR}/wallet.zip" -d "${WALLET_DIR}"
     
-    # 必須ウォレットファイルのチェック
-    echo "必須ウォレットファイルをチェック中..."
-    REQUIRED_FILES=("cwallet.sso" "ewallet.p12" "sqlnet.ora" "tnsnames.ora")
+    # 必須ウォレットファイルのチェック（Thin mode用）
+    echo "必須ウォレットファイルをチェック中... (Thin mode)"
+    REQUIRED_FILES=("cwallet.sso" "ewallet.pem" "sqlnet.ora" "tnsnames.ora")
     MISSING_FILES=()
     
     for file in "${REQUIRED_FILES[@]}"; do
@@ -182,9 +182,9 @@ if [ -f "${INSTALL_DIR}/wallet.zip" ]; then
         exit 1
     fi
     
-    echo "✓ すべての必須ウォレットファイルが確認されました"
+    echo "✓ すべての必須ウォレットファイルが確認されました (Thin mode)"
     echo "  - cwallet.sso (自動ログイン)"
-    echo "  - ewallet.p12 (パスワード認証)"
+    echo "  - ewallet.pem (PEM形式証明書)"
     echo "  - sqlnet.ora (ネットワーク設定)"
     echo "  - tnsnames.ora (接続文字列)"
     
