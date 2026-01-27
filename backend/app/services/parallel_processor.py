@@ -376,6 +376,7 @@ class ParallelProcessor:
                         'type': 'file_error',
                         'file_index': file_idx,
                         'file_name': obj_name,
+                        'total_files': total_files,
                         'error': 'ファイルが見つかりません'
                     })
                     return
@@ -386,6 +387,7 @@ class ParallelProcessor:
                     'type': 'file_processing',
                     'file_index': file_idx,
                     'file_name': obj_name,
+                    'total_files': total_files,
                     'status': '画像化中'
                 })
                 
@@ -418,6 +420,7 @@ class ParallelProcessor:
                         'type': 'file_error',
                         'file_index': file_idx,
                         'file_name': obj_name,
+                        'total_files': total_files,
                         'error': error_msg
                     })
                     return
@@ -478,6 +481,7 @@ class ParallelProcessor:
                         'type': 'page_progress',
                         'file_index': file_idx,
                         'file_name': obj_name,
+                        'total_files': total_files,
                         'page_index': page_num,
                         'total_pages': total_pages
                     })
@@ -516,12 +520,23 @@ class ParallelProcessor:
                         'folder_name': folder_name
                     })
                 
+                # ファイル完了イベントを送信
                 await event_queue.put({
                     'type': 'file_complete',
                     'file_index': file_idx,
                     'file_name': obj_name,
+                    'total_files': total_files,
                     'image_count': uploaded_count,
                     'status': '完了'
+                })
+                
+                # リアルタイム進捗イベントを送信（フロントエンドのUI即時更新用）
+                await event_queue.put({
+                    'type': 'progress_update',
+                    'completed_count': success_count + failed_count,
+                    'total_count': total_files,
+                    'success_count': success_count,
+                    'failed_count': failed_count
                 })
                 
             except Exception as e:
@@ -538,6 +553,7 @@ class ParallelProcessor:
                     'type': 'file_error',
                     'file_index': file_idx,
                     'file_name': obj_name,
+                    'total_files': total_files,
                     'error': str(e)
                 })
             finally:
@@ -623,6 +639,13 @@ class ParallelProcessor:
             
             # クライアントが最後のイベントを確実に受信できるように短時間待機
             await asyncio.sleep(0.1)
+            
+            # 完了通知イベント（状態が完全に同期されたことを保証）
+            yield {
+                'type': 'sync_complete',
+                'message': 'すべての処理が完了し、状態が同期されました',
+                'timestamp': time.time()
+            }
     
     async def process_vectorization(
         self,
@@ -736,6 +759,7 @@ class ParallelProcessor:
                     'type': 'file_processing',
                     'file_index': file_idx,
                     'file_name': obj_name,
+                    'total_files': total_files,
                     'status': 'ベクトル化中'
                 })
                 
@@ -766,6 +790,7 @@ class ParallelProcessor:
                             'type': 'file_error',
                             'file_index': file_idx,
                             'file_name': obj_name,
+                            'total_files': total_files,
                             'error': result['message']
                         })
                         return
@@ -792,6 +817,7 @@ class ParallelProcessor:
                             'type': 'file_error',
                             'file_index': file_idx,
                             'file_name': obj_name,
+                            'total_files': total_files,
                             'error': result['message']
                         })
                         return
@@ -839,6 +865,7 @@ class ParallelProcessor:
                         'type': 'file_error',
                         'file_index': file_idx,
                         'file_name': obj_name,
+                        'total_files': total_files,
                         'error': result['message']
                     })
                     return
@@ -965,6 +992,7 @@ class ParallelProcessor:
                             'type': 'page_progress',
                             'file_index': file_idx,
                             'file_name': obj_name,
+                            'total_files': total_files,
                             'page_index': page_idx,
                             'total_pages': total_pages
                         })
@@ -1001,13 +1029,24 @@ class ParallelProcessor:
                         success_count += 1
                         results.append(result)
                     
+                    # ファイル完了イベントを送信
                     await event_queue.put({
                         'type': 'file_complete',
                         'file_index': file_idx,
                         'file_name': obj_name,
+                        'total_files': total_files,
                         'embedding_count': embedding_count,
                         'expected_count': total_pages,
                         'status': '完了'
+                    })
+                    
+                    # リアルタイム進捗イベントを送信（フロントエンドのUI即時更新用）
+                    await event_queue.put({
+                        'type': 'progress_update',
+                        'completed_count': success_count + failed_count,
+                        'total_count': total_files,
+                        'success_count': success_count,
+                        'failed_count': failed_count
                     })
                 else:
                     # 一部失敗または完全失敗
@@ -1021,6 +1060,7 @@ class ParallelProcessor:
                         'type': 'file_partial_failure' if embedding_count > 0 else 'file_error',
                         'file_index': file_idx,
                         'file_name': obj_name,
+                        'total_files': total_files,
                         'embedding_count': embedding_count,
                         'expected_count': total_pages,
                         'failed_pages': result.get('failed_pages', []),
@@ -1040,6 +1080,7 @@ class ParallelProcessor:
                     'type': 'file_error',
                     'file_index': file_idx,
                     'file_name': obj_name,
+                    'total_files': total_files,
                     'error': str(e)
                 })
             finally:
@@ -1125,6 +1166,13 @@ class ParallelProcessor:
             
             # クライアントが最後のイベントを確実に受信できるように短時間待機
             await asyncio.sleep(0.1)
+            
+            # 完了通知イベント（状態が完全に同期されたことを保証）
+            yield {
+                'type': 'sync_complete',
+                'message': 'すべての処理が完了し、状態が同期されました',
+                'timestamp': time.time()
+            }
     
     async def _retry_with_backoff(
         self,

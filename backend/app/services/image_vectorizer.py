@@ -20,13 +20,18 @@ logger = logging.getLogger(__name__)
 
 
 class ImageVectorizer:
-    """画像ベクトル化クラス"""
+    """画像ベクトル化クラス
+    
+    注意: DB接続は各メソッドで独立して取得・解放します。
+    接続プールを使用し、グローバルインスタンスでの接続共有による
+    並列処理時の競合を防止します。
+    """
     
     def __init__(self):
         self.genai_client = None
-        self.db_connection = None
+        # 注: self.db_connectionは使用しない（並列処理の競合防止）
         self._initialize_genai_only()
-        logger.info("ImageVectorizerを初期化しました（DB接続は遅延作成）")
+        logger.info("ImageVectorizerを初期化しました（DB接続は各メソッドで取得）")
     
     def _initialize_genai_only(self):
         """OCIクライアントのみを初期化（DB接続は遅延作成）"""
@@ -58,66 +63,41 @@ class ImageVectorizer:
             logger.error(f"GenAI初期化エラー: {e}")
             self.genai_client = None
     
-    def _ensure_db_connection(self, max_retries: int = 3) -> bool:
-        """データベース接続を確保（database_serviceから取得）"""
+    def _get_pool_manager(self):
+        """接続プールマネージャーを取得"""
         from app.services.database_service import database_service
-        
-        # 既存接続が有効かチェック
-        if self.db_connection:
-            if self.is_connected():
-                return True
-            else:
-                logger.warning("既存のDB接続が無効です")
-                # 無効な接続をクローズ
-                try:
-                    database_service._release_connection(self.db_connection)
-                except:
-                    pass
-                self.db_connection = None
-        
-        # database_serviceから接続を取得（リトライ付き）
-        for attempt in range(1, max_retries + 1):
-            try:
-                logger.info(f"DB接続取得試行 {attempt}/{max_retries}")
-                self.db_connection = database_service._create_connection()
-                if self.db_connection:
-                    logger.info(f"DB接続取得成功 (試行{attempt}回目)")
-                    # テーブル存在確認
-                    self._ensure_tables_exist()
-                    return True
-            except Exception as e:
-                logger.error(f"DB接続取得失敗 (試行{attempt}/{max_retries}): {e}")
-                if attempt == max_retries:
-                    logger.error("DB接続取得の最大リトライ回数に達しました")
-                    return False
-                # リトライ前に少し待機
-                import time
-                time.sleep(1)
-        
-        return False
+        return database_service.pool_manager
     
-
+    def _ensure_pool_initialized(self) -> bool:
+        """接続プールの初期化を確認"""
+        from app.services.database_service import database_service
+        return database_service._ensure_pool_initialized()
     
     def is_connected(self) -> bool:
-        """データベース接続状態をチェック"""
+        """データベース接続状態をチェック（接続プール経由）"""
         try:
-            if self.db_connection is None:
+            if not self._ensure_pool_initialized():
                 return False
-            # 簡単なクエリでテスト
-            with self.db_connection.cursor() as cursor:
-                cursor.execute("SELECT 1 FROM DUAL")
-                cursor.fetchone()
+            
+            with self._get_pool_manager().acquire_connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM DUAL")
+                    cursor.fetchone()
             return True
         except Exception:
             return False
     
-    def _ensure_tables_exist(self):
-        """必要なテーブルが存在することを確認し、なければ作成"""
-        if not self.db_connection:
+    def _ensure_tables_exist(self, connection):
+        """必要なテーブルが存在することを確認し、なければ作成
+        
+        Args:
+            connection: データベース接続
+        """
+        if not connection:
             return
         
         try:
-            with self.db_connection.cursor() as cursor:
+            with connection.cursor() as cursor:
                 # FILE_INFOテーブルの存在確認
                 cursor.execute("""
                     SELECT COUNT(*) 
@@ -146,7 +126,7 @@ class ImageVectorizer:
                             CONSTRAINT PK_FILE_INFO PRIMARY KEY (FILE_ID)
                         ) DEFAULT COLLATION USING_NLS_COMP
                     """)
-                    self.db_connection.commit()
+                    connection.commit()
                     logger.info("FILE_INFOテーブル作成完了")
                 
                 # IMG_EMBEDDINGSテーブルの存在確認
@@ -181,13 +161,13 @@ class ImageVectorizer:
                                 REFERENCES FILE_INFO(FILE_ID) ON DELETE CASCADE
                         ) DEFAULT COLLATION USING_NLS_COMP
                     """)
-                    self.db_connection.commit()
+                    connection.commit()
                     logger.info("IMG_EMBEDDINGSテーブル作成完了")
                 
         except Exception as e:
             logger.error(f"テーブル作成エラー: {e}")
-            if self.db_connection:
-                self.db_connection.rollback()
+            if connection:
+                connection.rollback()
     
     def _image_to_base64(self, image_data: io.BytesIO, content_type: str = "image/png") -> str:
         """画像データをbase64エンコード"""
@@ -323,164 +303,142 @@ class ImageVectorizer:
     
     def save_file_info(self, bucket: str, object_name: str, original_filename: str, 
                       file_size: int, content_type: str) -> Optional[int]:
-        """ファイル情報をFILE_INFOテーブルに保存"""
-        if not self._ensure_db_connection():
-            logger.error("データベース接続がありません")
-            return None
-        
+        """ファイル情報をFILE_INFOテーブルに保存（接続プール経由）"""
         try:
-            with self.db_connection.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO FILE_INFO 
-                    (BUCKET, OBJECT_NAME, ORIGINAL_FILENAME, FILE_SIZE, CONTENT_TYPE)
-                    VALUES (:bucket, :object_name, :original_filename, :file_size, :content_type)
-                    RETURNING FILE_ID INTO :file_id
-                """, {
-                    'bucket': bucket,
-                    'object_name': object_name,
-                    'original_filename': original_filename,
-                    'file_size': file_size,
-                    'content_type': content_type,
-                    'file_id': cursor.var(oracledb.NUMBER)
-                })
+            if not self._ensure_pool_initialized():
+                logger.error("接続プールの初期化に失敗")
+                return None
+            
+            with self._get_pool_manager().acquire_connection() as connection:
+                # テーブル存在確認（初回のみ）
+                self._ensure_tables_exist(connection)
                 
-                file_id_var = cursor.bindvars['file_id']
-                file_id = file_id_var.getvalue()
-                
-                if isinstance(file_id, list) and len(file_id) > 0:
-                    file_id = file_id[0]
-                
-                self.db_connection.commit()
-                
-                logger.info(f"ファイル情報保存成功: FILE_ID={file_id}")
-                return int(file_id)
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO FILE_INFO 
+                        (BUCKET, OBJECT_NAME, ORIGINAL_FILENAME, FILE_SIZE, CONTENT_TYPE)
+                        VALUES (:bucket, :object_name, :original_filename, :file_size, :content_type)
+                        RETURNING FILE_ID INTO :file_id
+                    """, {
+                        'bucket': bucket,
+                        'object_name': object_name,
+                        'original_filename': original_filename,
+                        'file_size': file_size,
+                        'content_type': content_type,
+                        'file_id': cursor.var(oracledb.NUMBER)
+                    })
+                    
+                    file_id_var = cursor.bindvars['file_id']
+                    file_id = file_id_var.getvalue()
+                    
+                    if isinstance(file_id, list) and len(file_id) > 0:
+                        file_id = file_id[0]
+                    
+                    connection.commit()
+                    
+                    logger.info(f"ファイル情報保存成功: FILE_ID={file_id}")
+                    return int(file_id)
                 
         except Exception as e:
             logger.error(f"ファイル情報保存エラー: {e}")
-            if self.db_connection:
-                self.db_connection.rollback()
             return None
-        finally:
-            # 接続をクローズ
-            self._release_db_connection()
     
     def save_image_embedding(self, file_id: int, bucket: str, object_name: str, 
                            page_number: int, content_type: str, file_size: int, 
                            embedding: np.ndarray) -> Optional[int]:
-        """画像embeddingをIMG_EMBEDDINGSテーブルに保存"""
-        if not self._ensure_db_connection():
-            logger.error("データベース接続がありません")
-            return None
-        
+        """画像embeddingをIMG_EMBEDDINGSテーブルに保存（接続プール経由）"""
         try:
-            # NumPy配列をFLOAT32配列に変換
-            embedding_array = array.array("f", embedding.tolist())
+            if not self._ensure_pool_initialized():
+                logger.error("接続プールの初期化に失敗")
+                return None
             
-            with self.db_connection.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO IMG_EMBEDDINGS 
-                    (FILE_ID, BUCKET, OBJECT_NAME, PAGE_NUMBER, CONTENT_TYPE, FILE_SIZE, EMBEDDING)
-                    VALUES (:file_id, :bucket, :object_name, :page_number, :content_type, :file_size, :embedding)
-                    RETURNING ID INTO :id
-                """, {
-                    'file_id': file_id,
-                    'bucket': bucket,
-                    'object_name': object_name,
-                    'page_number': page_number,
-                    'content_type': content_type,
-                    'file_size': file_size,
-                    'embedding': embedding_array,
-                    'id': cursor.var(oracledb.NUMBER)
-                })
+            with self._get_pool_manager().acquire_connection() as connection:
+                # NumPy配列をFLOAT32配列に変換
+                embedding_array = array.array("f", embedding.tolist())
                 
-                id_var = cursor.bindvars['id']
-                embedding_id = id_var.getvalue()
-                
-                if isinstance(embedding_id, list) and len(embedding_id) > 0:
-                    embedding_id = embedding_id[0]
-                
-                self.db_connection.commit()
-                
-                logger.info(f"画像embedding保存成功: ID={embedding_id}, FILE_ID={file_id}, PAGE={page_number}")
-                return int(embedding_id)
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO IMG_EMBEDDINGS 
+                        (FILE_ID, BUCKET, OBJECT_NAME, PAGE_NUMBER, CONTENT_TYPE, FILE_SIZE, EMBEDDING)
+                        VALUES (:file_id, :bucket, :object_name, :page_number, :content_type, :file_size, :embedding)
+                        RETURNING ID INTO :id
+                    """, {
+                        'file_id': file_id,
+                        'bucket': bucket,
+                        'object_name': object_name,
+                        'page_number': page_number,
+                        'content_type': content_type,
+                        'file_size': file_size,
+                        'embedding': embedding_array,
+                        'id': cursor.var(oracledb.NUMBER)
+                    })
+                    
+                    id_var = cursor.bindvars['id']
+                    embedding_id = id_var.getvalue()
+                    
+                    if isinstance(embedding_id, list) and len(embedding_id) > 0:
+                        embedding_id = embedding_id[0]
+                    
+                    connection.commit()
+                    
+                    logger.info(f"画像embedding保存成功: ID={embedding_id}, FILE_ID={file_id}, PAGE={page_number}")
+                    return int(embedding_id)
                 
         except Exception as e:
             logger.error(f"画像embedding保存エラー: {e}")
-            if self.db_connection:
-                self.db_connection.rollback()
             return None
-        finally:
-            # 接続をクローズ
-            self._release_db_connection()
     
     def delete_file_embeddings(self, file_id: int) -> bool:
-        """ファイルに関連するすべてのembeddingを削除"""
-        if not self._ensure_db_connection():
-            logger.error("データベース接続がありません")
-            return False
-        
+        """ファイルに関連するすべてのembeddingを削除（接続プール経由）"""
         try:
-            with self.db_connection.cursor() as cursor:
-                cursor.execute("""
-                    DELETE FROM IMG_EMBEDDINGS 
-                    WHERE FILE_ID = :file_id
-                """, {'file_id': file_id})
-                
-                deleted_count = cursor.rowcount
-                self.db_connection.commit()
-                
-                logger.info(f"FILE_ID={file_id}のembedding削除完了: {deleted_count}件")
-                return True
+            if not self._ensure_pool_initialized():
+                logger.error("接続プールの初期化に失敗")
+                return False
+            
+            with self._get_pool_manager().acquire_connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        DELETE FROM IMG_EMBEDDINGS 
+                        WHERE FILE_ID = :file_id
+                    """, {'file_id': file_id})
+                    
+                    deleted_count = cursor.rowcount
+                    connection.commit()
+                    
+                    logger.info(f"FILE_ID={file_id}のembedding削除完了: {deleted_count}件")
+                    return True
                 
         except Exception as e:
             logger.error(f"Embedding削除エラー: {e}")
-            if self.db_connection:
-                self.db_connection.rollback()
             return False
-        finally:
-            # 接続をクローズ
-            self._release_db_connection()
     
     def get_file_id_by_object_name(self, bucket: str, object_name: str) -> Optional[int]:
-        """Object NameからFILE_IDを取得"""
-        if not self._ensure_db_connection():
-            return None
-        
+        """Object NameからFILE_IDを取得（接続プール経由）"""
         try:
-            with self.db_connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT FILE_ID 
-                    FROM FILE_INFO 
-                    WHERE BUCKET = :bucket AND OBJECT_NAME = :object_name
-                """, {
-                    'bucket': bucket,
-                    'object_name': object_name
-                })
-                
-                result = cursor.fetchone()
-                return result[0] if result else None
+            if not self._ensure_pool_initialized():
+                return None
+            
+            with self._get_pool_manager().acquire_connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT FILE_ID 
+                        FROM FILE_INFO 
+                        WHERE BUCKET = :bucket AND OBJECT_NAME = :object_name
+                    """, {
+                        'bucket': bucket,
+                        'object_name': object_name
+                    })
+                    
+                    result = cursor.fetchone()
+                    return result[0] if result else None
                 
         except Exception as e:
             logger.error(f"FILE_ID取得エラー: {e}")
             return None
-        finally:
-            # 接続をクローズ
-            self._release_db_connection()
 
-    def _release_db_connection(self):
-        """接続をクローズ"""
-        if self.db_connection:
-            from app.services.database_service import database_service
-            try:
-                database_service._release_connection(self.db_connection)
-                self.db_connection = None
-                logger.debug("データベース接続をクローズしました")
-            except Exception as e:
-                logger.error(f"接続クローズエラー: {e}")
-    
     def get_vectorization_status(self, bucket: str, object_names: List[str]) -> Dict[str, bool]:
         """
-        複数ファイルのベクトル化状態を一括取得
+        複数ファイルのベクトル化状態を一括取得（接続プール経由）
         
         Args:
             bucket: バケット名
@@ -494,251 +452,171 @@ class ImageVectorizer:
         if not object_names:
             return result
         
-        if not self._ensure_db_connection():
-            logger.warning("DB接続なし、ベクトル化状態をすべてFalseで返します")
-            return result
-        
         try:
-            with self.db_connection.cursor() as cursor:
-                # FILE_INFOテーブルとIMG_EMBEDDINGSテーブルを結合して、
-                # 各ファイルにembeddingが存在するかチェック
-                placeholders = ', '.join([f":obj_{i}" for i in range(len(object_names))])
-                
-                query = f"""
-                    SELECT f.OBJECT_NAME, 
-                           CASE WHEN e.FILE_ID IS NOT NULL THEN 1 ELSE 0 END as HAS_EMBEDDINGS
-                    FROM FILE_INFO f
-                    LEFT JOIN (
-                        SELECT DISTINCT FILE_ID FROM IMG_EMBEDDINGS
-                    ) e ON f.FILE_ID = e.FILE_ID
-                    WHERE f.BUCKET = :bucket 
-                    AND f.OBJECT_NAME IN ({placeholders})
-                """
-                
-                # パラメータを構築
-                params = {'bucket': bucket}
-                for i, name in enumerate(object_names):
-                    params[f'obj_{i}'] = name
-                
-                cursor.execute(query, params)
-                rows = cursor.fetchall()
-                
-                for row in rows:
-                    object_name = row[0]
-                    has_embeddings = row[1] == 1
-                    result[object_name] = has_embeddings
-                
-                logger.info(f"ベクトル化状態取得完了: {len(rows)}件のファイルを確認")
+            if not self._ensure_pool_initialized():
+                logger.warning("DB接続なし、ベクトル化状態をすべてFalseで返します")
                 return result
+            
+            with self._get_pool_manager().acquire_connection() as connection:
+                with connection.cursor() as cursor:
+                    # FILE_INFOテーブルとIMG_EMBEDDINGSテーブルを結合して、
+                    # 各ファイルにembeddingが存在するかチェック
+                    placeholders = ', '.join([f":obj_{i}" for i in range(len(object_names))])
+                    
+                    query = f"""
+                        SELECT f.OBJECT_NAME, 
+                               CASE WHEN e.FILE_ID IS NOT NULL THEN 1 ELSE 0 END as HAS_EMBEDDINGS
+                        FROM FILE_INFO f
+                        LEFT JOIN (
+                            SELECT DISTINCT FILE_ID FROM IMG_EMBEDDINGS
+                        ) e ON f.FILE_ID = e.FILE_ID
+                        WHERE f.BUCKET = :bucket 
+                        AND f.OBJECT_NAME IN ({placeholders})
+                    """
+                    
+                    # パラメータを構築
+                    params = {'bucket': bucket}
+                    for i, name in enumerate(object_names):
+                        params[f'obj_{i}'] = name
+                    
+                    cursor.execute(query, params)
+                    rows = cursor.fetchall()
+                    
+                    for row in rows:
+                        object_name = row[0]
+                        has_embeddings = row[1] == 1
+                        result[object_name] = has_embeddings
+                    
+                    logger.info(f"ベクトル化状態取得完了: {len(rows)}件のファイルを確認")
+                    return result
                 
         except Exception as e:
             logger.error(f"ベクトル化状態取得エラー: {e}")
             return result
-        finally:
-            self._release_db_connection()
     
     def search_similar_images(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7) -> Optional[List[Dict[str, Any]]]:
         """
-        類似画像を検索（2テーブルJOIN）
-        
+        類似画像を検索（2テーブルJOIN、接続プール経由）
+            
         Args:
             query_embedding: 検索用のembeddingベクトル
             limit: 最大取得件数
-            threshold: 類似度闾値（0.0-1.0）
-            
+            threshold: 類似度閾値（0.0-1.0）
+                
         Returns:
             類似画像のリスト（FILE_INFOとIMG_EMBEDDINGSをJOINした結果）
         """
-        if not self._ensure_db_connection():
-            logger.error("データベース接続がありません")
-            return None
-        
         try:
-            # NumPy配列をFLOAT32配列に変換
-            embedding_array = array.array("f", query_embedding.tolist())
-            
-            with self.db_connection.cursor() as cursor:
-                # FILE_INFOとIMG_EMBEDDINGSをJOINしてベクトル検索
-                sql = """
-                SELECT 
-                    ie.ID as embed_id,
-                    ie.FILE_ID as file_id,
-                    ie.BUCKET as bucket,
-                    ie.OBJECT_NAME as object_name,
-                    ie.PAGE_NUMBER as page_number,
-                    ie.CONTENT_TYPE as content_type,
-                    ie.FILE_SIZE as img_file_size,
-                    f.BUCKET as file_bucket,
-                    f.OBJECT_NAME as file_object_name,
-                    f.ORIGINAL_FILENAME as original_filename,
-                    f.FILE_SIZE as file_size,
-                    f.CONTENT_TYPE as file_content_type,
-                    f.UPLOADED_AT as uploaded_at,
-                    VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) as vector_distance
-                FROM 
-                    IMG_EMBEDDINGS ie
-                INNER JOIN 
-                    FILE_INFO f ON ie.FILE_ID = f.FILE_ID
-                WHERE 
-                    VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) <= :threshold
-                ORDER BY 
-                    vector_distance
-                FETCH FIRST :limit ROWS ONLY
-                """
+            if not self._ensure_pool_initialized():
+                logger.error("接続プールの初期化に失敗")
+                return None
                 
-                cursor.execute(sql, {
-                    'query_embedding': embedding_array,
-                    'threshold': threshold,
-                    'limit': limit
-                })
-                
-                results = []
-                for row in cursor:
-                    # タイムスタンプをISO形式に変換
-                    uploaded_at = row[12]
-                    uploaded_at_str = uploaded_at.isoformat() if uploaded_at else None
+            with self._get_pool_manager().acquire_connection() as connection:
+                # NumPy配列をFLOAT32配列に変換
+                embedding_array = array.array("f", query_embedding.tolist())
                     
-                    results.append({
-                        'embed_id': row[0],
-                        'file_id': row[1],
-                        'bucket': row[2],
-                        'object_name': row[3],
-                        'page_number': row[4],
-                        'content_type': row[5],
-                        'img_file_size': row[6],
-                        'file_bucket': row[7],
-                        'file_object_name': row[8],
-                        'original_filename': row[9],
-                        'file_size': row[10],
-                        'file_content_type': row[11],
-                        'uploaded_at': uploaded_at_str,
-                        'vector_distance': float(row[13])
+                with connection.cursor() as cursor:
+                    # FILE_INFOとIMG_EMBEDDINGSをJOINしてベクトル検索
+                    sql = """
+                    SELECT 
+                        ie.ID as embed_id,
+                        ie.FILE_ID as file_id,
+                        ie.BUCKET as bucket,
+                        ie.OBJECT_NAME as object_name,
+                        ie.PAGE_NUMBER as page_number,
+                        ie.CONTENT_TYPE as content_type,
+                        ie.FILE_SIZE as img_file_size,
+                        f.BUCKET as file_bucket,
+                        f.OBJECT_NAME as file_object_name,
+                        f.ORIGINAL_FILENAME as original_filename,
+                        f.FILE_SIZE as file_size,
+                        f.CONTENT_TYPE as file_content_type,
+                        f.UPLOADED_AT as uploaded_at,
+                        VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) as vector_distance
+                    FROM 
+                        IMG_EMBEDDINGS ie
+                    INNER JOIN 
+                        FILE_INFO f ON ie.FILE_ID = f.FILE_ID
+                    WHERE 
+                        VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) <= :threshold
+                    ORDER BY 
+                        vector_distance
+                    FETCH FIRST :limit ROWS ONLY
+                    """
+                        
+                    cursor.execute(sql, {
+                        'query_embedding': embedding_array,
+                        'threshold': threshold,
+                        'limit': limit
                     })
-                
-                logger.info(f"ベクトル検索完了: {len(results)}件の画像がマッチ, threshold={threshold}")
-                return results
-                
+                        
+                    results = []
+                    for row in cursor:
+                        # タイムスタンプをISO形式に変換
+                        uploaded_at = row[12]
+                        uploaded_at_str = uploaded_at.isoformat() if uploaded_at else None
+                            
+                        results.append({
+                            'embed_id': row[0],
+                            'file_id': row[1],
+                            'bucket': row[2],
+                            'object_name': row[3],
+                            'page_number': row[4],
+                            'content_type': row[5],
+                            'img_file_size': row[6],
+                            'file_bucket': row[7],
+                            'file_object_name': row[8],
+                            'original_filename': row[9],
+                            'file_size': row[10],
+                            'file_content_type': row[11],
+                            'uploaded_at': uploaded_at_str,
+                            'vector_distance': float(row[13])
+                        })
+                        
+                    logger.info(f"ベクトル検索完了: {len(results)}件の画像がマッチ, threshold={threshold}")
+                    return results
+                    
         except Exception as e:
             logger.error(f"ベクトル検索エラー: {e}", exc_info=True)
             return None
-        finally:
-            self._release_db_connection()
     
     async def search_similar_images_async(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7) -> Optional[List[Dict[str, Any]]]:
         """
         非同期バージョン: 類似画像を検索（イベントループをブロックしない）
-        
-        Thin modeでは oracledb.connect_async() を使用して真の非同期接続を実現
-        
+            
+        接続プールを使用し、asyncio.to_thread()で同期メソッドを非同期実行します。
+            
         Args:
             query_embedding: 検索用のembeddingベクトル
             limit: 最大取得件数
-            threshold: 類似度闾値（0.0-1.0）
-            
+            threshold: 類似度閾値（0.0-1.0）
+                
         Returns:
             類似画像のリスト、または失敗時はNone
         """
         import asyncio
-        from app.services.database_service import database_service
-        
-        connection = None
+            
         try:
-            # タイムアウト付きで非同期接続を作成
-            logger.info("非同期ベクトル検索: DB接続開始")
-            try:
-                connection = await asyncio.wait_for(
-                    database_service._create_connection_async(),
-                    timeout=10.0  # 10秒タイムアウト
-                )
-            except asyncio.TimeoutError:
-                logger.error("非同期ベクトル検索: 接続タイムアウト")
-                return None
-            
-            if not connection:
-                logger.error("非同期ベクトル検索: DB接続失敗")
-                return None
-            
-            logger.info("非同期ベクトル検索: DB接続成功")
-            
-            # NumPy配列をFLOAT32配列に変換
-            embedding_array = array.array("f", query_embedding.tolist())
-            
-            # Thin mode: 非同期カーソルを直接使用
-            cursor = None
-            try:
-                cursor = connection.cursor()
-                sql = """
-                SELECT 
-                    ie.ID as embed_id,
-                    ie.FILE_ID as file_id,
-                    ie.BUCKET as bucket,
-                    ie.OBJECT_NAME as object_name,
-                    ie.PAGE_NUMBER as page_number,
-                    ie.CONTENT_TYPE as content_type,
-                    ie.FILE_SIZE as img_file_size,
-                    f.BUCKET as file_bucket,
-                    f.OBJECT_NAME as file_object_name,
-                    f.ORIGINAL_FILENAME as original_filename,
-                    f.FILE_SIZE as file_size,
-                    f.CONTENT_TYPE as file_content_type,
-                    f.UPLOADED_AT as uploaded_at,
-                    VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) as vector_distance
-                FROM 
-                    IMG_EMBEDDINGS ie
-                INNER JOIN 
-                    FILE_INFO f ON ie.FILE_ID = f.FILE_ID
-                WHERE 
-                    VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) <= :threshold
-                ORDER BY 
-                    vector_distance
-                FETCH FIRST :limit ROWS ONLY
-                """
+            logger.info("非同期ベクトル検索: 接続プール経由で実行")
                 
-                await cursor.execute(sql, {
-                    'query_embedding': embedding_array,
-                    'threshold': threshold,
-                    'limit': limit
-                })
+            # 同期メソッドをスレッドプールで非同期実行（イベントループをブロックしない）
+            results = await asyncio.to_thread(
+                self.search_similar_images,
+                query_embedding,
+                limit,
+                threshold
+            )
                 
-                results = []
-                async for row in cursor:
-                    uploaded_at = row[12]
-                    uploaded_at_str = uploaded_at.isoformat() if uploaded_at else None
-                    
-                    results.append({
-                        'embed_id': row[0],
-                        'file_id': row[1],
-                        'bucket': row[2],
-                        'object_name': row[3],
-                        'page_number': row[4],
-                        'content_type': row[5],
-                        'img_file_size': row[6],
-                        'file_bucket': row[7],
-                        'file_object_name': row[8],
-                        'original_filename': row[9],
-                        'file_size': row[10],
-                        'file_content_type': row[11],
-                        'uploaded_at': uploaded_at_str,
-                        'vector_distance': float(row[13])
-                    })
+            if results is not None:
+                logger.info(f"非同期ベクトル検索完了: {len(results)}件の画像がマッチ")
+            else:
+                logger.warning("非同期ベクトル検索: 結果なし")
                 
-                logger.info(f"非同期ベクトル検索完了: {len(results)}件の画像がマッチ, threshold={threshold}")
-                return results
-            finally:
-                if cursor:
-                    cursor.close()
+            return results
                 
         except Exception as e:
             logger.error(f"非同期ベクトル検索エラー: {e}", exc_info=True)
             return None
-        finally:
-            if connection:
-                try:
-                    # Thin mode: 非同期close()を使用
-                    await connection.close()
-                    logger.info("非同期DB接続をクローズしました")
-                except Exception as e:
-                    logger.error(f"非同期接続クローズエラー: {e}")
 
 
 # グローバルインスタンス

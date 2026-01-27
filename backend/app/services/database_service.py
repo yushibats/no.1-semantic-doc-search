@@ -1375,10 +1375,9 @@ class DatabaseService:
             return {"success": False, "rows": [], "columns": [], "total": 0, "message": str(e)}
     
     def delete_tables(self, table_names: list) -> Dict[str, Any]:
-        """テーブルを一括削除"""
+        """テーブルを一括削除（接続プール経由）"""
         deleted_count = 0
         errors = []
-        connection = None
         
         try:
             if not ORACLEDB_AVAILABLE:
@@ -1387,33 +1386,33 @@ class DatabaseService:
             if not table_names:
                 return {"success": False, "deleted_count": 0, "message": "削除するテーブルが指定されていません", "errors": []}
             
-            connection = self._create_connection()
-            if not connection:
+            # 接続プールの初期化を確認
+            if not self._ensure_pool_initialized():
                 return {"success": False, "deleted_count": 0, "message": "データベース接続に失敗しました", "errors": []}
             
-            cursor = connection.cursor()
-            
-            for table_name in table_names:
-                try:
-                    # テーブル名のバリデーション（SQLインジェクション防止）
-                    if not table_name.isidentifier() and not table_name.replace('_', '').replace('$', '').isalnum():
-                        errors.append(f"無効なテーブル名: {table_name}")
-                        continue
-                    
-                    # DROP TABLE文を実行
-                    cursor.execute(f'DROP TABLE "{table_name}" CASCADE CONSTRAINTS PURGE')
-                    deleted_count += 1
-                    logger.info(f"テーブル削除成功: {table_name}")
-                    
-                except Exception as e:
-                    error_msg = f"{table_name}: {str(e)}"
-                    errors.append(error_msg)
-                    logger.error(f"テーブル削除エラー: {error_msg}")
-            
-            # コミット
-            connection.commit()
-            cursor.close()
-            self._release_connection(connection)
+            with self.pool_manager.acquire_connection() as connection:
+                cursor = connection.cursor()
+                
+                for table_name in table_names:
+                    try:
+                        # テーブル名のバリデーション（SQLインジェクション防止）
+                        if not table_name.isidentifier() and not table_name.replace('_', '').replace('$', '').isalnum():
+                            errors.append(f"無効なテーブル名: {table_name}")
+                            continue
+                        
+                        # DROP TABLE文を実行
+                        cursor.execute(f'DROP TABLE "{table_name}" CASCADE CONSTRAINTS PURGE')
+                        deleted_count += 1
+                        logger.info(f"テーブル削除成功: {table_name}")
+                        
+                    except Exception as e:
+                        error_msg = f"{table_name}: {str(e)}"
+                        errors.append(error_msg)
+                        logger.error(f"テーブル削除エラー: {error_msg}")
+                
+                # コミット
+                connection.commit()
+                cursor.close()
             
             return {
                 "success": deleted_count > 0,
@@ -1424,87 +1423,74 @@ class DatabaseService:
         
         except Exception as e:
             logger.error(f"テーブル一括削除エラー: {e}")
-            if connection:
-                self._release_connection(connection)
             return {"success": False, "deleted_count": 0, "message": str(e), "errors": errors}
     
     def delete_file_info_records(self, file_ids: list) -> Dict[str, Any]:
-        """FILE_INFOテーブルのレコードを一括削除（関連するIMG_EMBEDDINGSも自動削除）"""
+        """FILE_INFOテーブルのレコードを一括削除（接続プール経由、関連するIMG_EMBEDDINGSも自動削除）"""
         deleted_count = 0
         errors = []
-        connection = None
         
         try:
-            logger.info(f"[DEBUG] delete_file_info_records開始: file_ids={file_ids}")
+            logger.info(f"delete_file_info_records開始: file_ids={file_ids}")
             
             if not ORACLEDB_AVAILABLE:
-                logger.error("[DEBUG] Oracle DBが利用できません")
+                logger.error("Oracle DBが利用できません")
                 return {"success": False, "deleted_count": 0, "message": "Oracle DBが利用できません", "errors": []}
             
             if not file_ids:
-                logger.warning("[DEBUG] 削除するレコードが指定されていません")
+                logger.warning("削除するレコードが指定されていません")
                 return {"success": False, "deleted_count": 0, "message": "削除するレコードが指定されていません", "errors": []}
             
-            logger.info(f"[DEBUG] DB接続作成中...")
-            connection = self._create_connection()
-            if not connection:
-                logger.error("[DEBUG] データベース接続に失敗しました")
+            # 接続プールの初期化を確認
+            if not self._ensure_pool_initialized():
+                logger.error("データベース接続に失敗しました")
                 return {"success": False, "deleted_count": 0, "message": "データベース接続に失敗しました", "errors": []}
             
-            logger.info(f"[DEBUG] DB接続成功")
-            cursor = connection.cursor()
-            
-            for file_id in file_ids:
-                try:
-                    logger.info(f"[DEBUG] FILE_ID処理中: {file_id} (type={type(file_id).__name__})")
-                    
-                    # FILE_IDのバリデーション
-                    file_id_int = int(file_id)
-                    logger.info(f"[DEBUG] FILE_ID変換成功: {file_id} -> {file_id_int}")
-                    
-                    # 削除前にレコードの存在を確認
-                    cursor.execute('SELECT FILE_ID, BUCKET, OBJECT_NAME FROM FILE_INFO WHERE FILE_ID = :file_id', {'file_id': file_id_int})
-                    existing_record = cursor.fetchone()
-                    if existing_record:
-                        logger.info(f"[DEBUG] 削除対象レコード発見: FILE_ID={existing_record[0]}, BUCKET={existing_record[1]}, OBJECT_NAME={existing_record[2]}")
-                    else:
-                        logger.warning(f"[DEBUG] 削除対象レコードが見つかりません: FILE_ID={file_id_int}")
-                    
-                    # 関連するIMG_EMBEDDINGSレコード数を確認
-                    cursor.execute('SELECT COUNT(*) FROM IMG_EMBEDDINGS WHERE FILE_ID = :file_id', {'file_id': file_id_int})
-                    embedding_count = cursor.fetchone()[0]
-                    logger.info(f"[DEBUG] 関連IMG_EMBEDDINGSレコード数: {embedding_count}件")
-                    
-                    # DELETE文を実行（CASCADE制約によりIMG_EMBEDDINGSも自動削除）
-                    logger.info(f"[DEBUG] DELETE文実行: DELETE FROM FILE_INFO WHERE FILE_ID = {file_id_int}")
-                    cursor.execute('DELETE FROM FILE_INFO WHERE FILE_ID = :file_id', {'file_id': file_id_int})
-                    
-                    row_count = cursor.rowcount
-                    logger.info(f"[DEBUG] DELETE実行結果: rowcount={row_count}")
-                    
-                    if row_count > 0:
-                        deleted_count += 1
-                        logger.info(f"[DEBUG] FILE_INFOレコード削除成功: FILE_ID={file_id_int}, deleted_count={deleted_count}")
-                    else:
-                        errors.append(f"FILE_ID={file_id_int}: レコードが見つかりません")
-                        logger.warning(f"[DEBUG] FILE_INFOレコードが見つかりません: FILE_ID={file_id_int}")
-                    
-                except ValueError as ve:
-                    error_msg = f"無効なFILE_ID: {file_id}"
-                    errors.append(error_msg)
-                    logger.error(f"[DEBUG] FILE_ID変換エラー: {error_msg}, exception={ve}")
-                except Exception as e:
-                    error_msg = f"FILE_ID={file_id}: {str(e)}"
-                    errors.append(error_msg)
-                    logger.error(f"[DEBUG] FILE_INFOレコード削除エラー: {error_msg}", exc_info=True)
-            
-            # コミット
-            logger.info(f"[DEBUG] COMMIT実行中... deleted_count={deleted_count}")
-            connection.commit()
-            logger.info(f"[DEBUG] COMMIT成功")
-            
-            cursor.close()
-            self._release_connection(connection)
+            logger.info(f"DB接続プールから接続取得中...")
+            with self.pool_manager.acquire_connection() as connection:
+                logger.info(f"DB接続成功")
+                cursor = connection.cursor()
+                
+                for file_id in file_ids:
+                    try:
+                        logger.info(f"FILE_ID処理中: {file_id} (type={type(file_id).__name__})")
+                        
+                        # FILE_IDのバリデーション
+                        file_id_int = int(file_id)
+                        
+                        # 削除前にレコードの存在を確認
+                        cursor.execute('SELECT FILE_ID, BUCKET, OBJECT_NAME FROM FILE_INFO WHERE FILE_ID = :file_id', {'file_id': file_id_int})
+                        existing_record = cursor.fetchone()
+                        if existing_record:
+                            logger.info(f"削除対象レコード発見: FILE_ID={existing_record[0]}")
+                        else:
+                            logger.warning(f"削除対象レコードが見つかりません: FILE_ID={file_id_int}")
+                        
+                        # DELETE文を実行（CASCADE制約によりIMG_EMBEDDINGSも自動削除）
+                        cursor.execute('DELETE FROM FILE_INFO WHERE FILE_ID = :file_id', {'file_id': file_id_int})
+                        
+                        row_count = cursor.rowcount
+                        if row_count > 0:
+                            deleted_count += 1
+                            logger.info(f"FILE_INFOレコード削除成功: FILE_ID={file_id_int}")
+                        else:
+                            errors.append(f"FILE_ID={file_id_int}: レコードが見つかりません")
+                            logger.warning(f"FILE_INFOレコードが見つかりません: FILE_ID={file_id_int}")
+                        
+                    except ValueError as ve:
+                        error_msg = f"無効なFILE_ID: {file_id}"
+                        errors.append(error_msg)
+                        logger.error(f"FILE_ID変換エラー: {error_msg}, exception={ve}")
+                    except Exception as e:
+                        error_msg = f"FILE_ID={file_id}: {str(e)}"
+                        errors.append(error_msg)
+                        logger.error(f"FILE_INFOレコード削除エラー: {error_msg}", exc_info=True)
+                
+                # コミット
+                logger.info(f"COMMIT実行中... deleted_count={deleted_count}")
+                connection.commit()
+                logger.info(f"COMMIT成功")
+                cursor.close()
             
             result = {
                 "success": deleted_count > 0,
@@ -1512,23 +1498,16 @@ class DatabaseService:
                 "message": f"{deleted_count}件のレコードを削除しました" if deleted_count > 0 else "削除に失敗しました",
                 "errors": errors
             }
-            logger.info(f"[DEBUG] delete_file_info_records結果: {result}")
+            logger.info(f"delete_file_info_records結果: {result}")
             return result
         
         except Exception as e:
-            logger.error(f"[DEBUG] FILE_INFOレコード一括削除エラー: {e}", exc_info=True)
-            if connection:
-                try:
-                    logger.info(f"[DEBUG] ROLLBACK実行")
-                    connection.rollback()
-                except:
-                    pass
-                self._release_connection(connection)
+            logger.error(f"FILE_INFOレコード一括削除エラー: {e}", exc_info=True)
             return {"success": False, "deleted_count": 0, "message": str(e), "errors": errors}
     
     def delete_table_data(self, table_name: str, primary_keys: list) -> Dict[str, Any]:
         """
-        任意のテーブルから主キーを指定してレコードを削除（汎用的）
+        任意のテーブルから主キーを指定してレコードを削除（接続プール経由、汎用的）
         
         Args:
             table_name: テーブル名
@@ -1539,7 +1518,6 @@ class DatabaseService:
         """
         deleted_count = 0
         errors = []
-        connection = None
         
         try:
             if not ORACLEDB_AVAILABLE:
@@ -1552,61 +1530,60 @@ class DatabaseService:
             if not table_name.replace('_', '').isalnum():
                 return {"success": False, "deleted_count": 0, "message": f"無効なテーブル名: {table_name}", "errors": []}
             
-            connection = self._create_connection()
-            if not connection:
+            # 接続プールの初期化を確認
+            if not self._ensure_pool_initialized():
                 return {"success": False, "deleted_count": 0, "message": "データベース接続に失敗しました", "errors": []}
             
-            cursor = connection.cursor()
-            
-            # テーブルの主キー列を取得
-            cursor.execute("""
-                SELECT cols.column_name
-                FROM all_constraints cons
-                JOIN all_cons_columns cols ON cons.constraint_name = cols.constraint_name
-                WHERE cons.constraint_type = 'P'
-                AND cons.table_name = :table_name
-                AND cons.owner = USER
-                ORDER BY cols.position
-            """, {'table_name': table_name.upper()})
-            
-            pk_columns = [row[0] for row in cursor.fetchall()]
-            
-            if not pk_columns:
-                cursor.close()
-                self._release_connection(connection)
-                return {"success": False, "deleted_count": 0, "message": f"テーブル {table_name} に主キーが見つかりません", "errors": []}
-            
-            logger.info(f"テーブル {table_name} の主キー列: {pk_columns}")
-            
-            # 各レコードを削除
-            for pk_value in primary_keys:
-                try:
-                    # 主キーが1列の場合のみDELETE実行（複合主キーはサポートしない）
-                    if len(pk_columns) == 1:
-                        pk_column = pk_columns[0]
-                        delete_sql = f'DELETE FROM "{table_name}" WHERE "{pk_column}" = :pk_value'
-                        cursor.execute(delete_sql, {'pk_value': pk_value})
-                        
-                        row_count = cursor.rowcount
-                        if row_count > 0:
-                            deleted_count += row_count
-                            logger.info(f"レコード削除成功: {table_name}.{pk_column}={pk_value}, deleted={row_count}")
+            with self.pool_manager.acquire_connection() as connection:
+                cursor = connection.cursor()
+                
+                # テーブルの主キー列を取得
+                cursor.execute("""
+                    SELECT cols.column_name
+                    FROM all_constraints cons
+                    JOIN all_cons_columns cols ON cons.constraint_name = cols.constraint_name
+                    WHERE cons.constraint_type = 'P'
+                    AND cons.table_name = :table_name
+                    AND cons.owner = USER
+                    ORDER BY cols.position
+                """, {'table_name': table_name.upper()})
+                
+                pk_columns = [row[0] for row in cursor.fetchall()]
+                
+                if not pk_columns:
+                    cursor.close()
+                    return {"success": False, "deleted_count": 0, "message": f"テーブル {table_name} に主キーが見つかりません", "errors": []}
+                
+                logger.info(f"テーブル {table_name} の主キー列: {pk_columns}")
+                
+                # 各レコードを削除
+                for pk_value in primary_keys:
+                    try:
+                        # 主キーが1列の場合のみDELETE実行（複合主キーはサポートしない）
+                        if len(pk_columns) == 1:
+                            pk_column = pk_columns[0]
+                            delete_sql = f'DELETE FROM "{table_name}" WHERE "{pk_column}" = :pk_value'
+                            cursor.execute(delete_sql, {'pk_value': pk_value})
+                            
+                            row_count = cursor.rowcount
+                            if row_count > 0:
+                                deleted_count += row_count
+                                logger.info(f"レコード削除成功: {table_name}.{pk_column}={pk_value}, deleted={row_count}")
+                            else:
+                                errors.append(f"{pk_column}={pk_value}: レコードが見つかりません")
+                                logger.warning(f"レコードが見つかりません: {table_name}.{pk_column}={pk_value}")
                         else:
-                            errors.append(f"{pk_column}={pk_value}: レコードが見つかりません")
-                            logger.warning(f"レコードが見つかりません: {table_name}.{pk_column}={pk_value}")
-                    else:
-                        errors.append(f"{pk_value}: 複合主キーはサポートされていません")
-                        logger.warning(f"複合主キーはサポートされていません: {table_name}, pk_columns={pk_columns}")
-                        
-                except Exception as e:
-                    error_msg = f"{pk_value}: {str(e)}"
-                    errors.append(error_msg)
-                    logger.error(f"レコード削除エラー: {error_msg}", exc_info=True)
-            
-            # コミット
-            connection.commit()
-            cursor.close()
-            self._release_connection(connection)
+                            errors.append(f"{pk_value}: 複合主キーはサポートされていません")
+                            logger.warning(f"複合主キーはサポートされていません: {table_name}, pk_columns={pk_columns}")
+                            
+                    except Exception as e:
+                        error_msg = f"{pk_value}: {str(e)}"
+                        errors.append(error_msg)
+                        logger.error(f"レコード削除エラー: {error_msg}", exc_info=True)
+                
+                # コミット
+                connection.commit()
+                cursor.close()
             
             result = {
                 "success": deleted_count > 0,
@@ -1619,12 +1596,6 @@ class DatabaseService:
         
         except Exception as e:
             logger.error(f"テーブルデータ削除エラー: {e}", exc_info=True)
-            if connection:
-                try:
-                    connection.rollback()
-                except:
-                    pass
-                self._release_connection(connection)
             return {"success": False, "deleted_count": 0, "message": str(e), "errors": errors}
     
     def get_env_connection_info(self) -> Dict[str, Any]:
@@ -1930,69 +1901,68 @@ class DatabaseService:
             return False
     
     def get_storage_info(self) -> Optional[Dict[str, Any]]:
-        """データベースストレージ情報を取得"""
-        connection = None
+        """データベースストレージ情報を取得（接続プール経由）"""
         try:
             if not ORACLEDB_AVAILABLE:
                 return None
             
-            connection = self._create_connection()
-            if not connection:
+            # 接続プールの初期化を確認
+            if not self._ensure_pool_initialized():
                 return None
             
-            cursor = connection.cursor()
-            
-            # テーブルスペース情報を取得
-            query = """
-                SELECT 
-                    tablespace_name,
-                    ROUND(NVL(SUM(bytes), 0) / 1024 / 1024, 2) AS total_size_mb,
-                    status
-                FROM dba_data_files
-                GROUP BY tablespace_name, status
-                ORDER BY tablespace_name
-            """
-            
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            
-            tablespaces = []
-            total_size_mb = 0.0
-            used_size_mb = 0.0
-            
-            for row in rows:
-                tablespace_name = row[0]
-                size_mb = float(row[1]) if row[1] else 0.0
-                status = row[2]
+            with self.pool_manager.acquire_connection() as connection:
+                cursor = connection.cursor()
                 
-                # 使用済みサイズを取得
-                used_query = """
+                # テーブルスペース情報を取得
+                query = """
                     SELECT 
-                        ROUND(NVL(SUM(bytes), 0) / 1024 / 1024, 2) AS used_size_mb
-                    FROM dba_segments
-                    WHERE tablespace_name = :tablespace_name
+                        tablespace_name,
+                        ROUND(NVL(SUM(bytes), 0) / 1024 / 1024, 2) AS total_size_mb,
+                        status
+                    FROM dba_data_files
+                    GROUP BY tablespace_name, status
+                    ORDER BY tablespace_name
                 """
-                cursor.execute(used_query, {'tablespace_name': tablespace_name})
-                used_row = cursor.fetchone()
-                used_mb = float(used_row[0]) if used_row and used_row[0] else 0.0
                 
-                free_mb = size_mb - used_mb
-                used_percent = (used_mb / size_mb * 100) if size_mb > 0 else 0.0
+                cursor.execute(query)
+                rows = cursor.fetchall()
                 
-                tablespaces.append({
-                    'tablespace_name': tablespace_name,
-                    'total_size_mb': size_mb,
-                    'used_size_mb': used_mb,
-                    'free_size_mb': free_mb,
-                    'used_percent': used_percent,
-                    'status': status
-                })
+                tablespaces = []
+                total_size_mb = 0.0
+                used_size_mb = 0.0
                 
-                total_size_mb += size_mb
-                used_size_mb += used_mb
-            
-            cursor.close()
-            self._release_connection(connection)
+                for row in rows:
+                    tablespace_name = row[0]
+                    size_mb = float(row[1]) if row[1] else 0.0
+                    status = row[2]
+                    
+                    # 使用済みサイズを取得
+                    used_query = """
+                        SELECT 
+                            ROUND(NVL(SUM(bytes), 0) / 1024 / 1024, 2) AS used_size_mb
+                        FROM dba_segments
+                        WHERE tablespace_name = :tablespace_name
+                    """
+                    cursor.execute(used_query, {'tablespace_name': tablespace_name})
+                    used_row = cursor.fetchone()
+                    used_mb = float(used_row[0]) if used_row and used_row[0] else 0.0
+                    
+                    free_mb = size_mb - used_mb
+                    used_percent = (used_mb / size_mb * 100) if size_mb > 0 else 0.0
+                    
+                    tablespaces.append({
+                        'tablespace_name': tablespace_name,
+                        'total_size_mb': size_mb,
+                        'used_size_mb': used_mb,
+                        'free_size_mb': free_mb,
+                        'used_percent': used_percent,
+                        'status': status
+                    })
+                    
+                    total_size_mb += size_mb
+                    used_size_mb += used_mb
+                
+                cursor.close()
             
             free_size_mb = total_size_mb - used_size_mb
             used_percent = (used_size_mb / total_size_mb * 100) if total_size_mb > 0 else 0.0
@@ -2007,8 +1977,6 @@ class DatabaseService:
         
         except Exception as e:
             logger.error(f"ストレージ情報取得エラー: {e}")
-            if connection:
-                self._release_connection(connection)
             return None
 
 

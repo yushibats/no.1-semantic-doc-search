@@ -837,7 +837,10 @@ export async function deleteSelectedOciObjects() {
   
   // 処理中表示を設定
   appState.set('ociObjectsBatchDeleteLoading', true);
-  loadOciObjects();
+  showLoading('オブジェクトを削除中...');
+  
+  // UIを更新（エラーは無視）
+  loadOciObjects().catch(err => console.warn('UI更新エラー:', err));
   
   try {
     // 一括削除APIを呼び出す
@@ -861,8 +864,9 @@ export async function deleteSelectedOciObjects() {
   } finally {
     // 処理中表示を解除
     appState.set('ociObjectsBatchDeleteLoading', false);
+    hideLoading();
     // 一覧を再読み込み
-    loadOciObjects();
+    await loadOciObjects();
   }
 }
 
@@ -885,25 +889,13 @@ async function processStreamingResponse(response, totalFiles, operationType) {
   let totalPagesAllFiles = 0;
   let totalWorkers = 1; // 並列ワーカー数
   
-  while (true) {
-    const { done, value } = await reader.read();
+  // イベント処理用の共通関数
+  const processEventLine = async (line) => {
+    if (!line.startsWith('data: ')) return;
     
-    if (done) {
-      break;
-    }
-    
-    // バッファに追加
-    buffer += decoder.decode(value, { stream: true });
-    
-    // 行ごとに処理
-    const lines = buffer.split('\n');
-    buffer = lines.pop(); // 最後の不完全な行をバッファに戻す
-    
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const jsonStr = line.substring(6);
-          const data = JSON.parse(jsonStr);
+    try {
+      const jsonStr = line.substring(6);
+      const data = JSON.parse(jsonStr);
           
           // イベントタイプごとに処理
           switch(data.type) {
@@ -928,15 +920,16 @@ async function processStreamingResponse(response, totalFiles, operationType) {
             case 'file_processing':
               // ファイルが処理中になった
               currentFileIndex = data.file_index;
-              const processingProgress = (currentFileIndex - 1) / totalFiles;
-              updateLoadingMessage(`ファイル ${data.file_index}/${totalFiles}\n${data.file_name}\nステータス: 🔄 ${data.status}`, processingProgress, jobId);
+              if (data.total_files) totalFiles = data.total_files;
+              const processingProgress = totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+              updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files || totalFiles}\n${data.file_name}\nステータス: 🔄 ${data.status}`, processingProgress, jobId);
               break;
               
             case 'file_start':
               currentFileIndex = data.file_index;
-              totalFiles = data.total_files;
-              const fileProgress = (currentFileIndex - 1) / totalFiles;
-              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles} を処理中...\n${data.file_name}`, fileProgress, jobId);
+              if (data.total_files) totalFiles = data.total_files;
+              const fileProgress = (currentFileIndex - 1) / (totalFiles || 1);
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${data.total_files || totalFiles} を処理中...\n${data.file_name}`, fileProgress, jobId);
               break;
               
             case 'page_progress':
@@ -944,8 +937,8 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               totalPages = data.total_pages;
               const pageProgress = operationType === 'convert' ?
                 (processedPages + 1) / (totalPagesAllFiles || 1) :
-                (data.file_index - 1 + currentPageIndex / totalPages) / totalFiles;
-              updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files}\nページ ${currentPageIndex}/${totalPages} を${operationType === 'convert' ? '画像化' : 'ベクトル化'}中...`, pageProgress, jobId);
+                totalFiles > 0 ? (data.file_index - 1 + currentPageIndex / (totalPages || 1)) / totalFiles : 0;
+              updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files || totalFiles}\nページ ${currentPageIndex}/${totalPages} を${operationType === 'convert' ? '画像化' : 'ベクトル化'}中...`, pageProgress, jobId);
               processedPages++;
               break;
               
@@ -955,14 +948,18 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               break;
               
             case 'file_complete':
-              const completedFileProgress = currentFileIndex / totalFiles;
-              updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files} ✓ 完了\n${data.file_name}`, completedFileProgress, jobId);
+              currentFileIndex = data.file_index;
+              const totalForComplete = data.total_files || totalFiles || 1;
+              const completedFileProgress = currentFileIndex / totalForComplete;
+              updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files || totalFiles} ✓ 完了\n${data.file_name}`, completedFileProgress, jobId);
+              // UI更新はprogress_updateイベントに任せる（重複回避）
               break;
               
             case 'file_error':
-              console.error(`ファイル ${data.file_index}/${data.total_files} エラー: ${data.error}`);
-              const errorProgress = currentFileIndex > 0 ? (currentFileIndex - 1) / totalFiles : 0;
-              updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files} ✗ エラー\n${data.file_name}\n${data.error}`, errorProgress, jobId);
+              console.error(`ファイル ${data.file_index}/${data.total_files || totalFiles} エラー: ${data.error}`);
+              const totalForError = data.total_files || totalFiles || 1;
+              const errorProgress = currentFileIndex > 0 ? (currentFileIndex - 1) / totalForError : 0;
+              updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files || totalFiles} ✗ エラー\n${data.file_name}\n${data.error}`, errorProgress, jobId);
               break;
               
             case 'cancelled':
@@ -979,6 +976,23 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               showToast(`エラー: ${data.message}`, 'error');
               break;
               
+            case 'progress_update':
+              // 進捗状況のリアルタイム更新
+              const progressPercent = data.total_count > 0 ? data.completed_count / data.total_count : 0;
+              updateLoadingMessage(
+                `処理中: ${data.completed_count}/${data.total_count}\n成功: ${data.success_count}件 | 失敗: ${data.failed_count}件`,
+                progressPercent,
+                jobId
+              );
+              // リアルタイムでUIを更新（単一の更新ポイント、エラーは無視）
+              loadOciObjects().catch(err => console.warn('UI更新エラー:', err));
+              break;
+              
+            case 'sync_complete':
+              // すべての処理が完了し、状態が完全に同期された
+              console.log('同期完了イベント受信:', data);
+              break;
+              
             case 'complete':
               hideLoading();
               appState.set('ociObjectsBatchDeleteLoading', false);
@@ -991,15 +1005,44 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               
               console.log(`${operationType === 'convert' ? 'ページ画像化' : 'ベクトル化'}結果:`, data.results);
               
-              // 選択をクリアして一覧を更新
+              // 選択をクリアして一覧を更新（最終同期）
               appState.set('selectedOciObjects', []);
+              // 短時間待機してからリストを更新（バックエンドの処理完了を保証）
+              await new Promise(resolve => setTimeout(resolve, 500));
               await loadOciObjects();
               break;
           }
-        } catch (parseError) {
-          console.error('JSONパースエラー:', parseError, '行:', line);
+    } catch (parseError) {
+      console.error('JSONパースエラー:', parseError, '行:', line);
+    }
+  };
+  
+  while (true) {
+    const { done, value } = await reader.read();
+    
+    if (done) {
+      // ストリーム終了時にデコーダをフラッシュ
+      buffer += decoder.decode(new Uint8Array(), { stream: false });
+      
+      // バッファに残っているデータを処理（最後のcomplete/sync_completeイベント等）
+      if (buffer.trim()) {
+        const remainingLines = buffer.split('\n');
+        for (const line of remainingLines) {
+          await processEventLine(line);
         }
       }
+      break;
+    }
+    
+    // バッファに追加
+    buffer += decoder.decode(value, { stream: true });
+    
+    // 行ごとに処理
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // 最後の不完全な行をバッファに戻す
+    
+    for (const line of lines) {
+      await processEventLine(line);
     }
   }
 }
