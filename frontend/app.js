@@ -1821,6 +1821,13 @@ window.vectorizeSelectedOciObjects = async function() {
                 updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\nベクトル化開始: ${totalPages}ページ`, vectorizeProgress, jobId);
                 break;
                 
+              case 'vectorize_retry':
+                // ベクトル化リトライ通知
+                const retryProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n⚠️ リトライ ${data.retry_attempt}回目\n失敗ページ: ${data.failed_pages}/${data.total_pages}`, retryProgress, jobId);
+                utilsShowToast(`ベクトル化リトライ中: ${data.file_name}\n失敗ページ: ${data.failed_pages}/${data.total_pages}`, 'warning');
+                break;
+                
               case 'page_progress':
                 currentPageIndex = data.page_index;
                 totalPages = data.total_pages;
@@ -1831,13 +1838,31 @@ window.vectorizeSelectedOciObjects = async function() {
                 
               case 'file_complete':
                 const completedFileProgress = currentFileIndex / totalFiles;
-                updateLoadingMessage(`ファイル ${data.file_index}/${totalFiles} ✓ 完了\n${data.file_name}\n${data.embedding_count}ページをベクトル化しました`, completedFileProgress, jobId);
+                // 期待値と実際の値をチェック
+                const expectedCount = data.expected_count || data.embedding_count;
+                if (data.embedding_count < expectedCount) {
+                  // 数量不一致の警告
+                  updateLoadingMessage(`ファイル ${data.file_index}/${totalFiles} ⚠️ 一部完了\n${data.file_name}\n${data.embedding_count}/${expectedCount}ページ`, completedFileProgress, jobId);
+                } else {
+                  updateLoadingMessage(`ファイル ${data.file_index}/${totalFiles} ✓ 完了\n${data.file_name}\n${data.embedding_count}ページをベクトル化しました`, completedFileProgress, jobId);
+                }
+                break;
+                
+              case 'file_partial_failure':
+                // 一部失敗の通知
+                const partialProgress = currentFileIndex / totalFiles;
+                updateLoadingMessage(`ファイル ${data.file_index}/${totalFiles} ⚠️ 一部失敗\n${data.file_name}\n${data.embedding_count}/${data.expected_count}ページ`, partialProgress, jobId);
+                utilsShowToast(`ベクトル化が一部失敗: ${data.file_name}\n成功: ${data.embedding_count}/${data.expected_count}ページ\n失敗ページ: ${data.failed_pages.join(', ')}`, 'warning');
                 break;
                 
               case 'file_error':
                 console.error(`ファイル ${data.file_index}/${totalFiles} エラー: ${data.error}`);
                 const errorProgress = currentFileIndex > 0 ? (currentFileIndex - 1) / totalFiles : 0;
                 updateLoadingMessage(`ファイル ${data.file_index}/${totalFiles} ✗ エラー\n${data.file_name}\n${data.error}`, errorProgress, jobId);
+                // エラーの詳細をトーストで通知
+                if (data.failed_pages && data.failed_pages.length > 0) {
+                  utilsShowToast(`ベクトル化失敗: ${data.file_name}\n成功: ${data.embedding_count || 0}/${data.expected_count || 0}ページ\n失敗ページ: ${data.failed_pages.join(', ')}`, 'error');
+                }
                 break;
                 
               case 'cancelled':

@@ -439,6 +439,9 @@ class ParallelProcessor:
                             namespace=namespace,
                             object_names=images_to_delete
                         )
+                        # Object Storageの一貫性を保証するため短時間待機
+                        await asyncio.sleep(1.0)
+                        logger.info(f"既存画像削除完了: {len(images_to_delete)}件 ({obj_name})")
                 
                 # 各ページをアップロード（非同期）
                 total_pages = len(page_images)
@@ -471,6 +474,27 @@ class ParallelProcessor:
                         'page_index': page_num,
                         'total_pages': total_pages
                     })
+                
+                # アップロード完了後、Object Storageの一貫性を保証するため短時間待機
+                await asyncio.sleep(0.5)
+                
+                # アップロードされた画像を再確認
+                verification_result = await asyncio.to_thread(
+                    oci_service.list_objects,
+                    bucket_name=bucket_name,
+                    namespace=namespace,
+                    prefix=f"{folder_name}/",
+                    page_size=1000
+                )
+                
+                if verification_result.get("success"):
+                    verification_objects = verification_result.get("objects", [])
+                    verified_count = sum(1 for obj in verification_objects 
+                                       if re.search(r'/page_\d{3}\.png$', obj.get("name", "")))
+                    if verified_count != total_pages:
+                        logger.warning(f"アップロード検証: 期待{total_pages}ページ、実際{verified_count}ページ ({obj_name})")
+                    else:
+                        logger.info(f"アップロード検証成功: {verified_count}ページ ({obj_name})")
                 
                 # 完了
                 await JobManager.update_file_state(job_id, obj_name, '完了')
@@ -744,22 +768,36 @@ class ParallelProcessor:
                         })
                         return
                 
-                # ページ画像を取得（非同期化）
-                page_images_result = await asyncio.to_thread(
-                    oci_service.list_objects,
-                    bucket_name=bucket_name,
-                    namespace=namespace,
-                    prefix=f"{folder_name}/",
-                    page_size=1000
-                )
+                # Object Storageの一貫性を保証するため短時間待機（ページ画像化直後の場合）
+                await asyncio.sleep(0.3)
                 
+                # ページ画像を取得（非同期化、リトライ付き）
+                max_retries = 3
                 page_images = []
-                if page_images_result.get("success"):
-                    objects = page_images_result.get("objects", [])
-                    for obj in objects:
-                        obj_name_str = obj.get("name", "")
-                        if not obj_name_str.endswith('/') and re.search(r'/page_\d{3}\.png$', obj_name_str):
-                            page_images.append(obj_name_str)
+                for retry in range(max_retries):
+                    page_images_result = await asyncio.to_thread(
+                        oci_service.list_objects,
+                        bucket_name=bucket_name,
+                        namespace=namespace,
+                        prefix=f"{folder_name}/",
+                        page_size=1000
+                    )
+                    
+                    page_images = []
+                    if page_images_result.get("success"):
+                        objects = page_images_result.get("objects", [])
+                        for obj in objects:
+                            obj_name_str = obj.get("name", "")
+                            if not obj_name_str.endswith('/') and re.search(r'/page_\d{3}\.png$', obj_name_str):
+                                page_images.append(obj_name_str)
+                    
+                    if page_images:
+                        break
+                    
+                    # リトライ前に待機
+                    if retry < max_retries - 1:
+                        logger.warning(f"ページ画像取得リトライ {retry + 1}/{max_retries}: {obj_name}")
+                        await asyncio.sleep(1.0)
                 
                 page_images.sort()
                 
@@ -786,103 +824,177 @@ class ParallelProcessor:
                     'total_pages': total_pages
                 })
                 
-                # 各ページを並列でベクトル化
+                # ベクトル化をリトライ付きで実行（最大3回）
+                max_vectorize_retries = 3
                 embedding_count = 0
-                embedding_count_lock = asyncio.Lock()
+                failed_pages = []
                 
-                async def vectorize_page(page_idx: int, page_image_name: str) -> bool:
-                    """単一ページをベクトル化（セマフォ付き）"""
-                    nonlocal embedding_count
+                for vectorize_attempt in range(max_vectorize_retries):
+                    if JobManager.is_cancelled(job_id):
+                        break
                     
-                    async with semaphore:
+                    # リトライの場合、失敗したページのみを再処理
+                    if vectorize_attempt > 0:
+                        if not failed_pages:
+                            break  # すべて成功したので終了
+                        
+                        logger.warning(f"ベクトル化リトライ {vectorize_attempt}/{max_vectorize_retries - 1}: {len(failed_pages)}ページ ({obj_name})")
+                        await event_queue.put({
+                            'type': 'vectorize_retry',
+                            'file_index': file_idx,
+                            'file_name': obj_name,
+                            'retry_attempt': vectorize_attempt,
+                            'failed_pages': len(failed_pages),
+                            'total_pages': total_pages
+                        })
+                        # リトライ前に待機
+                        await asyncio.sleep(2.0)
+                        pages_to_process = failed_pages
+                    else:
+                        pages_to_process = list(enumerate(page_images, start=1))
+                    
+                    # 各試行で失敗ページをリセット
+                    failed_pages = []
+                    embedding_count_lock = asyncio.Lock()
+                    
+                    async def vectorize_page(page_idx: int, page_image_name: str) -> bool:
+                        """単一ページをベクトル化（セマフォ付き）"""
+                        nonlocal embedding_count
+                        
+                        async with semaphore:
+                            if JobManager.is_cancelled(job_id):
+                                return False
+                            
+                            try:
+                                # 画像をダウンロード（非同期化）
+                                image_content = await asyncio.to_thread(
+                                    oci_service.download_object, page_image_name
+                                )
+                                if not image_content:
+                                    logger.warning(f"画像が見つかりません: {page_image_name}")
+                                    return False
+                                
+                                image_bytes = io.BytesIO(image_content)
+                                
+                                # リトライ付きでEmbedding生成
+                                embedding = await self._retry_with_backoff(
+                                    lambda: image_vectorizer.generate_embedding(image_bytes, "image/png")
+                                )
+                                
+                                if embedding is None:
+                                    logger.warning(f"Embedding生成失敗: {page_image_name}")
+                                    return False
+                                
+                                # DBに保存（非同期化）
+                                embedding_id = await asyncio.to_thread(
+                                    image_vectorizer.save_image_embedding,
+                                    file_id=file_id,
+                                    bucket=bucket_name,
+                                    object_name=page_image_name,
+                                    page_number=page_idx,
+                                    content_type="image/png",
+                                    file_size=len(image_content),
+                                    embedding=embedding
+                                )
+                                
+                                if embedding_id:
+                                    async with embedding_count_lock:
+                                        embedding_count += 1
+                                    return True
+                                return False
+                                
+                            except Exception as e:
+                                logger.error(f"ページベクトル化エラー ({page_image_name}): {e}")
+                                return False
+                    
+                    # 並列でページをベクトル化
+                    page_tasks = []
+                    for page_idx, page_image_name in pages_to_process:
+                        task = asyncio.create_task(vectorize_page(page_idx, page_image_name))
+                        page_tasks.append((page_idx, page_image_name, task))
+                    
+                    # ページ処理を待機し、失敗したページを記録
+                    for page_idx, page_image_name, task in page_tasks:
                         if JobManager.is_cancelled(job_id):
-                            return False
+                            task.cancel()
+                            continue
                         
                         try:
-                            # 画像をダウンロード（非同期化）
-                            image_content = await asyncio.to_thread(
-                                oci_service.download_object, page_image_name
-                            )
-                            if not image_content:
-                                logger.warning(f"画像が見つかりません: {page_image_name}")
-                                return False
-                            
-                            image_bytes = io.BytesIO(image_content)
-                            
-                            # リトライ付きでEmbedding生成
-                            embedding = await self._retry_with_backoff(
-                                lambda: image_vectorizer.generate_embedding(image_bytes, "image/png")
-                            )
-                            
-                            if embedding is None:
-                                logger.warning(f"Embedding生成失敗: {page_image_name}")
-                                return False
-                            
-                            # DBに保存（非同期化）
-                            embedding_id = await asyncio.to_thread(
-                                image_vectorizer.save_image_embedding,
-                                file_id=file_id,
-                                bucket=bucket_name,
-                                object_name=page_image_name,
-                                page_number=page_idx,
-                                content_type="image/png",
-                                file_size=len(image_content),
-                                embedding=embedding
-                            )
-                            
-                            if embedding_id:
-                                async with embedding_count_lock:
-                                    embedding_count += 1
-                                return True
-                            return False
-                            
+                            success = await task
+                            if not success:
+                                failed_pages.append((page_idx, page_image_name))
+                        except asyncio.CancelledError:
+                            failed_pages.append((page_idx, page_image_name))
                         except Exception as e:
-                            logger.error(f"ページベクトル化エラー ({page_image_name}): {e}")
-                            return False
-                
-                # 並列でページをベクトル化
-                page_tasks = []
-                for page_idx, page_image_name in enumerate(page_images, start=1):
-                    task = asyncio.create_task(vectorize_page(page_idx, page_image_name))
-                    page_tasks.append((page_idx, task))
-                
-                # ページ処理を待機しながら進捗イベントを送信
-                for page_idx, task in page_tasks:
-                    if JobManager.is_cancelled(job_id):
-                        task.cancel()
-                        continue
+                            logger.error(f"ページタスク実行エラー ({page_image_name}): {e}")
+                            failed_pages.append((page_idx, page_image_name))
+                        
+                        await event_queue.put({
+                            'type': 'page_progress',
+                            'file_index': file_idx,
+                            'file_name': obj_name,
+                            'page_index': page_idx,
+                            'total_pages': total_pages
+                        })
                     
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+                    # 数量検証：すべてのページがベクトル化されたかチェック
+                    if embedding_count == total_pages:
+                        logger.info(f"ベクトル化成功: {embedding_count}/{total_pages}ページ ({obj_name})")
+                        break  # 成功したのでループを抜ける
+                    elif vectorize_attempt < max_vectorize_retries - 1:
+                        logger.warning(f"ベクトル化数量不一致: {embedding_count}/{total_pages}ページ、リトライします ({obj_name})")
+                    else:
+                        logger.error(f"ベクトル化数量不一致（最大リトライ到達）: {embedding_count}/{total_pages}ページ ({obj_name})")
+                
+                # 最終結果の判定
+                if embedding_count == total_pages:
+                    result['success'] = True
+                    result['message'] = f'{embedding_count}ページをベクトル化しました'
+                elif embedding_count > 0:
+                    result['success'] = False
+                    result['message'] = f'ベクトル化が一部失敗しました: {embedding_count}/{total_pages}ページ（{len(failed_pages)}ページ失敗）'
+                    result['failed_pages'] = [page_idx for page_idx, _ in failed_pages]
+                else:
+                    result['success'] = False
+                    result['message'] = f'ベクトル化に完全に失敗しました: 0/{total_pages}ページ'
+                
+                result['embedding_count'] = embedding_count
+                result['expected_count'] = total_pages
+                
+                # 成功/失敗の判定
+                if result['success']:
+                    await JobManager.update_file_state(job_id, obj_name, '完了')
+                    await JobManager.increment_completed(job_id)
+                    async with results_lock:
+                        success_count += 1
+                        results.append(result)
                     
                     await event_queue.put({
-                        'type': 'page_progress',
+                        'type': 'file_complete',
                         'file_index': file_idx,
                         'file_name': obj_name,
-                        'page_index': page_idx,
-                        'total_pages': total_pages
+                        'embedding_count': embedding_count,
+                        'expected_count': total_pages,
+                        'status': '完了'
                     })
-                
-                # ファイル完了
-                result['success'] = True
-                result['message'] = f'{embedding_count}ページをベクトル化しました'
-                result['embedding_count'] = embedding_count
-                
-                await JobManager.update_file_state(job_id, obj_name, '完了')
-                await JobManager.increment_completed(job_id)
-                async with results_lock:
-                    success_count += 1
-                    results.append(result)
-                
-                await event_queue.put({
-                    'type': 'file_complete',
-                    'file_index': file_idx,
-                    'file_name': obj_name,
-                    'embedding_count': embedding_count,
-                    'status': '完了'
-                })
+                else:
+                    # 一部失敗または完全失敗
+                    await JobManager.update_file_state(job_id, obj_name, '一部失敗' if embedding_count > 0 else '失敗')
+                    await JobManager.increment_failed(job_id)
+                    async with results_lock:
+                        failed_count += 1
+                        results.append(result)
+                    
+                    await event_queue.put({
+                        'type': 'file_partial_failure' if embedding_count > 0 else 'file_error',
+                        'file_index': file_idx,
+                        'file_name': obj_name,
+                        'embedding_count': embedding_count,
+                        'expected_count': total_pages,
+                        'failed_pages': result.get('failed_pages', []),
+                        'status': '一部失敗' if embedding_count > 0 else '失敗',
+                        'error': result['message']
+                    })
                 
             except Exception as e:
                 result['message'] = f'処理エラー: {str(e)}'
