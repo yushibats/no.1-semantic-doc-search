@@ -623,6 +623,122 @@ class ImageVectorizer:
             return None
         finally:
             self._release_db_connection()
+    
+    async def search_similar_images_async(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7) -> Optional[List[Dict[str, Any]]]:
+        """
+        非同期バージョン: 類似画像を検索（イベントループをブロックしない）
+        
+        oracledb.connect_async()を使用して、イベントループをブロックしない真の非同期接続を実現
+        
+        Args:
+            query_embedding: 検索用のembeddingベクトル
+            limit: 最大取得件数
+            threshold: 類似度闾値（0.0-1.0）
+            
+        Returns:
+            類似画像のリスト、または失敗時はNone
+        """
+        import asyncio
+        from app.services.database_service import database_service
+        
+        connection = None
+        try:
+            # タイムアウト付きで非同期接続を作成
+            logger.info("非同期ベクトル検索: DB接続開始")
+            try:
+                connection = await asyncio.wait_for(
+                    database_service._create_connection_async(),
+                    timeout=10.0  # 10秒タイムアウト
+                )
+            except asyncio.TimeoutError:
+                logger.error("非同期ベクトル検索: 接続タイムアウト")
+                return None
+            
+            if not connection:
+                logger.error("非同期ベクトル検索: DB接続失敗")
+                return None
+            
+            logger.info("非同期ベクトル検索: DB接続成功")
+            
+            # NumPy配列をFLOAT32配列に変換
+            embedding_array = array.array("f", query_embedding.tolist())
+            
+            # Thick mode対応: カーソル操作をasyncio.to_thread()でラップ
+            def _execute_search():
+                with connection.cursor() as cursor:
+                    sql = """
+                    SELECT 
+                        ie.ID as embed_id,
+                        ie.FILE_ID as file_id,
+                        ie.BUCKET as bucket,
+                        ie.OBJECT_NAME as object_name,
+                        ie.PAGE_NUMBER as page_number,
+                        ie.CONTENT_TYPE as content_type,
+                        ie.FILE_SIZE as img_file_size,
+                        f.BUCKET as file_bucket,
+                        f.OBJECT_NAME as file_object_name,
+                        f.ORIGINAL_FILENAME as original_filename,
+                        f.FILE_SIZE as file_size,
+                        f.CONTENT_TYPE as file_content_type,
+                        f.UPLOADED_AT as uploaded_at,
+                        VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) as vector_distance
+                    FROM 
+                        IMG_EMBEDDINGS ie
+                    INNER JOIN 
+                        FILE_INFO f ON ie.FILE_ID = f.FILE_ID
+                    WHERE 
+                        VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) <= :threshold
+                    ORDER BY 
+                        vector_distance
+                    FETCH FIRST :limit ROWS ONLY
+                    """
+                    
+                    cursor.execute(sql, {
+                        'query_embedding': embedding_array,
+                        'threshold': threshold,
+                        'limit': limit
+                    })
+                    
+                    results = []
+                    for row in cursor:
+                        uploaded_at = row[12]
+                        uploaded_at_str = uploaded_at.isoformat() if uploaded_at else None
+                        
+                        results.append({
+                            'embed_id': row[0],
+                            'file_id': row[1],
+                            'bucket': row[2],
+                            'object_name': row[3],
+                            'page_number': row[4],
+                            'content_type': row[5],
+                            'img_file_size': row[6],
+                            'file_bucket': row[7],
+                            'file_object_name': row[8],
+                            'original_filename': row[9],
+                            'file_size': row[10],
+                            'file_content_type': row[11],
+                            'uploaded_at': uploaded_at_str,
+                            'vector_distance': float(row[13])
+                        })
+                    
+                    return results
+            
+            # バックグラウンドスレッドで実行
+            results = await asyncio.to_thread(_execute_search)
+            logger.info(f"非同期ベクトル検索完了: {len(results)}件の画像がマッチ, threshold={threshold}")
+            return results
+                
+        except Exception as e:
+            logger.error(f"非同期ベクトル検索エラー: {e}", exc_info=True)
+            return None
+        finally:
+            if connection:
+                try:
+                    # Thick mode対応: 同期close()を使用
+                    connection.close()
+                    logger.info("非同期DB接続をクローズしました")
+                except Exception as e:
+                    logger.error(f"非同期接続クローズエラー: {e}")
 
 
 # グローバルインスタンス

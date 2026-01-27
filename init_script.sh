@@ -157,7 +157,7 @@ else
 fi
 
 # Setup ADB wallet
-WALLET_DIR="${INSTALL_DIR}/props/wallet"
+WALLET_DIR="${INSTANTCLIENT_DIR}/network/admin"
 echo "ADBウォレットをセットアップ中..."
 if [ -f "${INSTALL_DIR}/wallet.zip" ]; then
     mkdir -p "${WALLET_DIR}"
@@ -242,8 +242,8 @@ if [ -d "$PROJECT_DIR" ]; then
     # Set Oracle Client Library Directory
     sed -i "s|ORACLE_CLIENT_LIB_DIR=.*|ORACLE_CLIENT_LIB_DIR=${INSTANTCLIENT_DIR}|g" .env
     
-    # Set TNS_ADMIN to wallet directory
-    sed -i "s|TNS_ADMIN=.*|TNS_ADMIN=${WALLET_DIR}|g" .env
+    # TNS_ADMIN is automatically set to ORACLE_CLIENT_LIB_DIR/network/admin
+    # No need to set TNS_ADMIN explicitly in .env
     
     # Set OCI Region (if available)
     if [ -n "${OCI_REGION:-}" ]; then
@@ -399,7 +399,7 @@ if [ -f .env ]; then
 fi
 
 # Set TNS_ADMIN for Oracle Wallet
-export TNS_ADMIN="/u01/aipoc/props/wallet"
+export TNS_ADMIN="${ORACLE_CLIENT_LIB_DIR}/network/admin"
 
 echo "セマンティック文書検索バックエンドサービスを起動中..."
 # 環境変数からAPI_HOSTとAPI_PORTを読み取る（デフォルト値付き）
@@ -638,7 +638,8 @@ EOL
         # Configure wallet files to containers
         echo "Difyコンテナにwalletファイルを設定中..."
         if [ -d "${WALLET_DIR}" ]; then
-            sed -i 's|DIRECTORY="?\+/network/admin" *|DIRECTORY="/u01/aipoc/props/wallet"|g' "${WALLET_DIR}/sqlnet.ora"
+            # sqlnet.oraのDIRECTORYパスはそのまま（WALLET_DIRがすでに正しいパスを指している）
+            # sed操作は不要
             
             # Copy wallet to Dify containers
             WORKER_CONTAINER=$(docker ps --filter "name=worker" --format "{{.Names}}" | head -n 1)

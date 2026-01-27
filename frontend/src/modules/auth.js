@@ -239,7 +239,7 @@ export function forceLogout() {
 }
 
 /**
- * APIコールヘルパー（認証トークン付き）
+ * APIコールヘルパー(認証トークン付き)
  * @param {string} endpoint - APIエンドポイント
  * @param {Object} options - fetchオプション
  * @returns {Promise<any>} レスポンスJSON
@@ -255,28 +255,46 @@ export async function apiCall(endpoint, options = {}) {
     headers['Authorization'] = `Bearer ${loginToken}`;
   }
   
-  const response = await fetch(url, {
-    ...options,
-    headers
-  });
+  // タイムアウト設定（デフォルト10秒）
+  const timeout = options.timeout || 10000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
   
-  // 401エラーの場合、ログインが必要な場合は強制ログアウト（referenceプロジェクトに準拠）
-  const requireLogin = appState.get('requireLogin');
-  if (response.status === 401) {
-    if (requireLogin) {
-      forceLogout();
-    } else {
-      showLoginModal();
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers,
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    // 401エラーの場合、ログインが必要な場合は強制ログアウト（referenceプロジェクトに準拠）
+    const requireLogin = appState.get('requireLogin');
+    if (response.status === 401) {
+      if (requireLogin) {
+        forceLogout();
+      } else {
+        showLoginModal();
+      }
+      throw new Error('認証が必要です');
     }
-    throw new Error('認証が必要です');
+    
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || 'リクエストに失敗しました');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    clearTimeout(timeoutId);
+    
+    if (error.name === 'AbortError') {
+      throw new Error('リクエストがタイムアウトしました。データベースが起動していない可能性があります。');
+    }
+    
+    throw error;
   }
-  
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || 'リクエストに失敗しました');
-  }
-  
-  return await response.json();
 }
 
 // windowオブジェクトに登録（HTMLから呼び出せるように）

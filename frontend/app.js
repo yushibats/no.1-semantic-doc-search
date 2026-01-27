@@ -127,7 +127,56 @@ async function switchTab(tabName, event) {
     } else if (tabName === 'database') {
       console.log('Loading DB connection settings, ADB OCID, and connection info from .env...');
       utilsShowLoading('データベース設定を読み込み中...');
-      await loadDbConnectionSettings();
+      
+      try {
+        await loadDbConnectionSettings();
+      } catch (error) {
+        // タイムアウトエラーの場合は特別な処理
+        if (error.message.includes('タイムアウト')) {
+          utilsHideLoading();
+          utilsShowToast('データベース設定の読み込みがタイムアウトしました。データベースが起動していない可能性があります。', 'error');
+          
+          // リトライボタンを表示
+          const dbContent = document.getElementById('tab-database');
+          if (dbContent) {
+            const retryHtml = `
+              <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4" role="alert">
+                <div class="flex items-start">
+                  <div class="flex-shrink-0">
+                    <svg class="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                    </svg>
+                  </div>
+                  <div class="ml-3 flex-1">
+                    <p class="text-sm text-yellow-700">
+                      データベース設定の読み込みに失敗しました。データベースが起動していない可能性があります。
+                    </p>
+                    <p class="mt-2 text-sm text-yellow-700">
+                      データベースを起動してから、下のボタンをクリックして再読み込みしてください。
+                    </p>
+                    <div class="mt-3">
+                      <button 
+                        onclick="window.retryLoadDbSettings()" 
+                        class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded transition-colors"
+                      >
+                        🔄 再読み込み
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `;
+            dbContent.insertAdjacentHTML('afterbegin', retryHtml);
+          }
+          return; // エラー後は後続処理をスキップ
+        }
+        
+        // その他のエラーの場合
+        utilsHideLoading();
+        utilsShowToast(`設定読み込みエラー: ${error.message}`, 'error');
+        return;
+      }
+      
       // ADB OCIDのみを自動取得（Display NameやLifecycle Stateは取得しない）
       try {
         await loadAdbOcidOnly();
@@ -2410,8 +2459,8 @@ async function loadDbConnectionSettings() {
     
   } catch (error) {
     console.error('DB設定読み込みエラー:', error);
-    utilsShowToast(`設定の読み込みエラー: ${error.message}`, 'error');
-    throw error; // エラーを再スローしてswitchTabでキャッチさせる
+    // エラーを再スローしてswitchTabでキャッチさせる（トーストは表示しない）
+    throw error;
   }
 }
 
@@ -2491,6 +2540,79 @@ async function refreshDbConnectionFromEnv() {
 
 // グローバルスコープに公開
 window.refreshDbConnectionFromEnv = refreshDbConnectionFromEnv;
+
+/**
+ * DB設定再読み込み(リトライ機能)
+ */
+window.retryLoadDbSettings = async function() {
+  try {
+    // 警告メッセージを削除
+    const alerts = document.querySelectorAll('#tab-database > .bg-yellow-50');
+    alerts.forEach(alert => alert.remove());
+    
+    utilsShowLoading('データベース設定を再読み込み中...');
+    
+    await loadDbConnectionSettings();
+    
+    // ADB OCIDのみを自動取得
+    try {
+      await loadAdbOcidOnly();
+    } catch (error) {
+      console.warn('ADB OCID取得エラー（スキップ）:', error);
+    }
+    
+    // .envからDB接続情報を自動取得
+    try {
+      await loadDbConnectionInfoFromEnv();
+    } catch (error) {
+      console.warn('DB接続情報取得エラー（スキップ）:', error);
+    }
+    
+    utilsHideLoading();
+    utilsShowToast('データベース設定を読み込みました', 'success');
+  } catch (error) {
+    utilsHideLoading();
+    
+    if (error.message.includes('タイムアウト')) {
+      utilsShowToast('まだデータベースが起動していません。もう一度お試しください。', 'warning');
+      
+      // 警告メッセージを再表示
+      const dbContent = document.getElementById('tab-database');
+      if (dbContent && !dbContent.querySelector('.bg-yellow-50')) {
+        const retryHtml = `
+          <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4" role="alert">
+            <div class="flex items-start">
+              <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                </svg>
+              </div>
+              <div class="ml-3 flex-1">
+                <p class="text-sm text-yellow-700">
+                  データベース設定の読み込みに失敗しました。データベースが起動していない可能性があります。
+                </p>
+                <p class="mt-2 text-sm text-yellow-700">
+                  データベースを起動してから、下のボタンをクリックして再読み込みしてください。
+                </p>
+                <div class="mt-3">
+                  <button 
+                    onclick="window.retryLoadDbSettings()" 
+                    class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded transition-colors"
+                  >
+                    🔄 再読み込み
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        dbContent.insertAdjacentHTML('afterbegin', retryHtml);
+      }
+    } else {
+      utilsShowToast(`再読み込みエラー: ${error.message}`, 'error');
+    }
+  }
+};
 
 let selectedWalletFile = null;
 
@@ -2678,9 +2800,9 @@ async function testDbConnection() {
     
     // console.log('Request body:', JSON.stringify({...requestBody, settings: {...requestBody.settings, password: '[HIDDEN]'}}));
     
-    // タイムアウト処理を追加（90秒）
+    // タイムアウト処理を追加（20秒）- バックエンド側も15秒でタイムアウトする
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('接続テストがタイムアウトしました（90秒）')), 90000)
+      setTimeout(() => reject(new Error('接続テストがタイムアウトしました（20秒）')), 20000)
     );
     
     const apiPromise = authApiCall('/api/settings/database/test', {

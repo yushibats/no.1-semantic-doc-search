@@ -101,6 +101,10 @@ debug_mode = os.getenv("DEBUG", "False").lower() == "true"
 SESSIONS: Dict[str, Dict[str, Any]] = {}
 SESSION_TIMEOUT_SECONDS = 86400  # 24時間
 
+# 外部API用のAPIキー管理
+# APIキーは環境変数 EXTERNAL_API_KEYS から取得（カンマ区切り）
+EXTERNAL_API_KEYS = set(os.getenv("EXTERNAL_API_KEYS", "").split(",")) if os.getenv("EXTERNAL_API_KEYS") else set()
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -168,7 +172,7 @@ async def health_check():
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """認証チェックミドルウェア"""
+    """認証チェックミドルウェア（セッショントークンまたはAPIキーに対応）"""
     # 除外パス（nginxプロキシ経由を想定: /api/* -> /*）
     path = request.url.path
     excluded_paths = [
@@ -187,17 +191,38 @@ async def auth_middleware(request: Request, call_next):
     # デバッグモードは認証スキップ
     if debug_mode:
         return await call_next(request)
-        
-    # トークンチェック
+    
+    # 認証情報を取得
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        # クエリパラメータもチェック
+    token = None
+    
+    if auth_header:
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+        elif auth_header.startswith("ApiKey "):
+            # 外部API用のAPIキー認証
+            api_key = auth_header.split(" ")[1]
+            if api_key in EXTERNAL_API_KEYS:
+                logger.info(f"外部APIキー認証成功: path={path}")
+                return await call_next(request)
+            else:
+                logger.warning(f"無効なAPIキー: path={path}")
+                return JSONResponse(status_code=401, content={"detail": "無効なAPIキーです"})
+    
+    # クエリパラメータからトークンを取得
+    if not token:
         token = request.query_params.get("token")
-        if not token:
-            return JSONResponse(status_code=401, content={"detail": "認証が必要です"})
-    else:
-        token = auth_header.split(" ")[1]
-        
+    
+    # APIキーをクエリパラメータからも取得
+    api_key_query = request.query_params.get("api_key")
+    if api_key_query and api_key_query in EXTERNAL_API_KEYS:
+        logger.info(f"外部APIキー認証成功（クエリパラメータ）: path={path}")
+        return await call_next(request)
+    
+    if not token:
+        return JSONResponse(status_code=401, content={"detail": "認証が必要です"})
+    
+    # セッショントークンの検証
     if token not in SESSIONS:
         return JSONResponse(status_code=401, content={"detail": "無効または期限切れのトークンです"})
     
@@ -1313,8 +1338,8 @@ async def search_documents(query: SearchQuery):
         logger.info(f"Query embedding生成完了: shape={query_embedding.shape}")
         
         # 2. ベクトル検索を実行（2テーブルJOIN）
-        # SQLで距離順にソートされた画像を取得（top_k件のみ）
-        search_results = image_vectorizer.search_similar_images(
+        # 非同期版を使用してイベントループをブロックしない
+        search_results = await image_vectorizer.search_similar_images_async(
             query_embedding=query_embedding,
             limit=query.top_k,  # 指定された件数の画像を取得
             threshold=query.min_score
