@@ -587,13 +587,13 @@ function getChildObjects(folderName) {
  */
 window.refreshDocumentsWithNotification = async function() {
   try {
-    utilsShowLoading('文書一覧を更新中...');
+    utilsShowLoading('文書一覧を再取得中...');
     await loadOciObjects();
     utilsHideLoading();
-    utilsShowToast('文書一覧を更新しました', 'success');
+    utilsShowToast('文書一覧を再取得しました', 'success');
   } catch (error) {
     utilsHideLoading();
-    utilsShowToast(`文書一覧更新エラー: ${error.message}`, 'error');
+    utilsShowToast(`文書一覧再取得エラー: ${error.message}`, 'error');
   }
 }
 
@@ -2505,7 +2505,7 @@ async function loadDbConnectionSettings() {
 
 async function refreshDbConnectionFromEnv() {
   try {
-    utilsShowLoading('接続設定を更新中...');
+    utilsShowLoading('接続設定を再取得中...');
     
     // 環境変数から情報を取得
     const envData = await authApiCall('/api/settings/database/env');
@@ -2569,11 +2569,11 @@ async function refreshDbConnectionFromEnv() {
     }
     
     utilsHideLoading();
-    utilsShowToast('接続設定を更新しました', 'success');
+    utilsShowToast('接続設定を再取得しました', 'success');
     
   } catch (error) {
     utilsHideLoading();
-    utilsShowToast(`接続設定更新エラー: ${error.message}`, 'error');
+    utilsShowToast(`接続設定再取得エラー: ${error.message}`, 'error');
   }
 }
 
@@ -3179,7 +3179,7 @@ function showTablePreview(tableName, columns, rows, total, paginationData) {
         📋 ${escapeHtml(tableName)} - データプレビュー
         <div style="display: flex; align-items: center; gap: 8px;">
           <button class="apex-button-secondary apex-button-xs" onclick="refreshTableData()">
-            🔄 更新
+            🔄 再取得
           </button>
           <span class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #e2e8f0; color: #64748b;">
             0件
@@ -3255,7 +3255,7 @@ function showTablePreview(tableName, columns, rows, total, paginationData) {
       📋 ${escapeHtml(tableName)} - データプレビュー
       <div style="display: flex; align-items: center; gap: 8px;">
         <button class="apex-button-secondary apex-button-xs" onclick="refreshTableData()">
-          🔄 更新
+          🔄 再取得
         </button>
         <span class="px-2 py-1 text-xs font-semibold rounded-md" style="background: #dcfce7; color: #166534;">
           ${total}件
@@ -3700,22 +3700,22 @@ async function deleteSelectedDbTables() {
   }
 }
 
-// データベース情報更新ボタン
+// データベース情報再取得ボタン
 async function refreshDbInfo() {
   try {
-    utilsShowLoading('データベース情報を更新中...');
+    utilsShowLoading('データベース情報を再取得中...');
     await loadDbInfo();
     utilsHideLoading();
   } catch (error) {
     utilsHideLoading();
-    utilsShowToast(`更新エラー: ${error.message}`, 'error');
+    utilsShowToast(`再取得エラー: ${error.message}`, 'error');
   }
 }
 
-// テーブル一覧更新ボタン
+// テーブル一覧再取得ボタン
 async function refreshDbTables() {
   try {
-    utilsShowLoading('統計情報を更新中...');
+    utilsShowLoading('統計情報を再取得中...');
     
     // 先に統計情報を更新
     const statsResult = await authApiCall('/api/database/tables/refresh-statistics', {
@@ -3729,19 +3729,19 @@ async function refreshDbTables() {
     dbTablesPage = 1;
     
     // テーブル一覧を再読み込み
-    utilsShowLoading('テーブル一覧を更新中...');
+    utilsShowLoading('テーブル一覧を再取得中...');
     await loadDbTables();
     utilsHideLoading();
     
     // オーバーレイが非表示になった後にトーストを表示
     if (!statsResult.success) {
-      utilsShowToast(`統計情報更新エラー: ${statsResult.message}`, 'error');
+      utilsShowToast(`統計情報再取得エラー: ${statsResult.message}`, 'error');
     } else {
       utilsShowToast(statsResult.message, 'success');
     }
   } catch (error) {
     utilsHideLoading();
-    utilsShowToast(`更新エラー: ${error.message}`, 'error');
+    utilsShowToast(`再取得エラー: ${error.message}`, 'error');
   }
 }
 
@@ -3878,15 +3878,15 @@ async function loadDbStorage() {
   }
 }
 
-// ストレージ情報更新ボタン
+// ストレージ情報再取得ボタン
 async function refreshDbStorage() {
   try {
-    utilsShowLoading('ストレージ情報を更新中...');
+    utilsShowLoading('ストレージ情報を再取得中...');
     await loadDbStorage();
     utilsHideLoading();
   } catch (error) {
     utilsHideLoading();
-    utilsShowToast(`更新エラー: ${error.message}`, 'error');
+    utilsShowToast(`再取得エラー: ${error.message}`, 'error');
   }
 }
 
@@ -5060,7 +5060,7 @@ function updateObjectStorageStatusBadge(bucketName, namespace) {
  */
 async function refreshObjectStorageSettings() {
   try {
-    utilsShowLoading('.envからObject Storage設定を取得中...');
+    utilsShowLoading('.envからObject Storage設定を再取得中...');
     
     // OCI設定を取得
     const settingsData = await authApiCall('/api/oci/settings');
@@ -5075,7 +5075,7 @@ async function refreshObjectStorageSettings() {
     
     if (bucketNameInput && settingsData.settings.bucket_name) {
       bucketNameInput.value = settingsData.settings.bucket_name;
-      toastMessage = 'Bucket Nameを更新しました';
+      toastMessage = 'Bucket Nameを再取得しました';
     } else {
       toastMessage = 'Bucket Nameが.envに設定されていません';
       toastType = 'warning';
@@ -5088,7 +5088,7 @@ async function refreshObjectStorageSettings() {
       namespaceStatus.textContent = '環境変数から読み込み済み';
       namespaceStatus.className = 'text-xs text-green-600';
       if (toastMessage && bucketNameInput && settingsData.settings.bucket_name) {
-        toastMessage = 'Bucket NameとNamespaceを更新しました';
+        toastMessage = 'Bucket NameとNamespaceを再取得しました';
       }
     } else {
       // 空の場合、APIで取得を試みる
@@ -5101,7 +5101,7 @@ async function refreshObjectStorageSettings() {
           namespaceInput.value = namespaceData.namespace;
           namespaceStatus.textContent = `OCI APIから自動取得済み`;
           namespaceStatus.className = 'text-xs text-green-600';
-          toastMessage = 'NamespaceをAPIから取得しました';
+          toastMessage = 'NamespaceをAPIから再取得しました';
         } else {
           namespaceStatus.textContent = '⚠️ Namespaceの取得に失敗しました';
           namespaceStatus.className = 'text-xs text-red-600';
@@ -5131,9 +5131,9 @@ async function refreshObjectStorageSettings() {
     }
     
   } catch (error) {
-    // console.error('Object Storage設定更新エラー:', error);
+    // console.error('Object Storage設定再取得エラー:', error);
     utilsHideLoading();
-    utilsShowToast(`設定更新エラー: ${error.message}`, 'error');
+    utilsShowToast(`設定再取得エラー: ${error.message}`, 'error');
   }
 }
 
