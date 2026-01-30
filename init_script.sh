@@ -359,6 +359,41 @@ server {
         return 301 /ai/api/;
     }
 
+    # 画像プロキシエンドポイント (/oci/image)
+    location /oci/image/ {
+        proxy_pass http://127.0.0.1:8081/oci/image/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+        # キャッシュ設定（画像用）
+        proxy_cache_valid 200 1h;
+    }
+
+    # OCI Object Storageプロキシ (/object) - ファイル・画像配信
+    location /object/ {
+        proxy_pass http://127.0.0.1:8081/object/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+        proxy_cache_valid 200 1h;
+    }
+
+    # 後方互換性: /img/ -> /object/
+    location /img/ {
+        return 307 /object/$request_uri;
+    }
+
     # 本アプリのヘルスチェック
     location /ai/health {
         proxy_pass http://127.0.0.1:8081/health;
@@ -435,6 +470,41 @@ server {
     # /ai/api を /ai/api/ にリダイレクト
     location = /ai/api {
         return 301 /ai/api/;
+    }
+
+    # 画像プロキシエンドポイント (/oci/image)
+    location /oci/image/ {
+        proxy_pass http://127.0.0.1:8081/oci/image/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+        # キャッシュ設定（画像用）
+        proxy_cache_valid 200 1h;
+    }
+
+    # OCI Object Storageプロキシ (/object) - ファイル・画像配信
+    location /object/ {
+        proxy_pass http://127.0.0.1:8081/object/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+        proxy_cache_valid 200 1h;
+    }
+
+    # 後方互換性: /img/ -> /object/
+    location /img/ {
+        return 307 /object/$request_uri;
     }
 
     # 本アプリのヘルスチェック
