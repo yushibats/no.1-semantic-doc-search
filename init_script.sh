@@ -695,6 +695,10 @@ services:
     ports:
       - '127.0.0.1:3000:3000'
     environment:
+      # サブパス設定
+      NEXT_PUBLIC_BASE_PATH: '/dify'
+      NEXT_PUBLIC_PUBLIC_API_PREFIX: 'http://${EXTERNAL_IP}/dify/api'
+      # URL設定
       CONSOLE_API_URL: 'http://${EXTERNAL_IP}/dify/console/api'
       CONSOLE_WEB_URL: 'http://${EXTERNAL_IP}/dify'
       APP_API_URL: 'http://${EXTERNAL_IP}/dify/api'
