@@ -721,6 +721,49 @@ if [ "$ENABLE_DIFY" = "true" ]; then
         sed -i "s|^CODE_MAX_OBJECT_ARRAY_LENGTH=30|CODE_MAX_OBJECT_ARRAY_LENGTH=1000|g" .env
         sed -i "s|^HTTP_REQUEST_NODE_MAX_BINARY_SIZE=10485760|HTTP_REQUEST_NODE_MAX_BINARY_SIZE=104857600|g" .env
         
+        # Create custom nginx config with DNS resolver (fix "host not found in upstream" error)
+        echo "カスタムnginx設定を作成中 (DNSリゾルバ付き)..."
+        mkdir -p nginx-custom
+        cat > nginx-custom/default.conf << 'NGINX_CONF_EOF'
+# Docker DNS resolver (fix "host not found in upstream" error)
+resolver 127.0.0.11 valid=10s;
+
+server {
+    listen 80;
+    server_name _;
+
+    location /console/api {
+        set $upstream_api api:5001;
+        proxy_pass http://$upstream_api;
+        include proxy.conf;
+    }
+
+    location /api {
+        set $upstream_api api:5001;
+        proxy_pass http://$upstream_api;
+        include proxy.conf;
+    }
+
+    location /v1 {
+        set $upstream_api api:5001;
+        proxy_pass http://$upstream_api;
+        include proxy.conf;
+    }
+
+    location /files {
+        set $upstream_api api:5001;
+        proxy_pass http://$upstream_api;
+        include proxy.conf;
+    }
+
+    location / {
+        set $upstream_web web:3000;
+        proxy_pass http://$upstream_web;
+        include proxy.conf;
+    }
+}
+NGINX_CONF_EOF
+        
         # Create docker-compose.override.yaml
         # Dify内部Nginxを8080ポートで公開（外部Nginxからプロキシ）
         echo "Docker Compose override設定を作成中..."
@@ -729,6 +772,14 @@ services:
   nginx:
     ports:
       - '127.0.0.1:8080:80'
+    volumes:
+      - ./nginx-custom/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_started
+      web:
+        condition: service_started
+    restart: on-failure
   api:
     environment:
       - NLTK_DATA=/tmp/nltk_data
@@ -754,8 +805,8 @@ EOL
         echo "Difyサービスを起動中..."
         docker compose up -d
         
-        # Wait for containers to start
-        echo "コンテナが起動するのを待機中..."
+        # Wait for all services to start
+        echo "全サービスの起動を待機中..."
         sleep 45
         
         # Configure wallet files to containers
