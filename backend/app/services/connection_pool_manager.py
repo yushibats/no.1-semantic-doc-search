@@ -7,8 +7,8 @@ Thin mode対応の接続プールを管理し、遅延初期化とリトライ�
 import logging
 import os
 import time
-from typing import Optional, Dict, Any
 from contextlib import contextmanager
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 

@@ -3,9 +3,10 @@
 
 このモジュールは、APIエンドポイント全体で一貫したエラー処理を提供します。
 """
-import logging
 import functools
-from typing import Callable, Any
+import logging
+from typing import Any, Callable
+
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 

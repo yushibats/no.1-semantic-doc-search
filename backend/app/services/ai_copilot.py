@@ -1,16 +1,17 @@
 """
 AI Copilot サービス - OCI OpenAI を使用したデータ分析支援
 """
-import os
 import asyncio
 import base64
-import re
 import logging
+import os
+import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
-from dotenv import load_dotenv, find_dotenv
+
+from dotenv import find_dotenv, load_dotenv
 import oci
 import oci.retry
 import oci.util

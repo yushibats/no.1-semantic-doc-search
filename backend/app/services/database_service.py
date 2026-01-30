@@ -3,17 +3,19 @@
 Oracle Database接続とクエリ実行を管理
 接続プール経由でDB操作を実行（Thin mode対応）
 """
-import logging
-import json
-import os
-import zipfile
-import shutil
 import asyncio
-from pathlib import Path
-from typing import Optional, Dict, Any, List
-from datetime import datetime
+import json
+import logging
+import os
+import re
+import shutil
+import zipfile
 from concurrent.futures import ThreadPoolExecutor  # 必要に応じて使用
+from datetime import datetime
 from functools import partial
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 from app.services.connection_pool_manager import ConnectionPoolManager
 
 logger = logging.getLogger(__name__)
@@ -124,7 +126,6 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
     logger.info("    - tnsnames.ora (接続文字列)")
     
     # 利用可能なサービス確認
-    import re
     tnsnames_path = os.path.join(tns_admin, 'tnsnames.ora')
     available_services = []
     if os.path.exists(tnsnames_path):
@@ -432,7 +433,6 @@ class DatabaseService:
         # tnsnames.oraのサービス確認
         tnsnames_path = os.path.join(wallet_location, 'tnsnames.ora')
         if os.path.exists(tnsnames_path):
-            import re
             with open(tnsnames_path, 'r') as f:
                 content = f.read()
             services = re.findall(r'^([\w-]+)\s*=', content, re.MULTILINE)
@@ -914,7 +914,6 @@ class DatabaseService:
             with open(tnsnames_file, 'r', encoding='utf-8') as f:
                 content = f.read()
                 # DSN名を抽出（行頭の名前 = の形式）
-                import re
                 pattern = r'^([A-Za-z0-9_-]+)\s*='
                 matches = re.findall(pattern, content, re.MULTILINE)
                 dsn_list = list(set(matches))  # 重複除去
@@ -1615,7 +1614,6 @@ class DatabaseService:
                 }
             
             # 接続文字列を解析: username/password@dsn
-            import re
             pattern = r'^([^/]+)/([^@]+)@(.+)$'
             match = re.match(pattern, conn_str)
             

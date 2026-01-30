@@ -1,29 +1,30 @@
 """
 セマンティック文書検索システム - メインAPIアプリケーション
 """
-import logging
-import sys
-import os
-import uuid
-import time
-import json
-import secrets
 import io
-import subprocess
-import tempfile
-import zipfile
-import shutil
+import json
+import logging
+import os
 import re
-from pathlib import Path
-from typing import List, Optional, Dict, Any
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+import zipfile
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
-from pydantic import BaseModel
-from dotenv import load_dotenv
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pdf2image import convert_from_path
 from PIL import Image as PILImage
+from pydantic import BaseModel
 
 # ログ設定
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s"
@@ -967,7 +968,6 @@ async def upload_document(file: UploadFile = File(...)):
         document_id = str(uuid.uuid4())
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        import re
         safe_basename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', file.filename)
         safe_basename = safe_basename.replace('..', '_')
         if not safe_basename or safe_basename.strip() == '':
@@ -1123,7 +1123,6 @@ async def upload_multiple_documents(files: List[UploadFile] = File(...)):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
                 # ファイル名をサニタイズ（パストラバーサル対策）
-                import re
                 safe_basename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', file.filename)
                 safe_basename = safe_basename.replace('..', '_')
                 if not safe_basename or safe_basename.strip() == '':
@@ -1576,8 +1575,11 @@ async def get_object_proxy(bucket: str, object_name: str):
         # Content-Typeを取得
         content_type = get_obj_response.headers.get('Content-Type', 'application/octet-stream')
         
-        # ファイル名を取得
+        # ファイル名を取得（プレフィクスを除外）
         original_filename = decoded_object_name.split("/")[-1]
+        # プレフィクス（20260124_235353_d5509515_）を除去
+        prefix_pattern = r'^\d{8}_\d{6}_[a-f0-9]{8}_'
+        original_filename = re.sub(prefix_pattern, '', original_filename)
         
         # Content-Dispositionヘッダーを生成(RFC 5987準拠、日本語対応)
         try:
@@ -2459,9 +2461,12 @@ async def download_selected_objects(request: DocumentDownloadRequest, background
                     # Object Storageからファイルを取得
                     file_content = oci_service.download_object(obj_name)
                     if file_content:
+                        # プレフィクス（20260124_235353_d5509515_）を除去
+                        prefix_pattern = r'^\d{8}_\d{6}_[a-f0-9]{8}_'
+                        clean_filename = re.sub(prefix_pattern, '', obj_name)
                         # ZIPに追加
-                        zipf.writestr(obj_name, file_content)
-                        logger.info(f"ZIPに追加: {obj_name}")
+                        zipf.writestr(clean_filename, file_content)
+                        logger.info(f"ZIPに追加: {clean_filename} (元: {obj_name})")
                     else:
                         logger.warning(f"ファイルが見つかりません: {obj_name}")
                 except Exception as e:

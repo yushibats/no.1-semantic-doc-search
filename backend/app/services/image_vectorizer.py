@@ -2,19 +2,20 @@
 画像ベクトル化サービス
 OCI Generative AI Embedding Modelを使用して画像をベクトル化し、DBに保存
 """
+import array
+import base64
+import io
 import logging
 import os
-import io
-import array
 import time
-from typing import Optional, List, Dict, Any
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import numpy as np
-from PIL import Image
-import base64
-import oracledb
 import oci
+import oracledb
 from pdf2image import convert_from_path
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 

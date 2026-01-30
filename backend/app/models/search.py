@@ -1,5 +1,6 @@
+from typing import List, Optional
+
 from pydantic import BaseModel, ConfigDict
-from typing import Optional, List, Dict, Any
 
 class SearchQuery(BaseModel):
     """検索クエリ"""

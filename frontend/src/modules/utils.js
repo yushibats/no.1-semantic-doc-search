@@ -90,6 +90,9 @@ export function hideLoading() {
   if (overlay) overlay.remove();
 }
 
+// ESCキーハンドラーを保持するグローバル変数
+let _imageModalEscHandler = null;
+
 /**
  * 画像モーダルを表示
  * @param {string} imageUrl - 画像URL
@@ -101,13 +104,40 @@ export function showImageModal(imageUrl, filename = '') {
     existingModal.remove();
   }
   
+  // 既存のESCハンドラーを削除
+  if (_imageModalEscHandler) {
+    document.removeEventListener('keydown', _imageModalEscHandler);
+    _imageModalEscHandler = null;
+  }
+  
   const modal = document.createElement('div');
   modal.id = 'imageModalOverlay';
   modal.className = 'image-modal-overlay';
   modal.innerHTML = `
     <img src="${imageUrl}" alt="${filename}" class="image-modal-img" onclick="event.stopPropagation()">
   `;
-  modal.onclick = () => modal.remove();
+  
+  // モーダルを閉じる関数
+  const closeModal = () => {
+    modal.remove();
+    // ESCハンドラーを削除
+    if (_imageModalEscHandler) {
+      document.removeEventListener('keydown', _imageModalEscHandler);
+      _imageModalEscHandler = null;
+    }
+  };
+  
+  // クリックで閉じる
+  modal.onclick = closeModal;
+  
+  // ESCキーで閉じる
+  _imageModalEscHandler = (e) => {
+    if (e.key === 'Escape') {
+      closeModal();
+    }
+  };
+  document.addEventListener('keydown', _imageModalEscHandler);
+  
   document.body.appendChild(modal);
 }
 

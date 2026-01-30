@@ -9,25 +9,25 @@
 - 指数バックオフによるリトライ
 - SSEイベント生成
 """
+import asyncio
+import io
 import logging
 import os
-import io
-import re
-import asyncio
-import tempfile
-import shutil
 import random
-import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, Future
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, AsyncGenerator, Callable, Tuple
-from datetime import datetime
-from pathlib import Path
-from functools import partial
-
-from PIL import Image as PILImage
-from pdf2image import convert_from_path
+import re
+import shutil
 import subprocess
+import tempfile
+import time
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from datetime import datetime
+from functools import partial
+from pathlib import Path
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
+
+from pdf2image import convert_from_path
+from PIL import Image as PILImage
 
 logger = logging.getLogger(__name__)
 
@@ -798,11 +798,27 @@ class ParallelProcessor:
                     file_size = len(file_content)
                     content_type = f"application/{file_ext}"
                     
+                    # OCIメタデータからoriginal_filenameを取得（プレフィクスなしの元のファイル名）
+                    metadata_result = await asyncio.to_thread(
+                        oci_service.get_object_metadata,
+                        bucket_name=bucket_name,
+                        namespace=namespace,
+                        object_name=obj_name
+                    )
+                    
+                    # メタデータからoriginal_filenameを取得、失敗時はフォールバック
+                    if metadata_result.get('success') and metadata_result.get('original_filename'):
+                        clean_filename = metadata_result.get('original_filename')
+                    else:
+                        # フォールバック: プレフィクスを除去
+                        prefix_pattern = r'^\d{8}_\d{6}_[a-f0-9]{8}_'
+                        clean_filename = re.sub(prefix_pattern, '', file_path.name)
+                    
                     file_id = await asyncio.to_thread(
                         image_vectorizer.save_file_info,
                         bucket=bucket_name,
                         object_name=obj_name,
-                        original_filename=file_path.name,
+                        original_filename=clean_filename,
                         file_size=file_size,
                         content_type=content_type
                     )

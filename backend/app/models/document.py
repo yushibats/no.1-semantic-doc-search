@@ -1,6 +1,6 @@
+from typing import List, Optional
+
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-from datetime import datetime
 
 class DocumentUploadResponse(BaseModel):
     """文書アップロードレスポンス"""

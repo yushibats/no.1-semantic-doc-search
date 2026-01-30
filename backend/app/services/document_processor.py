@@ -1,13 +1,14 @@
-import os
-import logging
-import uuid
 import base64
-from typing import List, Dict, Any, Optional
+import logging
+import os
+import uuid
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import PyPDF2
-from pptx import Presentation
 from docx import Document as DocxDocument
 from PIL import Image
+from pptx import Presentation
 
 logger = logging.getLogger(__name__)
 
