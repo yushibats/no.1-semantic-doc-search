@@ -222,13 +222,13 @@ export function displayOciObjectsList(data) {
   }
   
   // ボタン活性化条件の判定
-  // システム安全性: 処理中は一切の操作を禁止
+  // システム安全性: 処理中でもボタンは非活性化しない（クリック時に警告メッセージを表示）
   // 操作可能性: 選択数が0の場合は、実行ボタンを非活性化
   // 合理性: 「すべて選択」「すべて解除」は選択数に関係なく使用可能（ただし処理中は不可）
   const isProcessing = ociObjectsBatchDeleteLoading;
   const hasSelection = selectedOciObjects.length > 0;
   const canSelectAction = !isProcessing; // 選択操作は処理中以外は常に可能
-  const canExecuteAction = !isProcessing && hasSelection; // 実行操作は処理中でなく、かつ選択がある場合のみ可能
+  const canExecuteAction = hasSelection; // 実行操作は選択がある場合のみ可能（処理中でもボタンは活性化）
   
   // 選択ボタンHTML
   const selectionButtonsHtml = `
@@ -466,12 +466,8 @@ export function toggleOciObjectSelectionHandler(objectName) {
   const isSelected = selectedOciObjects.includes(objectName);
   toggleOciObjectSelection(objectName, !isSelected);
   
-  // 表示を更新（チェックボックスの状態を同期）
-  const allOciObjects = appState.get('allOciObjects') || [];
-  const checkbox = document.querySelector(`input[type="checkbox"][onchange*="${objectName}"]`);
-  if (checkbox) {
-    checkbox.checked = !isSelected;
-  }
+  // UIを再描画して、ボタンの活性状態を更新
+  loadOciObjects(false);
 }
 
 /**
@@ -641,11 +637,17 @@ export async function downloadSelectedOciObjects() {
     appState.set('ociObjectsBatchDeleteLoading', false);
     showToast(`${selectedOciObjects.length}件のファイルをダウンロードしました`, 'success');
     
+    // 一覧を再読み込みして状態を同期
+    await loadOciObjects(false);
+    
   } catch (error) {
-    hideLoading();
-    appState.set('ociObjectsBatchDeleteLoading', false);
     console.error('ダウンロードエラー:', error);
     showToast(`ダウンロードエラー: ${error.message}`, 'error');
+    
+    // エラー時も一覧を再読み込みして状態を同期
+    hideLoading();
+    appState.set('ociObjectsBatchDeleteLoading', false);
+    await loadOciObjects(false);
   }
 }
 
@@ -730,10 +732,13 @@ export async function convertSelectedOciObjectsToImages() {
     await processStreamingResponse(response, selectedOciObjects.length, 'convert');
     
   } catch (error) {
-    hideLoading();
-    appState.set('ociObjectsBatchDeleteLoading', false);
     console.error('ページ画像化エラー:', error);
     showToast(`ページ画像化エラー: ${error.message}`, 'error');
+    
+    // エラー時も一覧を再読み込みして状態を同期
+    hideLoading();
+    appState.set('ociObjectsBatchDeleteLoading', false);
+    await loadOciObjects(false);
   }
 }
 
@@ -1218,26 +1223,31 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               break;
               
             case 'cancelled':
+              showToast(`処理がキャンセルされました\n${data.message}`, 'info');
+              appState.set('selectedOciObjects', []);
+              
+              // フラグをクリアしてから確実に再描画
               if (useProgressUI) {
                 hideProcessProgressUI();
               } else {
                 hideLoading();
               }
               appState.set('ociObjectsBatchDeleteLoading', false);
-              showToast(`処理がキャンセルされました\n${data.message}`, 'info');
-              appState.set('selectedOciObjects', []);
               // メインページ進捗UIを使用している場合は、ローディングオーバーレイを表示しない
               await loadOciObjects(!useProgressUI);
               break;
               
             case 'error':
+              showToast(`エラー: ${data.message}`, 'error');
+              
+              // フラグをクリアしてから確実に再描画
               if (useProgressUI) {
                 hideProcessProgressUI();
               } else {
                 hideLoading();
               }
               appState.set('ociObjectsBatchDeleteLoading', false);
-              showToast(`エラー: ${data.message}`, 'error');
+              await loadOciObjects(!useProgressUI);
               break;
               
             case 'progress_update':
@@ -1255,8 +1265,8 @@ async function processStreamingResponse(response, totalFiles, operationType) {
                   jobId
                 );
               }
-              // リアルタイムでUIを更新（単一の更新ポイント、エラーは無視）
-              loadOciObjects().catch(err => console.warn('UI更新エラー:', err));
+              // 注: progress_update時にUI更新を行わない（処理中フラグがtrueのため、チェックボックスがdisabledになり、ユーザーが選択できなくなる）
+              // 最終的にcompleteイベントでUIを更新する
               break;
               
             case 'sync_complete':

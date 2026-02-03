@@ -1648,11 +1648,17 @@ window.downloadSelectedOciObjects = async function() {
     ociObjectsBatchDeleteLoading = false;
     utilsShowToast(`${selectedOciObjects.length}件のファイルをダウンロードしました`, 'success');
     
+    // 一覧を再読み込みして状態を同期
+    await loadOciObjects();
+    
   } catch (error) {
     utilsHideLoading();
     ociObjectsBatchDeleteLoading = false;
     console.error('ダウンロードエラー:', error);
     utilsShowToast(`ダウンロードエラー: ${error.message}`, 'error');
+    
+    // エラー時も一覧を再読み込みして状態を同期
+    await loadOciObjects();
   }
 };
 
@@ -1843,24 +1849,27 @@ window.convertSelectedOciObjectsToImages = async function() {
                 break;
                 
               case 'cancelled':
-                utilsHideLoading();
-                ociObjectsBatchDeleteLoading = false;
                 utilsShowToast(`処理がキャンセルされました\n${data.message}`, 'info');
                 selectedOciObjects = [];
                 appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
+                
+                // フラグをクリアしてから確実に再描画
+                utilsHideLoading();
+                ociObjectsBatchDeleteLoading = false;
                 await loadOciObjects();
                 break;
                 
               case 'error':
+                utilsShowToast(`エラー: ${data.message}`, 'error');
+                
+                // フラグをクリアしてから確実に再描画
                 utilsHideLoading();
                 ociObjectsBatchDeleteLoading = false;
-                utilsShowToast(`エラー: ${data.message}`, 'error');
+                await loadOciObjects();
                 break;
                 
               case 'complete':
                 results = data.results;
-                utilsHideLoading();
-                ociObjectsBatchDeleteLoading = false;
                 
                 // 結果表示（経過時間を含む）
                 const elapsedTime = data.elapsed_time ? ` (${data.elapsed_time.toFixed(1)}秒)` : '';
@@ -1873,6 +1882,10 @@ window.convertSelectedOciObjectsToImages = async function() {
                 // 選択をクリアして一覧を更新
                 selectedOciObjects = [];
                 appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
+                
+                // フラグをクリアしてから確実に再描画
+                utilsHideLoading();
+                ociObjectsBatchDeleteLoading = false;
                 await loadOciObjects();
                 break;
             }
@@ -1884,10 +1897,13 @@ window.convertSelectedOciObjectsToImages = async function() {
     }
     
   } catch (error) {
-    utilsHideLoading();
-    ociObjectsBatchDeleteLoading = false;
     console.error('ページ画像化エラー:', error);
     utilsShowToast(`ページ画像化エラー: ${error.message}`, 'error');
+    
+    // フラグをクリアしてから確実に再描画
+    utilsHideLoading();
+    ociObjectsBatchDeleteLoading = false;
+    await loadOciObjects();
   }
 };
 
@@ -2146,24 +2162,27 @@ window.vectorizeSelectedOciObjects = async function() {
                 break;
                 
               case 'cancelled':
-                utilsHideLoading();
-                ociObjectsBatchDeleteLoading = false;
                 utilsShowToast(`処理がキャンセルされました\n${data.message}`, 'info');
                 selectedOciObjects = [];
                 appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
+                
+                // フラグをクリアしてから確実に再描画
+                utilsHideLoading();
+                ociObjectsBatchDeleteLoading = false;
                 await loadOciObjects();
                 break;
                 
               case 'error':
+                utilsShowToast(`エラー: ${data.message}`, 'error');
+                
+                // フラグをクリアしてから確実に再描画
                 utilsHideLoading();
                 ociObjectsBatchDeleteLoading = false;
-                utilsShowToast(`エラー: ${data.message}`, 'error');
+                await loadOciObjects();
                 break;
                 
               case 'complete':
                 results = data.results;
-                utilsHideLoading();
-                ociObjectsBatchDeleteLoading = false;
                 
                 // 結果表示（経過時間を含む）
                 const elapsedTime = data.elapsed_time ? ` (${data.elapsed_time.toFixed(1)}秒)` : '';
@@ -2176,6 +2195,10 @@ window.vectorizeSelectedOciObjects = async function() {
                 // 選択をクリアして一覧を更新
                 selectedOciObjects = [];
                 appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
+                
+                // フラグをクリアしてから確実に再描画
+                utilsHideLoading();
+                ociObjectsBatchDeleteLoading = false;
                 await loadOciObjects();
                 break;
             }
@@ -2187,14 +2210,16 @@ window.vectorizeSelectedOciObjects = async function() {
     }
     
   } catch (error) {
-    utilsHideLoading();
-    ociObjectsBatchDeleteLoading = false;
     console.error('ベクトル化エラー:', error);
     utilsShowToast(`ベクトル化エラー: ${error.message}`, 'error');
     
     // 選択をクリアして一覧を更新
     selectedOciObjects = [];
     appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
+    
+    // フラグをクリアしてから確実に再描画
+    utilsHideLoading();
+    ociObjectsBatchDeleteLoading = false;
     await loadOciObjects();
   }
 };
