@@ -97,6 +97,10 @@ app.add_middleware(
 # デバッグモード設定
 debug_mode = os.getenv("DEBUG", "False").lower() == "true"
 
+# UI機能トグル設定
+show_ai_assistant = os.getenv("SHOW_AI_ASSISTANT", "true").lower() == "true"
+show_search_tab = os.getenv("SHOW_SEARCH_TAB", "true").lower() == "true"
+
 # セッション管理（メモリ内）
 # Token -> {username: str, expires_at: datetime}
 SESSIONS: Dict[str, Dict[str, Any]] = {}
@@ -303,7 +307,9 @@ def get_config():
     """フロントエンドに設定情報を公開"""
     return {
         "debug": debug_mode,
-        "require_login": not debug_mode
+        "require_login": not debug_mode,
+        "show_ai_assistant": show_ai_assistant,
+        "show_search_tab": show_search_tab
     }
 
 @app.post("/login")
@@ -2592,8 +2598,8 @@ class VectorizeRequest(BaseModel):
 async def vectorize_documents(request: VectorizeRequest):
     """
     選択されたファイルを画像ベクトル化してDBに保存（並列処理版）
-    - ファイルが未画像化の場合はエラー（先にページ画像化が必要）
-    - 既存のembeddingがある場合は削除してから再作成
+    - ファイルが未画像化の場合は自動的にページ画像化を実行してからベクトル化
+    - 既存の画像イメージやembeddingがある場合は削除してから再作成
     - Server-Sent Events (SSE)でリアルタイム進捗状況を送信
     """
     object_names = request.object_names

@@ -38,6 +38,13 @@ export function formatDateTime(isoString) {
  * @param {string} message - 表示メッセージ
  */
 export function showLoading(message = '処理中...') {
+  // メインページ進捗UIが表示されている場合は、ローディングオーバーレイを表示しない
+  const processProgressDiv = document.getElementById('processProgress');
+  if (processProgressDiv && processProgressDiv.style.display !== 'none') {
+    console.log('ℹ️ メインページ進捗UIが表示中のため、showLoadingをスキップ');
+    return;
+  }
+  
   const existing = document.getElementById('loadingOverlay');
   if (existing) {
     // 既存のオーバーレイがある場合はメッセージのみ更新

@@ -96,7 +96,11 @@ export const UI_CONFIG = {
   
   // テーブル
   TABLE_MAX_HEIGHT: 480,
-  TABLE_HEADER_HEIGHT: 48
+  TABLE_HEADER_HEIGHT: 48,
+  
+  // 機能表示制御（サーバーから取得）
+  SHOW_AI_ASSISTANT: true, // デフォルト値（サーバーから上書きされる）
+  SHOW_SEARCH_TAB: true    // デフォルト値（サーバーから上書きされる）
 };
 
 // ========================================

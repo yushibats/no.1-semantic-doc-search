@@ -34,6 +34,8 @@ variableGroups:
       - ssh_authorized_keys
       - oci_bucket_name
       - external_api_keys
+      - show_ai_assistant
+      - show_search_tab
       - enable_dify
 
   - title: Dify Configuration
@@ -147,6 +149,22 @@ variables:
     visible: true
     confirmation: false
     default: ""
+
+  show_ai_assistant:
+    type: boolean
+    required: true
+    visible: true
+    title: "Show AI Assistant"
+    description: "AIアシスタントの表示制御 (true: 表示, false: 非表示)"
+    default: true
+
+  show_search_tab:
+    type: boolean
+    required: true
+    visible: true
+    title: "Show Search Tab"
+    description: "🔍 検索タブの表示制御 (true: 表示, false: 非表示)"
+    default: true
 
   enable_dify:
     type: boolean

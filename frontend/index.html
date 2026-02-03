@@ -263,8 +263,11 @@
               </div>
             </div>
           </div>
-          
-          <div id="documentsList"></div>
+
+          <!-- 処理進捗表示 (削除・ベクトル化) - 一覧の下に表示 -->
+          <div id="processProgress" style="margin-top: 16px; display: none;"></div>
+
+          <div id="documentsList"></div>          
         </div>
         </div>
       </div>
@@ -560,10 +563,10 @@
           </div>
 
           <div style="display: flex; gap: 12px; margin-top: 20px;">
-            <button class="apex-button px-4 py-2" onclick="saveDbConnection()">
+            <button type="button" class="apex-button px-4 py-2" onclick="saveDbConnection()">
               💾 接続設定を保存
             </button>
-            <button class="apex-button-secondary px-4 py-2" onclick="testDbConnection()">
+            <button type="button" class="apex-button-secondary px-4 py-2" onclick="testDbConnection()">
               🧪 接続テスト
             </button>
           </div>

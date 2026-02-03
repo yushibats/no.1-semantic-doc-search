@@ -107,3 +107,15 @@ variable "external_api_keys" {
   default     = ""
   sensitive   = true
 }
+
+variable "show_ai_assistant" {
+  description = "AIアシスタントの表示制御 (true: 表示, false: 非表示)"
+  type        = bool
+  default     = true
+}
+
+variable "show_search_tab" {
+  description = "🔍 検索タブの表示制御 (true: 表示, false: 非表示)"
+  type        = bool
+  default     = true
+}

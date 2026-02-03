@@ -24,6 +24,8 @@ data "template_file" "cloud_init_file" {
     oci_access_key   = var.oci_access_key
     oci_secret_key   = var.oci_secret_key
     external_api_keys = var.external_api_keys
+    show_ai_assistant = var.show_ai_assistant
+    show_search_tab   = var.show_search_tab
   }
 }
 

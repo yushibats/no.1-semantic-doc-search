@@ -795,7 +795,7 @@ class ParallelProcessor:
                 file_content = None
                 
                 if file_id:
-                    # 既存のembeddingを削除
+                    # 既存の画像イメージやembeddingを削除
                     await event_queue.put({
                         'type': 'delete_existing_embeddings',
                         'file_index': file_idx,
@@ -968,13 +968,13 @@ class ParallelProcessor:
                 
                 # ページ画像が見つからない場合、自動的にページ画像化を実行
                 if not page_images:
-                    logger.info(f"ページ画像が見つかりません。自動的にページ画像化を実行: {obj_name}")
+                    logger.info(f"自動的にページ画像化を実行: {obj_name}")
                     await event_queue.put({
                         'type': 'auto_convert_start',
                         'file_index': file_idx,
                         'file_name': obj_name,
                         'total_files': total_files,
-                        'message': 'ページ画像が見つかりません。自動的にページ画像化を開始しています...'
+                        'message': '自動的にページ画像化を開始しています...'
                     })
                     
                     # ページ画像化を実行

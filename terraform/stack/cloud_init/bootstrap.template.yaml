@@ -68,6 +68,14 @@ write_files:
     permissions: "0644"
     content: |
       ${external_api_keys}
+  - path: "/u01/aipoc/props/show_ai_assistant.txt"
+    permissions: "0644"
+    content: |
+      ${show_ai_assistant}
+  - path: "/u01/aipoc/props/show_search_tab.txt"
+    permissions: "0644"
+    content: |
+      ${show_search_tab}
   - path: "/u01/aipoc/wallet.zip"
     permissions: "0644"
     encoding: base64

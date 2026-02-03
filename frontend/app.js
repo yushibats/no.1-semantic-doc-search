@@ -11,6 +11,11 @@ import {
   formatDateTime as utilsFormatDateTime,
   showConfirmModal as utilsShowConfirmModal
 } from './src/modules/utils.js';
+import {
+  vectorizeSelectedOciObjects as ociVectorizeSelectedOciObjects,
+  deleteSelectedOciObjects as ociDeleteSelectedOciObjects,
+  loadOciObjects as ociLoadOciObjects
+} from './src/modules/oci.js';
 
 // ========================================
 // グローバル変数（非推奨 - appStateへの移行中）
@@ -1291,6 +1296,7 @@ window.setOciObjectsFilterPageImages = function(value) {
   ociObjectsFilterPageImages = value;
   ociObjectsPage = 1;  // フィルター変更時は1ページ目に戻る
   selectedOciObjects = [];  // 選択状態をクリア
+  appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
   loadOciObjects();
 }
 
@@ -1302,6 +1308,7 @@ window.setOciObjectsFilterEmbeddings = function(value) {
   ociObjectsFilterEmbeddings = value;
   ociObjectsPage = 1;  // フィルター変更時は1ページ目に戻る
   selectedOciObjects = [];  // 選択状態をクリア
+  appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
   loadOciObjects();
 }
 
@@ -1314,6 +1321,7 @@ window.clearOciObjectsFilters = function() {
   ociObjectsFilterEmbeddings = "all";
   ociObjectsPage = 1;
   selectedOciObjects = [];
+  appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
   loadOciObjects();
 }
 
@@ -1326,6 +1334,7 @@ window.setOciObjectsDisplayType = function(value) {
   ociObjectsDisplayType = value;
   ociObjectsPage = 1;  // フィルター変更時は1ページ目に戻る
   selectedOciObjects = [];  // 選択状態をクリア
+  appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
   loadOciObjects();
 }
 
@@ -1380,6 +1389,9 @@ function toggleOciObjectSelection(objectName) {
       });
     }
   }
+  
+  // グローバル変数とappStateを同期（oci.jsモジュールとの互換性のため）
+  appState.set('selectedOciObjects', [...selectedOciObjects]);
   
   // 再描画（非同期処理を同期的に待つ）
   loadOciObjects().then(() => {
@@ -1467,7 +1479,10 @@ function toggleSelectAllOciObjects(checked) {
       }
     });
   }
-  
+    
+  // グローバル変数とappStateを同期（oci.jsモジュールとの互換性のため）
+  appState.set('selectedOciObjects', [...selectedOciObjects]);
+    
   // 再描画（非同期処理を同期的に待つ）
   loadOciObjects().then(() => {
     // スクロール位置を復元
@@ -1517,6 +1532,9 @@ function selectAllOciObjects() {
     }
   });
   
+  // グローバル変数とappStateを同期（oci.jsモジュールとの互換性のため）
+  appState.set('selectedOciObjects', [...selectedOciObjects]);
+  
   loadOciObjects().then(() => {
     // スクロール位置を復元
     const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
@@ -1539,6 +1557,9 @@ function clearAllOciObjects() {
   const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
   
   selectedOciObjects = [];
+  // グローバル変数とappStateを同期（oci.jsモジュールとの互換性のため）
+  appState.set('selectedOciObjects', []);
+  
   loadOciObjects().then(() => {
     // スクロール位置を復元
     const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
@@ -1552,54 +1573,8 @@ function clearAllOciObjects() {
 
 /**
  * 選択されたオブジェクトを削除
+ * 注: この関数はsrc/modules/oci.jsに移行済み。window.deleteSelectedOciObjectsで公開されています。
  */
-async function deleteSelectedOciObjects() {
-  if (selectedOciObjects.length === 0) {
-    utilsShowToast('削除するオブジェクトを選択してください', 'warning');
-    return;
-  }
-  
-  const count = selectedOciObjects.length;
-  const confirmed = await utilsShowConfirmModal(
-    `選択された${count}件のオブジェクトを削除しますか？\n\nこの操作は元に戻せません。`,
-    'オブジェクト削除の確認',
-    { variant: 'danger', confirmText: '削除' }
-  );
-  
-  if (!confirmed) {
-    return;
-  }
-  
-  // 処理中表示を設定
-  ociObjectsBatchDeleteLoading = true;
-  loadOciObjects();
-  
-  try {
-    // 一括削除APIを呼び出す
-    const response = await authApiCall('/ai/api/oci/objects/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ object_names: selectedOciObjects })
-    });
-    
-    if (response.success) {
-      utilsShowToast(`${count}件のオブジェクトを削除しました`, 'success');
-      // 選択をクリア
-      selectedOciObjects = [];
-      // ページを1にリセット
-      ociObjectsPage = 1;
-    } else {
-      utilsShowToast(`削除エラー: ${response.message || '不明なエラー'}`, 'error');
-    }
-  } catch (error) {
-    utilsShowToast(`削除エラー: ${error.message}`, 'error');
-  } finally {
-    // 処理中表示を解除
-    ociObjectsBatchDeleteLoading = false;
-    // 一覧を再読み込み
-    loadOciObjects();
-  }
-}
 
 /**
  * 選択されたOCIオブジェクトをZIPでダウンロード
@@ -1872,6 +1847,7 @@ window.convertSelectedOciObjectsToImages = async function() {
                 ociObjectsBatchDeleteLoading = false;
                 utilsShowToast(`処理がキャンセルされました\n${data.message}`, 'info');
                 selectedOciObjects = [];
+                appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
                 await loadOciObjects();
                 break;
                 
@@ -1896,6 +1872,7 @@ window.convertSelectedOciObjectsToImages = async function() {
                 
                 // 選択をクリアして一覧を更新
                 selectedOciObjects = [];
+                appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
                 await loadOciObjects();
                 break;
             }
@@ -1939,7 +1916,8 @@ window.vectorizeSelectedOciObjects = async function() {
   // 確認モーダルを表示
   const confirmed = await utilsShowConfirmModal(
     `選択された<strong>${selectedOciObjects.length}件のファイル</strong>を画像ベクトル化してデータベースに保存します。
-<warning>既存のembeddingがある場合は削除してから再作成します。</warning>
+<warning>既存の画像イメージやembeddingがある場合は削除してから再作成します。</warning>
+<small>※ファイルが未画像化の場合は、自動的にページ画像化を実行してからベクトル化します。</small>
 処理には時間がかかる場合があります。実行しますか？`,
     'ベクトル化確認',
     { variant: 'warning' }
@@ -2172,6 +2150,7 @@ window.vectorizeSelectedOciObjects = async function() {
                 ociObjectsBatchDeleteLoading = false;
                 utilsShowToast(`処理がキャンセルされました\n${data.message}`, 'info');
                 selectedOciObjects = [];
+                appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
                 await loadOciObjects();
                 break;
                 
@@ -2196,6 +2175,7 @@ window.vectorizeSelectedOciObjects = async function() {
                 
                 // 選択をクリアして一覧を更新
                 selectedOciObjects = [];
+                appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
                 await loadOciObjects();
                 break;
             }
@@ -2214,6 +2194,7 @@ window.vectorizeSelectedOciObjects = async function() {
     
     // 選択をクリアして一覧を更新
     selectedOciObjects = [];
+    appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
     await loadOciObjects();
   }
 };
@@ -2395,9 +2376,62 @@ async function deleteDocument(documentId, filename) {
   try {
     utilsShowLoading('文書を削除中...');
     
-    await authApiCall(`/ai/api/documents/${documentId}`, {
-      method: 'DELETE'
+    // 認証トークンを取得
+    const loginToken = localStorage.getItem('loginToken');
+    const headers = {
+      'Authorization': `Bearer ${loginToken}`
+    };
+    
+    const response = await fetch(`/ai/api/documents/${documentId}`, {
+      method: 'DELETE',
+      headers: headers
     });
+    
+    // 401エラーの場合は認証エラー
+    if (response.status === 401) {
+      utilsHideLoading();
+      utilsShowToast('認証が必要です', 'error');
+      if (window.authModule && window.authModule.forceLogout) {
+        window.authModule.forceLogout();
+      }
+      return;
+    }
+    
+    // レスポンスのContent-Typeを確認
+    const contentType = response.headers.get('Content-Type');
+    
+    if (!response.ok) {
+      // エラーレスポンスを適切にパース
+      let errorMessage = 'リクエストに失敗しました';
+      try {
+        if (contentType && contentType.includes('application/json')) {
+          const error = await response.json();
+          errorMessage = error.detail || errorMessage;
+        } else {
+          errorMessage = await response.text();
+        }
+      } catch (e) {
+        errorMessage = response.statusText || errorMessage;
+      }
+      throw new Error(errorMessage);
+    }
+    
+    // 成功レスポンスをパース
+    let result;
+    if (contentType && contentType.includes('application/json')) {
+      result = await response.json();
+    } else if (contentType && contentType.includes('text/event-stream')) {
+      // SSE形式の場合はエラー（単一文書削除ではSSEは使用しない）
+      throw new Error('予期しないレスポンス形式（SSE）を受信しました');
+    } else {
+      // その他のテキストレスポンス
+      const text = await response.text();
+      // SSE形式かどうかを確認
+      if (text.startsWith('data:')) {
+        throw new Error('予期しないレスポンス形式（SSE）を受信しました。バックエンドのエンドポイントを確認してください。');
+      }
+      throw new Error('予期しないレスポンス形式を受信しました');
+    }
     
     utilsHideLoading();
     utilsShowToast('文書を削除しました', 'success');
@@ -2406,6 +2440,7 @@ async function deleteDocument(documentId, filename) {
     
   } catch (error) {
     utilsHideLoading();
+    console.error('削除エラー詳細:', error);
     utilsShowToast(`削除エラー: ${error.message}`, 'error');
   }
 }
@@ -3119,11 +3154,7 @@ async function testDbConnection() {
     // パスワードフィールドを取得
     const passwordField = document.getElementById('dbPassword');
     
-    // ブラウザの自動入力を確実に取得するため、一度フォーカスしてから取得
-    passwordField.focus();
-    passwordField.blur();
-    
-    // 少し待ってから値を取得
+    // 少し待ってから値を取得（スクロール防止のためfocus/blurは削除）
     await new Promise(resolve => setTimeout(resolve, 100));
     
     // 入力されている値を取得（保存前でもテストできるように）
@@ -4248,11 +4279,55 @@ async function loadConfig() {
       appState.set('requireLogin', config.require_login);
       appState.set('apiBase', API_BASE);
       
+      // UI機能トグルを適用
+      applyUIFeatureToggles(config);
+      
       // console.log('設定を読み込みました:', config);
     }
   } catch (error) {
     // console.warn('設定の読み込みに失敗しました:', error);
   }
+}
+
+/**
+ * UI機能トグルを適用
+ */
+function applyUIFeatureToggles(config) {
+  // AI Assistantの表示制御
+  const showAiAssistant = config.show_ai_assistant !== false; // デフォルトはtrue
+  const copilotToggleBtn = document.getElementById('copilotToggleBtn');
+  const copilotPanel = document.getElementById('copilotPanel');
+  
+  if (showAiAssistant) {
+    if (copilotToggleBtn) copilotToggleBtn.style.display = 'block';
+  } else {
+    if (copilotToggleBtn) copilotToggleBtn.style.display = 'none';
+    if (copilotPanel) copilotPanel.style.display = 'none';
+  }
+  
+  // 検索タブの表示制御
+  const showSearchTab = config.show_search_tab !== false; // デフォルトはtrue
+  const searchTabElements = document.querySelectorAll('.apex-tab');
+  
+  if (searchTabElements.length > 0) {
+    const searchTab = searchTabElements[0]; // 最初のタブが検索タブ
+    const searchTabContent = document.getElementById('tab-search');
+    
+    if (showSearchTab) {
+      if (searchTab) searchTab.style.display = '';
+    } else {
+      if (searchTab) searchTab.style.display = 'none';
+      if (searchTabContent) searchTabContent.style.display = 'none';
+      // 検索タブが非表示の場合、文書管理タブに切り替え
+      if (searchTabElements.length > 1) {
+        switchTab('documents', { target: searchTabElements[1] });
+      }
+    }
+  }
+  
+  // appStateにも保存
+  appState.set('showAiAssistant', showAiAssistant);
+  appState.set('showSearchTab', showSearchTab);
 }
 
 /**
@@ -4792,7 +4867,7 @@ window.toggleOciObjectSelection = toggleOciObjectSelection;
 window.toggleSelectAllOciObjects = toggleSelectAllOciObjects;
 window.selectAllOciObjects = selectAllOciObjects;
 window.clearAllOciObjects = clearAllOciObjects;
-window.deleteSelectedOciObjects = deleteSelectedOciObjects;
+// deleteSelectedOciObjectsは5643行目でociDeleteSelectedOciObjectsとして正しく設定済み
 
 // ========================================
 // AI Assistant機能
@@ -4869,7 +4944,7 @@ async function sendCopilotMessage() {
   
   try {
     // API呼び出しでストリーミング受信
-    const response = await fetch(`${API_BASE}/api/copilot/chat`, {
+    const response = await fetch('/ai/api/copilot/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -5311,6 +5386,7 @@ window.sendCopilotMessage = sendCopilotMessage;
 window.clearCopilotHistory = clearCopilotHistory;
 window.handleCopilotKeydown = handleCopilotKeydown;
 window.startNewConversation = startNewConversation;
+window.renderCopilotMessages = renderCopilotMessages;
 window.addCopilotImagesFromFiles = addCopilotImagesFromFiles;
 window.handleCopilotPaste = handleCopilotPaste;
 window.removeCopilotImageAt = removeCopilotImageAt;
@@ -5580,6 +5656,10 @@ window.saveOciSettings = saveOciSettings;
 window.testOciConnection = testOciConnection;
 window.refreshObjectStorageSettings = refreshObjectStorageSettings;
 window.testObjectStorageConnection = testObjectStorageConnection;
+
+// OCI Object Storage操作（モジュール版を使用）
+window.vectorizeSelectedOciObjects = ociVectorizeSelectedOciObjects;
+window.deleteSelectedOciObjects = ociDeleteSelectedOciObjects;
 
 // 認証関連（TODO: window.authModuleに移行予定）
 window.handleLogin = handleLogin;
