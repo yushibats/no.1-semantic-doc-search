@@ -16,6 +16,10 @@ variable "adb_name" {
   default = "AIDOCADB"
 }
 
+variable "adb_display_name" {
+  default = ""
+}
+
 variable "adb_password" {
   default = ""
 }

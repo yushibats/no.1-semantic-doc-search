@@ -23,6 +23,7 @@ variableGroups:
       - compartment_ocid
       - availability_domain
       - adb_name
+      - adb_display_name
       - adb_password
       - license_model
       - instance_display_name
@@ -70,6 +71,13 @@ variables:
     required: true
     visible: true
     title: "Database name"
+
+  adb_display_name:
+    type: string
+    required: false
+    visible: true
+    title: "Database display name"
+    description: "Enter the display name for Autonomous Database (optional)"
 
   adb_password:
     type: password
