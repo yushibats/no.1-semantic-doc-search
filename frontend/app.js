@@ -1562,7 +1562,8 @@ async function deleteSelectedOciObjects() {
   const count = selectedOciObjects.length;
   const confirmed = await utilsShowConfirmModal(
     `選択された${count}件のオブジェクトを削除しますか？\n\nこの操作は元に戻せません。`,
-    'オブジェクト削除の確認'
+    'オブジェクト削除の確認',
+    { variant: 'danger', confirmText: '削除' }
   );
   
   if (!confirmed) {
@@ -1704,8 +1705,9 @@ window.convertSelectedOciObjectsToImages = async function() {
   
   // 確認モーダルを表示
   const confirmed = await utilsShowConfirmModal(
+    `選択された${selectedOciObjects.length}件のファイルを各ページPNG画像として同名フォルダに保存します。\n\n処理には時間がかかる場合があります。実行しますか？`,
     'ページ画像化確認',
-    `選択された${selectedOciObjects.length}件のファイルを各ページPNG画像として同名フォルダに保存します。\n\n処理には時間がかかる場合があります。実行しますか？`
+    { variant: 'info' }
   );
   
   if (!confirmed) {
@@ -1936,13 +1938,11 @@ window.vectorizeSelectedOciObjects = async function() {
   
   // 確認モーダルを表示
   const confirmed = await utilsShowConfirmModal(
+    `選択された<strong>${selectedOciObjects.length}件のファイル</strong>を画像ベクトル化してデータベースに保存します。
+<warning>既存のembeddingがある場合は削除してから再作成します。</warning>
+処理には時間がかかる場合があります。実行しますか？`,
     'ベクトル化確認',
-    `選択された${selectedOciObjects.length}件のファイルを画像ベクトル化してデータベースに保存します。
-
-ページ画像化されていないファイルは自動的に画像化されます。
-既存のembeddingがある場合は削除してから再作成します。
-
-処理には時間がかかる場合があります。実行しますか？`
+    { variant: 'warning' }
   );
   
   if (!confirmed) {
@@ -2052,6 +2052,38 @@ window.vectorizeSelectedOciObjects = async function() {
                 const fileProgress = (currentFileIndex - 1) / totalFiles;
                 updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles} を処理中...\n${data.file_name}`, fileProgress, jobId);
                 break;
+              
+              case 'file_checking':
+                // DB確認中
+                currentFileIndex = data.file_index;
+                totalFiles = data.total_files;
+                const checkingProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🔍 DB確認中`, checkingProgress, jobId);
+                break;
+              
+              case 'delete_existing_embeddings':
+                // 既存embedding削除
+                const deleteEmbProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🗑️ 既存ベクトルデータ削除中`, deleteEmbProgress, jobId);
+                break;
+              
+              case 'cleanup_start':
+                // 既存画像確認中
+                const cleanupStartProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🔍 既存画像を確認中`, cleanupStartProgress, jobId);
+                break;
+              
+              case 'cleanup_progress':
+                // 既存画像削除中
+                const cleanupProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🗑️ 既存画像 ${data.cleanup_count}件を削除中`, cleanupProgress, jobId);
+                break;
+              
+              case 'cleanup_complete':
+                // 既存画像削除完了
+                const cleanupCompleteProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: ✓ 既存画像 ${data.deleted_count}件を削除完了`, cleanupCompleteProgress, jobId);
+                break;
                 
               case 'save_file_info':
                 const saveProgress = (currentFileIndex - 1) / totalFiles;
@@ -2059,8 +2091,9 @@ window.vectorizeSelectedOciObjects = async function() {
                 break;
                 
               case 'delete_existing':
-                const deleteProgress = (currentFileIndex - 1) / totalFiles;
-                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n既存embeddingを削除中...`, deleteProgress, jobId);
+                // 以前のイベント名互換性
+                const deleteOldProgress = (currentFileIndex - 1) / totalFiles;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n既存embeddingを削除中...`, deleteOldProgress, jobId);
                 break;
                 
               case 'auto_convert_start':
@@ -2204,9 +2237,11 @@ function updateLoadingMessage(message, progress = null, jobId = null) {
   // プログレスバーを更新
   const progressContainer = loadingOverlay.querySelector('.loading-progress-container');
   if (progressContainer) {
-    if (progress !== null) {
+    if (progress !== null && progress !== undefined) {
       progressContainer.classList.remove('hidden');
-      const clampedProgress = Math.max(0, Math.min(1, progress));
+      // NaN、Infinity、-Infinityをゼロに変換
+      const validProgress = (typeof progress === 'number' && isFinite(progress)) ? progress : 0;
+      const clampedProgress = Math.max(0, Math.min(1, validProgress));
       const percentage = Math.round(clampedProgress * 100);
       
       const progressBar = progressContainer.querySelector('.loading-progress-bar');
@@ -2254,8 +2289,9 @@ window.cancelCurrentJob = async function(jobId) {
   }
   
   const confirmed = await utilsShowConfirmModal(
+    '実行中の処理をキャンセルしますか？\n\n進行中のファイルは処理が完了してから停止します。',
     'キャンセル確認',
-    '実行中の処理をキャンセルしますか？\n\n進行中のファイルは処理が完了してから停止します。'
+    { variant: 'warning' }
   );
   
   if (!confirmed) {
@@ -2348,7 +2384,8 @@ async function deleteDocument(documentId, filename) {
 - Object Storageのファイル
 
 この操作は元に戻せません。`,
-    '文書削除の確認'
+    '文書削除の確認',
+    { variant: 'danger', confirmText: '削除' }
   );
   
   if (!confirmed) {
@@ -3960,7 +3997,8 @@ async function deleteSelectedDbTables() {
   const count = selectedDbTables.length;
   const confirmed = await showConfirmModal(
     `選択された${count}件のテーブルを削除しますか？\n\nこの操作は元に戻せません。`,
-    'テーブル削除の確認'
+    'テーブル削除の確認',
+    { variant: 'danger', confirmText: '削除' }
   );
   
   if (!confirmed) {
@@ -5017,7 +5055,8 @@ async function startNewConversation() {
   if (copilotMessages.length > 0) {
     const confirmed = await showConfirmModal(
       'AI Assistantの会話をリセットしますか？',
-      '新しい会話の確認'
+      '新しい会話の確認',
+      { variant: 'info' }
     );
     if (confirmed) {
       copilotMessages = [];

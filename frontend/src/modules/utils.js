@@ -145,17 +145,28 @@ export function showImageModal(imageUrl, filename = '') {
  * 確認モーダルを表示
  * @param {string} message - 確認メッセージ
  * @param {string} title - タイトル
+ * @param {Object} options - オプション
+ * @param {string} [options.variant='default'] - バリアント ('default' | 'danger' | 'warning' | 'info')
+ * @param {string} [options.confirmText='確認'] - 確認ボタンのテキスト
+ * @param {string} [options.cancelText='キャンセル'] - キャンセルボタンのテキスト
  * @returns {Promise<boolean>} ユーザーの選択結果
  */
-export function showConfirmModal(message, title = '確認') {
+export function showConfirmModal(message, title = '確認', options = {}) {
+  const {
+    variant = 'default',
+    confirmText = '確認',
+    cancelText = 'キャンセル'
+  } = options;
+
   return new Promise((resolve) => {
     // UIComponentsのshowModalを使用
     if (window.UIComponents && window.UIComponents.showModal) {
       window.UIComponents.showModal({
         title,
         content: message,
-        confirmText: '確認',
-        cancelText: 'キャンセル',
+        confirmText,
+        cancelText,
+        variant,
         onConfirm: () => resolve(true),
         onCancel: () => resolve(false)
       });

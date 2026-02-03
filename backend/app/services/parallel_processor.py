@@ -777,10 +777,10 @@ class ParallelProcessor:
                     'total_files': total_files
                 })
                 
-                # 処理中に更新
-                await JobManager.update_file_state(job_id, obj_name, 'ベクトル化中')
+                # 処理中に更新（DBチェック中）
+                await JobManager.update_file_state(job_id, obj_name, 'DB確認中')
                 await event_queue.put({
-                    'type': 'file_uploading',
+                    'type': 'file_checking',
                     'file_index': file_idx,
                     'file_name': obj_name,
                     'total_files': total_files
@@ -797,12 +797,72 @@ class ParallelProcessor:
                 if file_id:
                     # 既存のembeddingを削除
                     await event_queue.put({
-                        'type': 'delete_existing',
+                        'type': 'delete_existing_embeddings',
                         'file_index': file_idx,
                         'file_name': obj_name,
                         'file_id': file_id
                     })
                     await asyncio.to_thread(image_vectorizer.delete_file_embeddings, file_id)
+                    
+                    # 既存のページ画像を削除
+                    await event_queue.put({
+                        'type': 'cleanup_start',
+                        'file_index': file_idx,
+                        'file_name': obj_name,
+                        'total_files': total_files
+                    })
+                    
+                    # ページ画像フォルダ内のファイルを取得
+                    page_images_to_delete_result = await asyncio.to_thread(
+                        oci_service.list_objects,
+                        bucket_name=bucket_name,
+                        namespace=namespace,
+                        prefix=f"{folder_name}/",
+                        page_size=1000
+                    )
+                    
+                    page_images_to_delete = []
+                    if page_images_to_delete_result.get("success"):
+                        objects = page_images_to_delete_result.get("objects", [])
+                        for obj in objects:
+                            obj_name_str = obj.get("name", "")
+                            # フォルダ自体は除外し、ページ画像のみを対象
+                            if not obj_name_str.endswith('/'):
+                                page_images_to_delete.append(obj_name_str)
+                    
+                    if page_images_to_delete:
+                        await event_queue.put({
+                            'type': 'cleanup_progress',
+                            'file_index': file_idx,
+                            'file_name': obj_name,
+                            'total_files': total_files,
+                            'cleanup_count': len(page_images_to_delete)
+                        })
+                        
+                        # 既存のページ画像を削除（並列）
+                        async def delete_page_image(page_image_name: str):
+                            try:
+                                async with semaphore:
+                                    await asyncio.to_thread(
+                                        oci_service.delete_object,
+                                        object_name=page_image_name
+                                    )
+                                    return True
+                            except Exception as e:
+                                logger.error(f"ページ画像削除エラー ({page_image_name}): {e}")
+                                return False
+                        
+                        delete_tasks = [delete_page_image(img) for img in page_images_to_delete]
+                        await asyncio.gather(*delete_tasks, return_exceptions=True)
+                        
+                        await event_queue.put({
+                            'type': 'cleanup_complete',
+                            'file_index': file_idx,
+                            'file_name': obj_name,
+                            'total_files': total_files,
+                            'deleted_count': len(page_images_to_delete)
+                        })
+                    
                 else:
                     # 新規ファイル情報を保存
                     file_content = await asyncio.to_thread(oci_service.download_object, obj_name)

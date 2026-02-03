@@ -473,11 +473,12 @@ function closeModal(modalId) {
  * @param {Object} options - モーダル設定オプション
  * @param {string} options.title - モーダルのタイトル
  * @param {string} options.content - モーダルの内容（HTML文字列）
- * @param {string} [options.confirmText='確定'] - 確認ボタンのテキスト
- * @param {string} [options.cancelText='取消'] - キャンセルボタンのテキスト
+ * @param {string} [options.confirmText='確認'] - 確認ボタンのテキスト
+ * @param {string} [options.cancelText='キャンセル'] - キャンセルボタンのテキスト
  * @param {Function} options.onConfirm - 確認時のコールバック
  * @param {Function} options.onCancel - キャンセル時のコールバック
- * @param {string} [options.variant='default'] - バリアント ('default' | 'danger')
+ * @param {string} [options.variant='default'] - バリアント ('default' | 'danger' | 'warning' | 'info')
+ * @param {string} [options.icon] - カスタムアイコン（省略時はvariantに基づく）
  * 
  * @example
  * showModal({
@@ -493,11 +494,12 @@ function closeModal(modalId) {
 function showModal({
   title,
   content,
-  confirmText = '確定',
-  cancelText = '取消',
+  confirmText = '確認',
+  cancelText = 'キャンセル',
   onConfirm,
   onCancel,
-  variant = 'default'
+  variant = 'default',
+  icon = null
 }) {
   // 既存のモーダルを削除
   const existingModal = document.getElementById('global-confirm-modal');
@@ -508,37 +510,70 @@ function showModal({
   // モーダルIDを生成
   const modalId = 'global-confirm-modal';
 
-  // ボタンのスタイルをバリアントで変更
-  const confirmBtnClass = variant === 'danger'
-    ? 'bg-red-500 hover:bg-red-600 text-white'
-    : 'bg-blue-500 hover:bg-blue-600 text-white';
+  // バリアント別のスタイル設定（インラインスタイルを使用）
+  const variantConfig = {
+    default: {
+      iconBgStyle: 'background: linear-gradient(135deg, #3b82f6 0%, #4f46e5 100%);',
+      iconSvg: '<svg style="width:24px;height:24px;color:white;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>',
+      confirmBtnStyle: 'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;'
+    },
+    danger: {
+      iconBgStyle: 'background: linear-gradient(135deg, #ef4444 0%, #e11d48 100%);',
+      iconSvg: '<svg style="width:24px;height:24px;color:white;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>',
+      confirmBtnStyle: 'background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white;'
+    },
+    warning: {
+      iconBgStyle: 'background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);',
+      iconSvg: '<svg style="width:24px;height:24px;color:white;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>',
+      confirmBtnStyle: 'background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white;'
+    },
+    info: {
+      iconBgStyle: 'background: linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%);',
+      iconSvg: '<svg style="width:24px;height:24px;color:white;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>',
+      confirmBtnStyle: 'background: linear-gradient(135deg, #06b6d4 0%, #0284c7 100%); color: white;'
+    }
+  };
+
+  const config = variantConfig[variant] || variantConfig.default;
+
+  // コンテンツ内のHTML強調を処理（強調タグを検出）
+  const processedContent = content
+    .replace(/<warning>(.*?)<\/warning>/gs, `
+      <div class="modal-warning-block">
+        <svg class="modal-warning-icon" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+        </svg>
+        <span>$1</span>
+      </div>
+    `)
+    .replace(/<strong>(.*?)<\/strong>/g, '<strong class="modal-strong-text">$1</strong>');
 
   // モーダルHTMLを作成
   const modalHtml = `
-    <div id="${modalId}" class="fixed inset-0 z-50 flex items-center justify-center" style="background-color: rgba(0, 0, 0, 0.5);">
-      <div class="bg-white rounded-lg shadow-2xl w-full max-w-md mx-4 transform transition-all" style="animation: modalSlideIn 0.2s ease-out;">
+    <div id="${modalId}" class="modern-modal-overlay">
+      <div class="modern-modal-backdrop" data-modal-close></div>
+      <div class="modern-modal-container">
+        <!-- アイコン -->
+        <div class="modern-modal-icon" style="${config.iconBgStyle}">
+          ${icon || config.iconSvg}
+        </div>
+        
         <!-- ヘッダー -->
-        <div class="px-6 py-4 border-b border-gray-200">
-          <h3 class="text-lg font-semibold text-gray-800">${title}</h3>
+        <div class="modern-modal-header">
+          <h3 class="modern-modal-title">${title}</h3>
         </div>
         
         <!-- コンテンツ -->
-        <div class="px-6 py-4">
-          <p class="text-sm text-gray-600 whitespace-pre-line">${content}</p>
+        <div class="modern-modal-body">
+          <div class="modern-modal-content">${processedContent}</div>
         </div>
         
         <!-- フッター（ボタン） -->
-        <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
-          <button 
-            id="${modalId}-cancel-btn"
-            class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-          >
+        <div class="modern-modal-footer">
+          <button id="${modalId}-cancel-btn" class="modern-modal-btn modern-modal-btn-secondary">
             ${cancelText}
           </button>
-          <button 
-            id="${modalId}-confirm-btn"
-            class="px-4 py-2 text-sm font-medium rounded-md transition-colors ${confirmBtnClass}"
-          >
+          <button id="${modalId}-confirm-btn" class="modern-modal-btn modern-modal-btn-confirm" style="${config.confirmBtnStyle}">
             ${confirmText}
           </button>
         </div>
@@ -547,29 +582,189 @@ function showModal({
   `;
 
   // スタイルを追加（一度だけ）
-  if (!document.getElementById('modal-animation-styles')) {
+  if (!document.getElementById('modern-modal-styles')) {
     const style = document.createElement('style');
-    style.id = 'modal-animation-styles';
+    style.id = 'modern-modal-styles';
     style.textContent = `
-      @keyframes modalSlideIn {
+      /* モダンモーダルオーバーレイ */
+      .modern-modal-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 10003;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        animation: modernModalFadeIn 0.2s ease-out;
+      }
+      
+      .modern-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.6);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+      }
+      
+      .modern-modal-container {
+        position: relative;
+        background: white;
+        border-radius: 16px;
+        max-width: 420px;
+        width: 100%;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+        animation: modernModalSlideIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        overflow: hidden;
+      }
+      
+      .modern-modal-icon {
+        width: 52px;
+        height: 52px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 24px auto 0 auto;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      }
+      
+      .modern-modal-header {
+        padding: 16px 24px 0 24px;
+        text-align: center;
+      }
+      
+      .modern-modal-title {
+        font-size: 18px;
+        font-weight: 600;
+        color: #1e293b;
+        margin: 0;
+      }
+      
+      .modern-modal-body {
+        padding: 12px 24px 20px 24px;
+      }
+      
+      .modern-modal-content {
+        font-size: 14px;
+        color: #475569;
+        line-height: 1.6;
+        text-align: center;
+        white-space: pre-line;
+      }
+      
+      .modern-modal-footer {
+        padding: 0 24px 24px 24px;
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+      }
+      
+      .modern-modal-btn {
+        padding: 10px 20px;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 500;
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        min-width: 100px;
+      }
+      
+      .modern-modal-btn:hover {
+        transform: translateY(-1px);
+      }
+      
+      .modern-modal-btn:active {
+        transform: translateY(0);
+      }
+      
+      .modern-modal-btn-secondary {
+        background: #fff;
+        color: #475569;
+        border: 1.5px solid #cbd5e1;
+      }
+      
+      .modern-modal-btn-secondary:hover {
+        background: #f8fafc;
+        border-color: #94a3b8;
+      }
+      
+      .modern-modal-btn-secondary:active {
+        background: #f1f5f9;
+      }
+      
+      .modern-modal-btn-confirm:hover {
+        box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+      }
+      
+      .modern-modal-btn-confirm:active {
+        box-shadow: 0 2px 4px rgba(102, 126, 234, 0.2);
+      }
+      
+      /* 警告ブロック */
+      .modal-warning-block {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        background: #fef3c7;
+        border: 1px solid #fcd34d;
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-top: 12px;
+        text-align: left;
+      }
+      
+      .modal-warning-icon {
+        width: 18px;
+        height: 18px;
+        color: #d97706;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+      
+      .modal-warning-block span {
+        color: #92400e;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.5;
+      }
+      
+      .modal-strong-text {
+        font-weight: 600;
+        color: #0f172a;
+      }
+      
+      /* アニメーション */
+      @keyframes modernModalFadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      
+      @keyframes modernModalSlideIn {
         from {
           opacity: 0;
-          transform: translateY(-20px) scale(0.95);
+          transform: translateY(-30px) scale(0.9);
         }
         to {
           opacity: 1;
           transform: translateY(0) scale(1);
         }
       }
-      @keyframes modalSlideOut {
+      
+      @keyframes modernModalSlideOut {
         from {
           opacity: 1;
           transform: translateY(0) scale(1);
         }
         to {
           opacity: 0;
-          transform: translateY(-20px) scale(0.95);
+          transform: translateY(10px) scale(0.95);
         }
+      }
+      
+      @keyframes modernModalFadeOut {
+        from { opacity: 1; }
+        to { opacity: 0; }
       }
     `;
     document.head.appendChild(style);
@@ -580,17 +775,28 @@ function showModal({
   modalContainer.innerHTML = modalHtml;
   document.body.appendChild(modalContainer.firstElementChild);
 
+  // ESCキーハンドラー（先に定義）
+  let handleEsc = null;
+
   // モーダルを閉じる関数
   const closeConfirmModal = () => {
+    // ESCキーハンドラーを先に削除（メモリリーク防止）
+    if (handleEsc) {
+      document.removeEventListener('keydown', handleEsc);
+      handleEsc = null;
+    }
+    
     const modal = document.getElementById(modalId);
     if (modal) {
-      const innerModal = modal.querySelector('.bg-white');
-      if (innerModal) {
-        innerModal.style.animation = 'modalSlideOut 0.15s ease-in forwards';
-        setTimeout(() => modal.remove(), 150);
-      } else {
-        modal.remove();
+      const container = modal.querySelector('.modern-modal-container');
+      const backdrop = modal.querySelector('.modern-modal-backdrop');
+      if (container) {
+        container.style.animation = 'modernModalSlideOut 0.2s ease-out forwards';
       }
+      if (backdrop) {
+        backdrop.style.animation = 'modernModalFadeOut 0.2s ease-out forwards';
+      }
+      setTimeout(() => modal.remove(), 200);
     }
   };
 
@@ -598,6 +804,7 @@ function showModal({
   const modal = document.getElementById(modalId);
   const confirmBtn = document.getElementById(`${modalId}-confirm-btn`);
   const cancelBtn = document.getElementById(`${modalId}-cancel-btn`);
+  const backdrop = modal.querySelector('[data-modal-close]');
 
   // 確認ボタン
   confirmBtn.addEventListener('click', () => {
@@ -612,19 +819,18 @@ function showModal({
   });
 
   // 背景クリックで閉じる
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) {
+  if (backdrop) {
+    backdrop.addEventListener('click', () => {
       closeConfirmModal();
       if (onCancel) onCancel();
-    }
-  });
+    });
+  }
 
   // ESCキーで閉じる
-  const handleEsc = (e) => {
+  handleEsc = (e) => {
     if (e.key === 'Escape') {
       closeConfirmModal();
       if (onCancel) onCancel();
-      document.removeEventListener('keydown', handleEsc);
     }
   };
   document.addEventListener('keydown', handleEsc);

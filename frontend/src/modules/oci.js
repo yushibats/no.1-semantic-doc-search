@@ -748,13 +748,11 @@ export async function vectorizeSelectedOciObjects() {
   
   // 確認モーダルを表示
   const confirmed = await showConfirmModal(
-    `選択された${selectedOciObjects.length}件のファイルを画像ベクトル化してデータベースに保存します。
-
-ページ画像化されていないファイルは自動的に画像化されます。
-既存のembeddingがある場合は削除してから再作成します。
-
+    `選択された<strong>${selectedOciObjects.length}件のファイル</strong>を画像ベクトル化してデータベースに保存します。
+<warning>既存のembeddingがある場合は削除してから再作成します。</warning>
 処理には時間がかかる場合があります。実行しますか？`,
-    'ベクトル化確認'
+    'ベクトル化確認',
+    { variant: 'warning' }
   );
   
   if (!confirmed) {
@@ -828,7 +826,8 @@ export async function deleteSelectedOciObjects() {
   const count = selectedOciObjects.length;
   const confirmed = await showConfirmModal(
     `選択された${count}件のオブジェクトを削除しますか？\n\nこの操作は元に戻せません。`,
-    'オブジェクト削除の確認'
+    'オブジェクト削除の確認',
+    { variant: 'danger', confirmText: '削除' }
   );
   
   if (!confirmed) {
@@ -941,6 +940,60 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               }
               updateLoadingMessage(fileStartMessage, fileStartProgress, jobId);
               break;
+            
+            case 'file_checking':
+              // ファイルのDB確認中
+              currentFileIndex = data.file_index;
+              if (data.total_files) totalFiles = data.total_files;
+              const checkingProgress = (currentFileIndex - 1) / (totalFiles || 1);
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🔍 DB確認中`, checkingProgress, jobId);
+              break;
+            
+            case 'delete_existing_embeddings':
+              // 既存のembeddingを削除中
+              const deleteEmbProgress = (currentFileIndex - 1) / (totalFiles || 1);
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🗑️ 既存ベクトルデータ削除中`, deleteEmbProgress, jobId);
+              break;
+            
+            case 'cleanup_start':
+              // 既存画像の確認開始
+              const cleanupStartProgress = totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🔍 既存画像を確認中`, cleanupStartProgress, jobId);
+              break;
+            
+            case 'cleanup_progress':
+              // 既存画像を削除中
+              const cleanupProgress = totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🗑️ 既存画像 ${data.cleanup_count}件を削除中`, cleanupProgress, jobId);
+              break;
+            
+            case 'cleanup_complete':
+              // 既存画像削除完了
+              const cleanupCompleteProgress = totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: ✓ 既存画像 ${data.deleted_count}件を削除完了`, cleanupCompleteProgress, jobId);
+              break;
+                        
+            case 'auto_convert_start':
+              // 自動ページ画像化開始
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 📄 自動ページ画像化開始`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
+              showToast(`ページ画像が見つかりません。自動的にページ画像化を実行中: ${data.file_name}`, 'info');
+              break;
+            
+            case 'auto_convert_progress':
+              // 自動ページ画像化の進捗
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 📤 ${data.total_pages}ページをアップロード中`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
+              break;
+            
+            case 'auto_convert_complete':
+              // 自動ページ画像化完了
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: ✓ ページ画像化完了 (${data.total_pages}ページ)`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
+              showToast(`ページ画像化完了: ${data.file_name} (${data.total_pages}ページ)`, 'success');
+              break;
+            
+            case 'vectorize_start':
+              // ベクトル化処理開始
+              updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🚀 ベクトル化開始 (${data.total_pages}ページ)`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
+              break;
                         
             case 'file_uploading':
               // ファイルが処理中になった
@@ -961,10 +1014,12 @@ async function processStreamingResponse(response, totalFiles, operationType) {
             case 'page_progress':
               currentPageIndex = data.page_index;
               totalPages = data.total_pages;
+              // ファイルインデックスがない場合は現在の値を使用
+              const fileIdx = data.file_index || currentFileIndex || 1;
               const pageProgress = operationType === 'convert' ?
-                (processedPages + 1) / (totalPagesAllFiles || 1) :
-                totalFiles > 0 ? (data.file_index - 1 + currentPageIndex / (totalPages || 1)) / totalFiles : 0;
-              updateLoadingMessage(`ファイル ${data.file_index}/${data.total_files || totalFiles}\nページ ${currentPageIndex}/${totalPages} を${operationType === 'convert' ? '画像化' : 'ベクトル化'}中...`, pageProgress, jobId);
+                (totalPagesAllFiles > 0 ? (processedPages + 1) / totalPagesAllFiles : 0) :
+                (totalFiles > 0 ? (fileIdx - 1 + (currentPageIndex || 0) / (totalPages || 1)) / totalFiles : 0);
+              updateLoadingMessage(`ファイル ${fileIdx}/${data.total_files || totalFiles}\nページ ${currentPageIndex}/${totalPages} を${operationType === 'convert' ? '画像化' : 'ベクトル化'}中...`, pageProgress, jobId);
               processedPages++;
               break;
               
@@ -974,16 +1029,16 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               break;
               
             case 'file_complete':
-              currentFileIndex = data.file_index;
+              currentFileIndex = data.file_index || currentFileIndex;
               const totalForComplete = data.total_files || totalFiles || 1;
-              const completedFileProgress = currentFileIndex / totalForComplete;
+              const completedFileProgress = totalForComplete > 0 ? currentFileIndex / totalForComplete : 0;
               let completeMessage = '';
               if (operationType === 'convert') {
-                completeMessage = `ファイル ${data.file_index}/${totalForComplete} ✓ 完了\n${data.file_name}`;
+                completeMessage = `ファイル ${currentFileIndex}/${totalForComplete} ✓ 完了\n${data.file_name}`;
               } else if (operationType === 'vectorize') {
-                completeMessage = `ファイル ${data.file_index}/${totalForComplete} ✓ 完了\n${data.file_name}`;
+                completeMessage = `ファイル ${currentFileIndex}/${totalForComplete} ✓ 完了\n${data.file_name}`;
               } else if (operationType === 'delete') {
-                completeMessage = `オブジェクト ${data.file_index}/${totalForComplete} ✓ 完了\n${data.file_name}`;
+                completeMessage = `オブジェクト ${currentFileIndex}/${totalForComplete} ✓ 完了\n${data.file_name}`;
               }
               updateLoadingMessage(completeMessage, completedFileProgress, jobId);
               // UI更新はprogress_updateイベントに任せる（重複回避）
@@ -992,14 +1047,15 @@ async function processStreamingResponse(response, totalFiles, operationType) {
             case 'file_error':
               console.error(`${operationType === 'delete' ? 'オブジェクト' : 'ファイル'} ${data.file_index}/${data.total_files || totalFiles} エラー: ${data.error}`);
               const totalForError = data.total_files || totalFiles || 1;
-              const errorProgress = currentFileIndex > 0 ? (currentFileIndex - 1) / totalForError : 0;
+              const errorFileIdx = data.file_index || currentFileIndex || 1;
+              const errorProgress = totalForError > 0 && errorFileIdx > 0 ? (errorFileIdx - 1) / totalForError : 0;
               let errorMessage = '';
               if (operationType === 'convert') {
-                errorMessage = `ファイル ${data.file_index}/${totalForError} ✗ エラー\n${data.file_name}\n${data.error}`;
+                errorMessage = `ファイル ${errorFileIdx}/${totalForError} ✗ エラー\n${data.file_name}\n${data.error}`;
               } else if (operationType === 'vectorize') {
-                errorMessage = `ファイル ${data.file_index}/${totalForError} ✗ エラー\n${data.file_name}\n${data.error}`;
+                errorMessage = `ファイル ${errorFileIdx}/${totalForError} ✗ エラー\n${data.file_name}\n${data.error}`;
               } else if (operationType === 'delete') {
-                errorMessage = `オブジェクト ${data.file_index}/${totalForError} ✗ エラー\n${data.file_name}\n${data.error}`;
+                errorMessage = `オブジェクト ${errorFileIdx}/${totalForError} ✗ エラー\n${data.file_name}\n${data.error}`;
               }
               updateLoadingMessage(errorMessage, errorProgress, jobId);
               break;
@@ -1117,9 +1173,11 @@ function updateLoadingMessage(message, progress = null, jobId = null) {
   // プログレスバーを更新（utils.jsのshowLoadingで作成済みの要素を使用）
   const progressContainer = loadingOverlay.querySelector('.loading-progress-container');
   if (progressContainer) {
-    if (progress !== null) {
+    if (progress !== null && progress !== undefined) {
       progressContainer.classList.remove('hidden');
-      const clampedProgress = Math.max(0, Math.min(1, progress));
+      // NaN、Infinity、-Infinityをゼロに変換
+      const validProgress = (typeof progress === 'number' && isFinite(progress)) ? progress : 0;
+      const clampedProgress = Math.max(0, Math.min(1, validProgress));
       const percentage = Math.round(clampedProgress * 100);
       
       const progressBar = progressContainer.querySelector('.loading-progress-bar');
