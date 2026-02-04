@@ -99,7 +99,9 @@ export async function loadOciObjects(showLoadingOverlay = true) {
     updateDocumentsStatisticsBadges(statistics, 'success');
     
   } catch (error) {
-    utilsHideLoading();
+    if (showLoadingOverlay) {
+      utilsHideLoading();
+    }
     utilsShowToast(`OCI Object Storage一覧取得エラー: ${error.message}`, 'error');
     updateDocumentsStatusBadge('エラー', 'error');
   }
