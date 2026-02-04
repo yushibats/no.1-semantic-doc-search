@@ -282,10 +282,11 @@ export function closeImageModal() {
   const modal = document.getElementById('imageModal');
   if (!modal) return;
   
-  // ESCハンドラーを削除
-  if (_imageModalEscapeHandler) {
-    document.removeEventListener('keydown', _imageModalEscapeHandler);
-    _imageModalEscapeHandler = null;
+  // ESCハンドラーを削除（グローバル変数を参照）
+  const escapeHandler = window._imageModalEscapeHandler;
+  if (escapeHandler) {
+    document.removeEventListener('keydown', escapeHandler);
+    window._imageModalEscapeHandler = null;
   }
   
   // 即座に削除（フラッシュを防ぐためアニメーションなし）

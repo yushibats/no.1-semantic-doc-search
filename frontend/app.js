@@ -59,51 +59,43 @@ import {
 // 開発時はViteのプロキシを使うため空文字列、本番ビルド時は環境変数から設定
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
-// 注: 以下の変数はappStateに移行済み。後方互換性のため一時的に残しています。
-// TODO: すべての参照をappState.get()に置き換えた後、これらを削除します。
-let selectedFile = null;           // -> appState.get('selectedFile')
-let documentsCache = [];           // -> appState.get('documentsCache')
-let isLoggedIn = false;            // -> appState.get('isLoggedIn')
-let loginToken = null;             // -> appState.get('loginToken')
-let loginUser = null;              // -> appState.get('loginUser')
-let debugMode = false;             // -> appState.get('debugMode')
-let requireLogin = true;           // -> appState.get('requireLogin')
+// 注: 以下の変数はappStateに完全移行済み。削除済み。
+// let selectedFile = null;           // -> appState.get('selectedFile')
+// let documentsCache = [];           // -> appState.get('documentsCache')
+// let isLoggedIn = false;            // -> appState.get('isLoggedIn')
+// let loginToken = null;             // -> appState.get('loginToken')
+// let loginUser = null;              // -> appState.get('loginUser')
+// let debugMode = false;             // -> appState.get('debugMode')
+// let requireLogin = true;           // -> appState.get('requireLogin')
 
-// AI Assistant状態（TODO: appStateへ移行）
-let copilotOpen = false;            // -> appState.get('copilotOpen')
-let copilotExpanded = false;        // -> appState.get('copilotExpanded')
-let copilotMessages = [];           // -> appState.get('copilotMessages')
-let copilotLoading = false;         // -> appState.get('copilotLoading')
-let copilotImages = [];             // -> appState.get('copilotImages')
+// AI Assistant状態（appStateへ移行済み）
+// let copilotOpen = false;            // -> appState.get('copilotOpen')
+// let copilotExpanded = false;        // -> appState.get('copilotExpanded')
+// let copilotMessages = [];           // -> appState.get('copilotMessages')
+// let copilotLoading = false;         // -> appState.get('copilotLoading')
+// let copilotImages = [];             // -> appState.get('copilotImages')
 
-// テーブル一覧ページング状態（TODO: appStateへ移行）
-let dbTablesPage = 1;               // -> appState.get('dbTablesPage')
-let dbTablesPageSize = 20;          // -> appState.get('dbTablesPageSize')
-let dbTablesTotalPages = 1;         // -> appState.get('dbTablesTotalPages')
+// テーブル一覧ページング状態（appStateへ移行済み）
+// let dbTablesPage = 1;               // -> appState.get('dbTablesPage')
+// let dbTablesPageSize = 20;          // -> appState.get('dbTablesPageSize')
+// let dbTablesTotalPages = 1;         // -> appState.get('dbTablesTotalPages')
 
-// テーブル一覧選択状態（TODO: appStateへ移行）
-let selectedDbTables = [];          // -> appState.get('selectedDbTables')
-let dbTablesBatchDeleteLoading = false; // -> appState.get('dbTablesBatchDeleteLoading')
-let currentPageDbTables = [];       // -> appState.get('currentPageDbTables')
+// テーブル一覧選択状態（appStateへ移行済み）
+// let selectedDbTables = [];          // -> appState.get('selectedDbTables')
+// let dbTablesBatchDeleteLoading = false; // -> appState.get('dbTablesBatchDeleteLoading')
+// let currentPageDbTables = [];       // -> appState.get('currentPageDbTables')
 
-// テーブルデータプレビュー状態（TODO: appStateへ移行）
-let selectedTableForPreview = null; // -> appState.get('selectedTableForPreview')
-let tableDataPage = 1;              // -> appState.get('tableDataPage')
-let tableDataPageSize = 20;         // -> appState.get('tableDataPageSize')
-let tableDataTotalPages = 1;        // -> appState.get('tableDataTotalPages')
-let selectedTableDataRows = [];     // -> appState.get('selectedTableDataRows')
-let currentPageTableDataRows = [];  // -> appState.get('currentPageTableDataRows')
+// テーブルデータプレビュー状態（appStateへ移行済み）
+// let selectedTableForPreview = null; // -> appState.get('selectedTableForPreview')
+// let tableDataPage = 1;              // -> appState.get('tableDataPage')
+// let tableDataPageSize = 20;         // -> appState.get('tableDataPageSize')
+// let tableDataTotalPages = 1;        // -> appState.get('tableDataTotalPages')
+// let selectedTableDataRows = [];     // -> appState.get('selectedTableDataRows')
+// let currentPageTableDataRows = [];  // -> appState.get('currentPageTableDataRows')
 
 // ========================================
 // ユーティリティ関数（モジュールから直接使用）
 // ========================================
-// 注: 非推奨ラッパー関数は削除済み。
-// 以下のインポートを直接使用:
-// - authApiCall: APIコール
-// - utilsShowToast: トースト通知
-// - utilsShowLoading/utilsHideLoading: ローディング
-// - utilsFormatFileSize/utilsFormatDateTime: フォーマット
-// - utilsShowConfirmModal: 確認モーダル
 
 /**
  * 認証トークン付きのURLを生成
@@ -266,12 +258,6 @@ async function switchTab(tabName, event) {
 }
 
 // ========================================
-// 検索機能（search.jsモジュールを使用）
-// ========================================
-// 注: 検索機能はsrc/modules/search.jsに移行済み
-// window.searchModule.performSearch(), window.searchModule.clearSearchResults() を使用してください
-
-// ========================================
 // ページ画像化されたファイルの判定
 // ========================================
 
@@ -284,7 +270,7 @@ async function switchTab(tabName, event) {
  * @param {Array} allObjects - 全オブジェクトのリスト（親ファイルの存在確認用）
  * @returns {boolean} ページ画像化されたファイルの場合true
  */
-function isGeneratedPageImage(objectName, allObjects = allOciObjects) {
+function isGeneratedPageImage(objectName, allObjects = appState.get('allOciObjects')) {
   // page_001.pngのパターンにマッチするかチェック
   if (!/\/page_\d{3}\.png$/.test(objectName)) {
     return false;
@@ -768,8 +754,6 @@ function handleFileSelect(event) {
   if (file) {
     // appStateに保存
     appState.set('selectedFile', file);
-    // 後方互換性（TODO: 削除予定）
-    selectedFile = file;
     
     document.getElementById('uploadBtn').disabled = false;
     
@@ -792,8 +776,6 @@ function handleFileSelect(event) {
 function clearFileSelection() {
   // appStateをクリア
   appState.set('selectedFile', null);
-  // 後方互換性（TODO: 削除予定）
-  selectedFile = null;
   
   document.getElementById('fileInput').value = '';
   document.getElementById('uploadBtn').disabled = true;
@@ -801,7 +783,7 @@ function clearFileSelection() {
 }
 
 async function uploadDocument() {
-  if (!selectedFile) {
+  if (!appState.get('selectedFile')) {
     utilsShowToast('ファイルを選択してください', 'warning');
     return;
   }
@@ -810,7 +792,7 @@ async function uploadDocument() {
     utilsShowLoading('文書をアップロード中...');
     
     const formData = new FormData();
-    formData.append('file', selectedFile);
+    formData.append('file', appState.get('selectedFile'));
     
     const data = await authApiCall('/ai/api/documents/upload', {
       method: 'POST',
@@ -835,7 +817,7 @@ async function uploadDocument() {
 async function loadDocuments() {
   try {
     const data = await authApiCall('/ai/api/documents');
-    documentsCache = data.documents;
+    appState.set('documentsCache', data.documents);
     displayDocumentsList(data.documents);
   } catch (error) {
     utilsShowToast(`エラー: ${error.message}`, 'error');
@@ -845,19 +827,6 @@ async function loadDocuments() {
 // ========================================
 // OCI Object Storage一覧表示
 // ========================================
-
-// 状態管理
-let ociObjectsPage = 1;
-let ociObjectsPageSize = 20;
-let ociObjectsPrefix = "";
-let selectedOciObjects = [];
-let ociObjectsBatchDeleteLoading = false;
-let allOciObjects = []; // 全オブジェクトのキャッシュ（親子関係処理用）
-
-// フィルター状態
-let ociObjectsFilterPageImages = "all";  // all, done, not_done
-let ociObjectsFilterEmbeddings = "all";  // all, done, not_done
-let ociObjectsDisplayType = "files_only";  // files_only, files_and_images
 
 /**
  * 指定したフォルダの子オブジェクトをすべて取得
@@ -957,12 +926,12 @@ async function loadOciObjects() {
     utilsShowLoading('OCI Object Storage一覧を取得中...');
     
     const params = new URLSearchParams({
-      prefix: ociObjectsPrefix,
-      page: ociObjectsPage.toString(),
-      page_size: ociObjectsPageSize.toString(),
-      filter_page_images: ociObjectsFilterPageImages,
-      filter_embeddings: ociObjectsFilterEmbeddings,
-      display_type: ociObjectsDisplayType
+      prefix: appState.get('ociObjectsPrefix'),
+      page: appState.get('ociObjectsPage').toString(),
+      page_size: appState.get('ociObjectsPageSize').toString(),
+      filter_page_images: appState.get('ociObjectsFilterPageImages'),
+      filter_embeddings: appState.get('ociObjectsFilterEmbeddings'),
+      display_type: appState.get('ociObjectsDisplayType')
     });
     
     const data = await authApiCall(`/ai/api/oci/objects?${params}`);
@@ -977,14 +946,16 @@ async function loadOciObjects() {
     
     // 全オブジェクトキャッシュを更新（ページネーションで分割されているため、一度取得したものを保持）
     // 注: ページ変更時には前ページのデータも保持
+    const currentAllObjects = appState.get('allOciObjects');
     data.objects.forEach(obj => {
-      const existingIndex = allOciObjects.findIndex(o => o.name === obj.name);
+      const existingIndex = currentAllObjects.findIndex(o => o.name === obj.name);
       if (existingIndex >= 0) {
-        allOciObjects[existingIndex] = obj;
+        currentAllObjects[existingIndex] = obj;
       } else {
-        allOciObjects.push(obj);
+        currentAllObjects.push(obj);
       }
     });
+    appState.set('allOciObjects', currentAllObjects);
     
     displayOciObjectsList(data);
     
@@ -1328,11 +1299,10 @@ function handleOciObjectsJumpPage() {
  * ページ画像化フィルターを設定
  */
 window.setOciObjectsFilterPageImages = function(value) {
-  if (ociObjectsBatchDeleteLoading) return;
-  ociObjectsFilterPageImages = value;
-  ociObjectsPage = 1;  // フィルター変更時は1ページ目に戻る
-  selectedOciObjects = [];  // 選択状態をクリア
-  appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
+  if (appState.get('ociObjectsBatchDeleteLoading')) return;
+  appState.set('ociObjectsFilterPageImages', value);
+  appState.set('ociObjectsPage', 1);  // フィルター変更時は1ページ目に戻る
+  appState.set('selectedOciObjects', []);  // 選択状態をクリア
   loadOciObjects();
 }
 
@@ -1340,11 +1310,10 @@ window.setOciObjectsFilterPageImages = function(value) {
  * ベクトル化フィルターを設定
  */
 window.setOciObjectsFilterEmbeddings = function(value) {
-  if (ociObjectsBatchDeleteLoading) return;
-  ociObjectsFilterEmbeddings = value;
-  ociObjectsPage = 1;  // フィルター変更時は1ページ目に戻る
-  selectedOciObjects = [];  // 選択状態をクリア
-  appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
+  if (appState.get('ociObjectsBatchDeleteLoading')) return;
+  appState.set('ociObjectsFilterEmbeddings', value);
+  appState.set('ociObjectsPage', 1);  // フィルター変更時は1ページ目に戻る
+  appState.set('selectedOciObjects', []);  // 選択状態をクリア
   loadOciObjects();
 }
 
@@ -1366,11 +1335,10 @@ window.clearOciObjectsFilters = function() {
  * @param {string} value - 表示タイプ ('files_only' | 'files_and_images')
  */
 window.setOciObjectsDisplayType = function(value) {
-  if (ociObjectsBatchDeleteLoading) return;
-  ociObjectsDisplayType = value;
-  ociObjectsPage = 1;  // フィルター変更時は1ページ目に戻る
-  selectedOciObjects = [];  // 選択状態をクリア
-  appState.set('selectedOciObjects', []);  // oci.jsモジュールとの同期
+  if (appState.get('ociObjectsBatchDeleteLoading')) return;
+  appState.set('ociObjectsDisplayType', value);
+  appState.set('ociObjectsPage', 1);  // フィルター変更時は1ページ目に戻る
+  appState.set('selectedOciObjects', []);  // 選択状態をクリア
   loadOciObjects();
 }
 
@@ -1628,7 +1596,7 @@ window.downloadSelectedOciObjects = async function() {
   
   // トークンを確認
   const token = localStorage.getItem('loginToken');
-  if (!token && !debugMode) {
+  if (!token && !appState.get('debugMode')) {
     utilsShowToast('認証が必要です。ログインしてください', 'warning');
     showLoginModal();
     return;
@@ -1659,7 +1627,7 @@ window.downloadSelectedOciObjects = async function() {
       if (response.status === 401) {
         utilsHideLoading();
         ociObjectsBatchDeleteLoading = false;
-        if (requireLogin) {
+        if (appState.get('requireLogin')) {
           forceLogout();
         }
         throw new Error('無効または期限切れのトークンです');
@@ -1714,7 +1682,7 @@ window.convertSelectedOciObjectsToImages = async function() {
   
   // トークンを確認
   const token = localStorage.getItem('loginToken');
-  if (!token && !debugMode) {
+  if (!token && !appState.get('debugMode')) {
     utilsShowToast('認証が必要です。ログインしてください', 'warning');
     showLoginModal();
     return;
@@ -1756,7 +1724,7 @@ window.convertSelectedOciObjectsToImages = async function() {
       if (response.status === 401) {
         utilsHideLoading();
         ociObjectsBatchDeleteLoading = false;
-        if (requireLogin) {
+        if (appState.get('requireLogin')) {
           forceLogout();
         }
         throw new Error('無効または期限切れのトークンです');
@@ -1959,7 +1927,7 @@ window.vectorizeSelectedOciObjects = async function() {
   
   // トークンを確認
   const token = localStorage.getItem('loginToken');
-  if (!token && !debugMode) {
+  if (!token && !appState.get('debugMode')) {
     utilsShowToast('認証が必要です。ログインしてください', 'warning');
     showLoginModal();
     return;
@@ -2004,7 +1972,7 @@ window.vectorizeSelectedOciObjects = async function() {
       if (response.status === 401) {
         utilsHideLoading();
         ociObjectsBatchDeleteLoading = false;
-        if (requireLogin) {
+        if (appState.get('requireLogin')) {
           forceLogout();
         }
         throw new Error('無効または期限切れのトークンです');
@@ -4327,10 +4295,8 @@ async function loadConfig() {
     const response = await fetch(url);
     if (response.ok) {
       const config = await response.json();
-      debugMode = config.debug;
-      requireLogin = config.require_login;
       
-      // appStateにも設定（oci.js等のモジュールから参照されるため）
+      // appStateに設定（oci.js等のモジュールから参照されるため）
       appState.set('debugMode', config.debug);
       appState.set('requireLogin', config.require_login);
       appState.set('apiBase', API_BASE);
@@ -4409,9 +4375,8 @@ function forceLogout() {
   setAuthState(false, null, null);
   
   // 後方互換性のためグローバル変数もクリア
-  isLoggedIn = false;
-  loginToken = null;
-  loginUser = null;
+  // appStateをクリア
+  setAuthState(false, null, null);
   
   localStorage.removeItem('loginToken');
   localStorage.removeItem('loginUser');
@@ -4501,10 +4466,8 @@ async function handleLogin(event) {
       // ログイン成功 - appStateに保存
       setAuthState(true, data.token, data.username);
       
-      // 後方互換性のためグローバル変数も更新（TODO: 削除予定）
-      isLoggedIn = true;
-      loginToken = data.token;
-      loginUser = data.username;
+      // appStateに保存
+      setAuthState(true, data.token, data.username);
       
       // ローカルストレージに保存
       localStorage.setItem('loginToken', data.token);
@@ -4542,11 +4505,12 @@ async function handleLogin(event) {
  */
 async function handleLogout() {
   try {
-    if (loginToken) {
+    const currentToken = appState.get('loginToken');
+    if (currentToken) {
       const url = API_BASE ? `${API_BASE}/api/logout` : '/ai/api/logout';
       await fetch(url, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${loginToken}` }
+        headers: { 'Authorization': `Bearer ${currentToken}` }
       });
     }
   } catch (error) {
@@ -4556,9 +4520,7 @@ async function handleLogout() {
     setAuthState(false, null, null);
     
     // 後方互換性のためグローバル変数も更新（TODO: 削除予定）
-    isLoggedIn = false;
-    loginToken = null;
-    loginUser = null;
+    setAuthState(false, null, null);
     
     localStorage.removeItem('loginToken');
     localStorage.removeItem('loginUser');
@@ -4602,10 +4564,6 @@ async function checkLoginStatus() {
     // appStateに保存
     setAuthState(true, token, user);
     
-    // 後方互換性のためグローバル変数も更新（TODO: 削除予定）
-    loginToken = token;
-    loginUser = user;
-    isLoggedIn = true;
     updateUserInfo();
     
     // AI Assistantボタンを表示
@@ -4613,7 +4571,7 @@ async function checkLoginStatus() {
     if (copilotBtn) {
       copilotBtn.style.display = 'flex';
     }
-  } else if (requireLogin) {
+  } else if (appState.get('requireLogin')) {
     // ログインが必要な場合はログイン画面を表示
     showLoginModal();
   } else {
@@ -4961,11 +4919,11 @@ window.clearAllOciObjects = clearAllOciObjects;
  * AI Assistantパネルの表示/非表示を切り替え
  */
 function toggleCopilot() {
-  copilotOpen = !copilotOpen;
+  appState.set('copilotOpen', !appState.get('copilotOpen'));
   const panel = document.getElementById('copilotPanel');
   const btn = document.getElementById('copilotToggleBtn');
   
-  if (copilotOpen) {
+  if (appState.get('copilotOpen')) {
     panel.style.display = 'flex';
     btn.style.display = 'none';
   } else {
@@ -4978,11 +4936,11 @@ function toggleCopilot() {
  * AI Assistantパネルの最大化/最小化
  */
 function toggleCopilotExpand() {
-  copilotExpanded = !copilotExpanded;
+  appState.set('copilotExpanded', !appState.get('copilotExpanded'));
   const panel = document.getElementById('copilotPanel');
   const icon = document.getElementById('copilotExpandIcon');
   
-  if (copilotExpanded) {
+  if (appState.get('copilotExpanded')) {
     panel.classList.add('expanded');
     // 縮小アイコン
     icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>`;
@@ -5000,30 +4958,34 @@ async function sendCopilotMessage() {
   const input = document.getElementById('copilotInput');
   const message = input.value.trim();
   
-  if ((!message && copilotImages.length === 0) || copilotLoading) return;
+  if ((!message && appState.get('copilotImages').length === 0) || appState.get('copilotLoading')) return;
   
   // ユーザーメッセージを追加
-  copilotMessages.push({
+  const currentMessages = appState.get('copilotMessages');
+  currentMessages.push({
     role: 'user',
     content: message,
-    images: copilotImages.length > 0 ? [...copilotImages] : null
+    images: appState.get('copilotImages').length > 0 ? [...appState.get('copilotImages')] : null
   });
+  appState.set('copilotMessages', currentMessages);
   
   renderCopilotMessages();
   input.value = '';
   
   // 画像をクリア
-  const currentImages = [...copilotImages];
-  copilotImages = [];
+  const currentImages = [...appState.get('copilotImages')];
+  appState.set('copilotImages', []);
   renderCopilotImagesPreview();
   
   // アシスタントメッセージのプレースホルダーに「考え...」を表示
-  copilotMessages.push({
+  const updatedMessages = appState.get('copilotMessages');
+  updatedMessages.push({
     role: 'assistant',
     content: '考え...'
   });
+  appState.set('copilotMessages', updatedMessages);
   
-  copilotLoading = true;
+  appState.set('copilotLoading', true);
   renderCopilotMessages();
   
   try {
@@ -5032,12 +4994,12 @@ async function sendCopilotMessage() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(loginToken ? { 'Authorization': `Bearer ${loginToken}` } : {})
+        ...(appState.get('loginToken') ? { 'Authorization': `Bearer ${appState.get('loginToken')}` } : {})
       },
       body: JSON.stringify({
         message: message,
         context: null,
-        history: copilotMessages.slice(0, -1),
+        history: appState.get('copilotMessages').slice(0, -1),
         images: currentImages.length > 0 ? currentImages : null
       })
     });
@@ -5064,15 +5026,19 @@ async function sendCopilotMessage() {
           try {
             const data = JSON.parse(line.substring(6));
             if (data.done) {
-              copilotLoading = false;
+              appState.set('copilotLoading', false);
               renderCopilotMessages();
             } else if (data.content) {
               // 最初のチャンクの場合、「考え...」を置き換える
               if (isFirstChunk) {
-                copilotMessages[copilotMessages.length - 1].content = data.content;
+                const messages = appState.get('copilotMessages');
+                messages[messages.length - 1].content = data.content;
+                appState.set('copilotMessages', messages);
                 isFirstChunk = false;
               } else {
-                copilotMessages[copilotMessages.length - 1].content += data.content;
+                const messages = appState.get('copilotMessages');
+                messages[messages.length - 1].content += data.content;
+                appState.set('copilotMessages', messages);
               }
               renderCopilotMessages();
             }
@@ -5084,8 +5050,10 @@ async function sendCopilotMessage() {
     }
   } catch (error) {
     console.error('AI Assistantエラー:', error);
-    copilotMessages[copilotMessages.length - 1].content = `エラー: ${error.message}`;
-    copilotLoading = false;
+    const messages = appState.get('copilotMessages');
+    messages[messages.length - 1].content = `エラー: ${error.message}`;
+    appState.set('copilotMessages', messages);
+    appState.set('copilotLoading', false);
     renderCopilotMessages();
     utilsShowToast('AI Assistantの応答に失敗しました', 'error');
   }
@@ -5097,7 +5065,7 @@ async function sendCopilotMessage() {
 function renderCopilotMessages() {
   const messagesDiv = document.getElementById('copilotMessages');
   
-  if (copilotMessages.length === 0) {
+  if (appState.get('copilotMessages').length === 0) {
     messagesDiv.innerHTML = `
       <div class="text-center text-gray-500 py-8">
         <p class="text-sm">何でもお聞きください！</p>
@@ -5109,7 +5077,7 @@ function renderCopilotMessages() {
   // 画像データをグローバルに保存（イベントハンドラからアクセスするため）
   window._copilotImageData = {};
   
-  messagesDiv.innerHTML = copilotMessages.map((msg, msgIdx) => {
+  messagesDiv.innerHTML = appState.get('copilotMessages').map((msg, msgIdx) => {
     const isUser = msg.role === 'user';
     const content = isUser ? msg.content : renderMarkdown(msg.content);
     const imagesHtml = isUser && msg.images && msg.images.length > 0 ? `
@@ -5190,7 +5158,7 @@ function renderMarkdown(text) {
  * AI Assistant履歴をクリア
  */
 function clearCopilotHistory() {
-  copilotMessages = [];
+  appState.set('copilotMessages', []);
   renderCopilotMessages();
   utilsShowToast('会話履歴をクリアしました', 'success');
 }
@@ -5218,8 +5186,8 @@ async function startNewConversation() {
       { variant: 'info' }
     );
     if (confirmed) {
-      copilotMessages = [];
-      copilotImages = [];
+      appState.set('copilotMessages', []);
+      appState.set('copilotImages', []);
       renderCopilotMessages();
       utilsShowToast('新しい会話を開始しました', 'success');
     }
@@ -5235,13 +5203,13 @@ function addCopilotImagesFromFiles(files) {
   const MAX_IMAGES = 5;
   
   // 既存の画像数を確認
-  if (copilotImages.length >= MAX_IMAGES) {
+  if (appState.get('copilotImages').length >= MAX_IMAGES) {
     utilsShowToast(`画像は最大${MAX_IMAGES}枚までアップロードできます`, 'warning');
     return;
   }
   
   // 追加可能な枚数を計算
-  const remainingSlots = MAX_IMAGES - copilotImages.length;
+  const remainingSlots = MAX_IMAGES - appState.get('copilotImages').length;
   const filesToAdd = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, remainingSlots);
   
   if (filesToAdd.length < files.length) {
@@ -5251,10 +5219,12 @@ function addCopilotImagesFromFiles(files) {
   filesToAdd.forEach(file => {
     const reader = new FileReader();
     reader.onload = (e) => {
-      copilotImages.push({
+      const currentImages = appState.get('copilotImages');
+      currentImages.push({
         data_url: e.target.result,
         filename: file.name
       });
+      appState.set('copilotImages', currentImages);
       renderCopilotImagesPreview();
     };
     reader.readAsDataURL(file);
@@ -5284,13 +5254,13 @@ function handleCopilotPaste(event) {
   const MAX_IMAGES = 5;
   
   // 既存の画像数を確認
-  if (copilotImages.length >= MAX_IMAGES) {
+  if (appState.get('copilotImages').length >= MAX_IMAGES) {
     utilsShowToast(`画像は最大${MAX_IMAGES}枚までアップロードできます`, 'warning');
     return;
   }
   
   // 追加可能な枚数を計算
-  const remainingSlots = MAX_IMAGES - copilotImages.length;
+  const remainingSlots = MAX_IMAGES - appState.get('copilotImages').length;
   const itemsToAdd = imageItems.slice(0, remainingSlots);
   
   if (itemsToAdd.length < imageItems.length) {
@@ -5302,10 +5272,12 @@ function handleCopilotPaste(event) {
     if (file) {
       const reader = new FileReader();
       reader.onload = (e) => {
-        copilotImages.push({
+        const currentImages = appState.get('copilotImages');
+        currentImages.push({
           data_url: e.target.result,
           filename: file.name || `貼り付け画像_${Date.now()}.png`
         });
+        appState.set('copilotImages', currentImages);
         renderCopilotImagesPreview();
       };
       reader.readAsDataURL(file);
@@ -5320,14 +5292,14 @@ function renderCopilotImagesPreview() {
   const preview = document.getElementById('copilotImagesPreview');
   if (!preview) return;
   
-  if (copilotImages.length === 0) {
+  if (appState.get('copilotImages').length === 0) {
     preview.innerHTML = '';
     return;
   }
   
   preview.innerHTML = `
     <div style="display: flex; gap: 10px; align-items: center; overflow-x: auto; padding: 10px 2px 0 2px;">
-      ${copilotImages.map((img, i) => `
+      ${appState.get('copilotImages').map((img, i) => `
         <div style="position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; flex: 0 0 auto; background: #f8fafc;">
           <img src="${img.data_url}" style="width: 100%; height: 100%; object-fit: cover;" />
           <button type="button" onclick="removeCopilotImageAt(${i})" style="position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; border-radius: 9px; border: 0; background: rgba(15, 23, 42, 0.65); color: white; font-size: 12px; line-height: 18px; cursor: pointer;">❌</button>
@@ -5342,7 +5314,9 @@ function renderCopilotImagesPreview() {
  * 画像を削除
  */
 function removeCopilotImageAt(index) {
-  copilotImages.splice(index, 1);
+  const currentImages = appState.get('copilotImages');
+  currentImages.splice(index, 1);
+  appState.set('copilotImages', currentImages);
   renderCopilotImagesPreview();
 }
 
@@ -5350,7 +5324,7 @@ function removeCopilotImageAt(index) {
  * 全画像をクリア
  */
 function clearCopilotImages() {
-  copilotImages = [];
+  appState.set('copilotImages', []);
   renderCopilotImagesPreview();
 }
 
