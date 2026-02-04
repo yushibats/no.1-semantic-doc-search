@@ -1,6 +1,1714 @@
 /**
- * @file 文書管理モジュール
- * @description 文書のアップロード、管理、削除機能を提供
+ * OCI Object Storage管理モジュール
+ * 
+ * OCI Object Storageの操作、表示、フィルタリングを担当
  */
 
-// TODO: 文書管理機能の実装
+// ========================================
+// インポート文
+// ========================================
+import { appState, getSelectedOciObjects, toggleOciObjectSelection, setAllOciObjectsSelection } from '../state.js';
+import { apiCall as authApiCall, forceLogout as authForceLogout, showLoginModal as authShowLoginModal } from './auth.js';
+import { showLoading as utilsShowLoading, hideLoading as utilsHideLoading, showToast as utilsShowToast, showConfirmModal as utilsShowConfirmModal, updateStatusBadge as utilsUpdateStatusBadge } from './utils.js';
+
+// ========================================
+// OCI Objects管理
+// ========================================
+
+/**
+ * ページ画像化で生成されたファイルかどうかを判定
+ * @param {string} objectName - オブジェクト名
+ * @param {Array} allObjects - 全オブジェクトのリスト
+ * @returns {boolean} ページ画像化されたファイルの場合true
+ */
+export function isGeneratedPageImage(objectName, allObjects = []) {
+  const pageImagePattern = /\/page_\d{3}\.png$/;
+  if (!pageImagePattern.test(objectName)) {
+    return false;
+  }
+  
+  const lastSlashIndex = objectName.lastIndexOf('/');
+  if (lastSlashIndex === -1) {
+    return false;
+  }
+  
+  const parentFolderPath = objectName.substring(0, lastSlashIndex);
+  return allObjects.some(obj => {
+    const objNameWithoutExt = obj.name.replace(/\.[^.]+$/, '');
+    return objNameWithoutExt === parentFolderPath;
+  });
+}
+
+/**
+ * OCI Object Storage一覧を読み込み
+ * @param {boolean} showLoadingOverlay - ローディングオーバーレイを表示するか（デフォルト: true）
+ */
+export async function loadOciObjects(showLoadingOverlay = true) {
+  try {
+    if (showLoadingOverlay) {
+      utilsShowLoading('OCI Object Storage一覧を取得中...');
+    }
+    
+    const ociObjectsPage = appState.get('ociObjectsPage');
+    const ociObjectsPageSize = appState.get('ociObjectsPageSize');
+    const ociObjectsPrefix = appState.get('ociObjectsPrefix');
+    const ociObjectsFilterPageImages = appState.get('ociObjectsFilterPageImages');
+    const ociObjectsFilterEmbeddings = appState.get('ociObjectsFilterEmbeddings');
+    const ociObjectsDisplayType = appState.get('ociObjectsDisplayType');
+    
+    const params = new URLSearchParams({
+      prefix: ociObjectsPrefix,
+      page: ociObjectsPage.toString(),
+      page_size: ociObjectsPageSize.toString(),
+      filter_page_images: ociObjectsFilterPageImages,
+      filter_embeddings: ociObjectsFilterEmbeddings,
+      display_type: ociObjectsDisplayType
+    });
+    
+    const data = await authApiCall(`/ai/api/oci/objects?${params}`);
+    
+    if (showLoadingOverlay) {
+      utilsHideLoading();
+    }
+    
+    if (!data.success) {
+      utilsShowToast(`エラー: ${data.message || 'オブジェクト一覧取得失敗'}`, 'error');
+      updateDocumentsStatusBadge('エラー', 'error');
+      return;
+    }
+    
+    // 全オブジェクトキャッシュを更新
+    const allOciObjects = appState.get('allOciObjects') || [];
+    data.objects.forEach(obj => {
+      const existingIndex = allOciObjects.findIndex(o => o.name === obj.name);
+      if (existingIndex >= 0) {
+        allOciObjects[existingIndex] = obj;
+      } else {
+        allOciObjects.push(obj);
+      }
+    });
+    appState.set('allOciObjects', allOciObjects);
+    
+    displayOciObjectsList(data);
+    
+    // バッジを更新
+    const totalCount = data.pagination?.total || 0;
+    const statistics = data.statistics || { file_count: 0, page_image_count: 0, total_count: 0 };
+    
+    updateDocumentsStatusBadge(`${totalCount}件`, 'success');
+    updateDocumentsStatisticsBadges(statistics, 'success');
+    
+  } catch (error) {
+    utilsHideLoading();
+    utilsShowToast(`OCI Object Storage一覧取得エラー: ${error.message}`, 'error');
+    updateDocumentsStatusBadge('エラー', 'error');
+  }
+}
+
+/**
+ * OCI Object Storage一覧を表示
+ * @param {Object} data - OCI Objects データ
+ */
+export function displayOciObjectsList(data) {
+  const listDiv = document.getElementById('documentsList');
+  const objects = data.objects || [];
+  const pagination = data.pagination || {};
+  const allOciObjects = appState.get('allOciObjects') || [];
+  const selectedOciObjects = getSelectedOciObjects();
+  const ociObjectsBatchDeleteLoading = appState.get('ociObjectsBatchDeleteLoading');
+  const ociObjectsFilterPageImages = appState.get('ociObjectsFilterPageImages');
+  const ociObjectsFilterEmbeddings = appState.get('ociObjectsFilterEmbeddings');
+  const ociObjectsDisplayType = appState.get('ociObjectsDisplayType');
+  
+  // デバッグログ
+  console.log('========== displayOciObjectsList ==========');
+  console.log('現在表示中のオブジェクト:', objects.map(o => o.name));
+  console.log('selectedOciObjects:', selectedOciObjects);
+  
+  // 選択可能なオブジェクトをフィルタ
+  const selectableObjects = objects.filter(obj => !isGeneratedPageImage(obj.name, allOciObjects));
+  const allPageSelected = selectableObjects.length > 0 && selectableObjects.every(obj => selectedOciObjects.includes(obj.name));
+  
+  // フィルターUI
+  const filterHtml = `
+    <div class="flex items-center gap-4 mb-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-medium text-gray-600">📁 表示タイプ:</span>
+        <div class="flex gap-1">
+          <button 
+            onclick="window.ociModule.setDisplayType('files_only')" 
+            class="px-2.5 py-1 text-xs rounded-full transition-all ${ociObjectsDisplayType === 'files_only' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-100'}"
+          >
+            ファイルのみ
+          </button>
+          <button 
+            onclick="window.ociModule.setDisplayType('files_and_images')" 
+            class="px-2.5 py-1 text-xs rounded-full transition-all ${ociObjectsDisplayType === 'files_and_images' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-100'}"
+          >
+            ファイル+ページ画像
+          </button>
+        </div>
+      </div>
+      <div class="w-px h-6 bg-gray-300"></div>
+      <div class="flex items-center gap-2" style="display: none;">
+        <span class="text-xs font-medium text-gray-600">🖼️ ページ画像化:</span>
+        <div class="flex gap-1">
+          <button 
+            onclick="window.ociModule.setFilterPageImages('all')" 
+            class="px-2.5 py-1 text-xs rounded-full transition-all ${ociObjectsFilterPageImages === 'all' ? 'bg-gray-700 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-100'}"
+          >
+            すべて
+          </button>
+          <button 
+            onclick="window.ociModule.setFilterPageImages('done')" 
+            class="px-2.5 py-1 text-xs rounded-full transition-all ${ociObjectsFilterPageImages === 'done' ? 'bg-green-600 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-100'}"
+          >
+            ✓ 完了
+          </button>
+          <button 
+            onclick="window.ociModule.setFilterPageImages('not_done')" 
+            class="px-2.5 py-1 text-xs rounded-full transition-all ${ociObjectsFilterPageImages === 'not_done' ? 'bg-orange-500 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-100'}"
+          >
+            未実行
+          </button>
+        </div>
+      </div>
+      <div class="w-px h-6 bg-gray-300"></div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-medium text-gray-600">🔢 ベクトル化:</span>
+        <div class="flex gap-1">
+          <button 
+            onclick="window.ociModule.setFilterEmbeddings('all')" 
+            class="px-2.5 py-1 text-xs rounded-full transition-all ${ociObjectsFilterEmbeddings === 'all' ? 'bg-gray-700 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-100'}"
+          >
+            すべて
+          </button>
+          <button 
+            onclick="window.ociModule.setFilterEmbeddings('done')" 
+            class="px-2.5 py-1 text-xs rounded-full transition-all ${ociObjectsFilterEmbeddings === 'done' ? 'bg-green-600 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-100'}"
+          >
+            ✓ 完了
+          </button>
+          <button 
+            onclick="window.ociModule.setFilterEmbeddings('not_done')" 
+            class="px-2.5 py-1 text-xs rounded-full transition-all ${ociObjectsFilterEmbeddings === 'not_done' ? 'bg-orange-500 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-100'}"
+          >
+            未実行
+          </button>
+        </div>
+      </div>
+      ${(ociObjectsFilterPageImages !== 'all' || ociObjectsFilterEmbeddings !== 'all') ? `
+        <button 
+          onclick="window.ociModule.clearFilters()" 
+          class="ml-auto px-2.5 py-1 text-xs rounded-full bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 transition-all flex items-center gap-1"
+        >
+          <span>✕</span>
+          <span>フィルタークリア</span>
+        </button>
+      ` : ''}
+    </div>
+  `;
+  
+  // 空状態の表示
+  if (objects.length === 0) {
+    listDiv.innerHTML = `
+      <div>
+        ${filterHtml}
+        <div class="empty-state">
+          <div class="empty-state-icon">📁</div>
+          <div class="empty-state-title">オブジェクトがありません</div>
+          <div class="empty-state-subtitle">バケット: ${data.bucket_name || '-'}</div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  
+  // ボタン活性化条件の判定
+  // システム安全性: 処理中でもボタンは非活性化しない（クリック時に警告メッセージを表示）
+  // 操作可能性: 選択数が0の場合は、実行ボタンを非活性化
+  // 合理性: 「すべて選択」「すべて解除」は選択数に関係なく使用可能（ただし処理中は不可）
+  const isProcessing = ociObjectsBatchDeleteLoading;
+  const hasSelection = selectedOciObjects.length > 0;
+  const canSelectAction = !isProcessing; // 選択操作は処理中以外は常に可能
+  const canExecuteAction = hasSelection; // 実行操作は選択がある場合のみ可能（処理中でもボタンは活性化）
+  
+  // 選択ボタンHTML
+  const selectionButtonsHtml = `
+    <div class="flex items-center gap-2 mb-2">
+      <button 
+        class="px-3 py-1 text-xs border rounded transition-colors ${canSelectAction ? 'hover:bg-gray-100' : 'opacity-50 cursor-not-allowed'}" 
+        onclick="window.ociModule.selectAll()" 
+        ${canSelectAction ? '' : 'disabled'}
+        title="すべてのオブジェクトを選択"
+      >
+        すべて選択
+      </button>
+      <button 
+        class="px-3 py-1 text-xs border rounded transition-colors ${canSelectAction ? 'hover:bg-gray-100' : 'opacity-50 cursor-not-allowed'}" 
+        onclick="window.ociModule.clearAll()" 
+        ${canSelectAction ? '' : 'disabled'}
+        title="すべての選択を解除"
+      >
+        すべて解除
+      </button>
+      <button 
+        class="px-3 py-1 text-xs rounded transition-colors ${canExecuteAction ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}" 
+        onclick="window.ociModule.deleteSelected()" 
+        ${canExecuteAction ? '' : 'disabled'}
+        title="${canExecuteAction ? `選択されたアイテム（フォルダ配下の子アイテムを含む）を削除: ${selectedOciObjects.length}件` : '削除するオブジェクトを選択してください'}"
+      >
+        🗑️ 削除 (${selectedOciObjects.length}件)
+      </button>
+      <button 
+        class="px-3 py-1 text-xs rounded transition-colors ${canExecuteAction ? 'bg-blue-500 hover:bg-blue-600 text-white' : 'bg-blue-300 text-white cursor-not-allowed'}" 
+        onclick="window.ociModule.downloadSelected()" 
+        ${canExecuteAction ? '' : 'disabled'}
+        title="${canExecuteAction ? `選択されたアイテム（フォルダ配下の子アイテムを含む）をZIPでダウンロード: ${selectedOciObjects.length}件` : 'ダウンロードするオブジェクトを選択してください'}"
+      >
+        📥 ダウンロード (${selectedOciObjects.length}件)
+      </button>
+      <button 
+        class="hidden px-3 py-1 text-xs rounded transition-colors ${canExecuteAction ? 'bg-purple-500 hover:bg-purple-600 text-white' : 'bg-purple-300 text-white cursor-not-allowed'}" 
+        onclick="window.ociModule.convertToImages()" 
+        ${canExecuteAction ? '' : 'disabled'}
+        title="${canExecuteAction ? `選択されたファイル（フォルダ配下の子ファイルを含む）をページ毎に画像化: ${selectedOciObjects.length}件` : 'ページ画像化するファイルを選択してください'}"
+      >
+        🖼️ ページ画像化 (${selectedOciObjects.length}件)
+      </button>
+      <button 
+        class="px-3 py-1 text-xs rounded transition-colors ${canExecuteAction ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-green-300 text-white cursor-not-allowed'}" 
+        onclick="window.ociModule.vectorizeSelected()" 
+        ${canExecuteAction ? '' : 'disabled'}
+        title="${canExecuteAction ? `選択されたファイルの画像をベクトル化してDBに保存: ${selectedOciObjects.length}件` : 'ベクトル化するファイルを選択してください'}"
+      >
+        🔢 ベクトル化 (${selectedOciObjects.length}件)
+      </button>
+    </div>
+  `;
+  
+  // ページネーションUI
+  const paginationHtml = window.UIComponents?.renderPagination({
+    currentPage: pagination.current_page,
+    totalPages: pagination.total_pages,
+    totalItems: pagination.total,
+    startNum: pagination.start_row,
+    endNum: pagination.end_row,
+    onPrevClick: 'window.ociModule.prevPage()',
+    onNextClick: 'window.ociModule.nextPage()',
+    onJumpClick: 'window.ociModule.jumpToPage',
+    inputId: 'ociObjectsPageInput',
+    disabled: ociObjectsBatchDeleteLoading
+  }) || '';
+  
+  // テーブル行を生成
+  const tableRowsHtml = objects.map(obj => generateObjectRow(obj, allOciObjects, selectedOciObjects, ociObjectsBatchDeleteLoading)).join('');
+  
+  listDiv.innerHTML = `
+    <div>
+      ${filterHtml}
+      ${selectionButtonsHtml}
+      ${paginationHtml}
+      <div class="table-wrapper-scrollable">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 40px;"><input type="checkbox" id="ociObjectsHeaderCheckbox" onchange="window.ociModule.toggleSelectAll(this.checked)" ${allPageSelected ? 'checked' : ''} class="w-4 h-4 rounded" ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}></th>
+              <th>タイプ</th>
+              <th>名前</th>
+              <th>サイズ</th>
+              <th>作成日時</th>
+              <th style="text-align: center;" class="hidden">ページ画像化</th>
+              <th style="text-align: center;">ベクトル化</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRowsHtml}
+          </tbody>
+        </table>
+      </div>
+      ${paginationHtml}
+    </div>
+  `;
+}
+
+// ========================================
+// プライベートヘルパー関数
+// ========================================
+
+/**
+ * オブジェクト行のHTMLを生成
+ * @private
+ */
+function generateObjectRow(obj, allOciObjects, selectedOciObjects, ociObjectsBatchDeleteLoading) {
+  const isFolder = obj.name.endsWith('/');
+  const isPageImage = isGeneratedPageImage(obj.name, allOciObjects);
+  const icon = isFolder ? '📁' : '📄';
+  const isChecked = selectedOciObjects.includes(obj.name);
+  
+  // ページ画像化状態
+  const hasPageImages = obj.has_page_images || false;
+  const pageImagesStatusHtml = hasPageImages ? 
+    '<span class="badge badge-success">✓ 完了</span>' : 
+    '<span class="badge badge-neutral">-</span>';
+  
+  // ベクトル化状態
+  const hasEmbeddings = obj.has_embeddings || false;
+  const embeddingsStatusHtml = hasEmbeddings ? 
+    '<span class="badge badge-success">✓ 完了</span>' : 
+    '<span class="badge badge-neutral">-</span>';
+  
+  return `
+    <tr>
+      <td>
+        ${!isPageImage ? `
+          <input 
+            type="checkbox" 
+            ${isChecked ? 'checked' : ''} 
+            onchange="window.ociModule.toggleSelection('${obj.name.replace(/'/g, "\\'")}')" 
+            class="w-4 h-4 rounded"
+            ${ociObjectsBatchDeleteLoading ? 'disabled' : ''}
+          />
+        ` : ''}
+      </td>
+      <td>${icon}</td>
+      <td>${obj.name}</td>
+      <td>${obj.size ? formatBytes(obj.size) : '-'}</td>
+      <td>${obj.time_created || '-'}</td>
+      <td style="text-align: center;" class="hidden">${pageImagesStatusHtml}</td>
+      <td style="text-align: center;">${embeddingsStatusHtml}</td>
+    </tr>
+  `;
+}
+
+/**
+ * バイト数をフォーマット
+ * @private
+ */
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+}
+
+/**
+ * ドキュメントステータスバッジを更新
+ * @private
+ */
+function updateDocumentsStatusBadge(text, type) {
+  utilsUpdateStatusBadge('documentsStatusBadge', text, type);
+}
+
+/**
+ * ドキュメント統計バッジを更新
+ * @private
+ */
+function updateDocumentsStatisticsBadges(statistics, type) {
+  const fileCountBadge = document.getElementById('fileCountBadge');
+  const pageImageCountBadge = document.getElementById('pageImageCountBadge');
+  const totalCountBadge = document.getElementById('totalCountBadge');
+  
+  if (fileCountBadge) fileCountBadge.textContent = `ファイル: ${statistics.file_count}`;
+  if (pageImageCountBadge) pageImageCountBadge.textContent = `ページ画像: ${statistics.page_image_count}`;
+  if (totalCountBadge) totalCountBadge.textContent = `合計: ${statistics.total_count}`;
+}
+
+// ========================================
+// ページネーション操作
+// ========================================
+
+/**
+ * 前ページへ移動
+ */
+export function handleOciObjectsPrevPage() {
+  const currentPage = appState.get('ociObjectsPage');
+  if (currentPage > 1) {
+    appState.set('ociObjectsPage', currentPage - 1);
+    loadOciObjects();
+  }
+}
+
+/**
+ * 次ページへ移動
+ */
+export function handleOciObjectsNextPage() {
+  const currentPage = appState.get('ociObjectsPage');
+  const totalPages = appState.get('ociObjectsTotalPages') || 1;
+  if (currentPage < totalPages) {
+    appState.set('ociObjectsPage', currentPage + 1);
+    loadOciObjects();
+  }
+}
+
+/**
+ * 指定ページへジャンプ
+ */
+export function handleOciObjectsJumpPage() {
+  const input = document.getElementById('ociObjectsPageInput');
+  if (!input) return;
+  
+  const targetPage = parseInt(input.value);
+  const totalPages = appState.get('ociObjectsTotalPages') || 1;
+  
+  if (targetPage >= 1 && targetPage <= totalPages) {
+    appState.set('ociObjectsPage', targetPage);
+    loadOciObjects();
+  } else {
+    utilsShowToast(`ページ番号は1〜${totalPages}の範囲で指定してください`, 'warning');
+  }
+}
+
+// ========================================
+// 選択操作
+// ========================================
+
+/**
+ * オブジェクトの選択状態を切り替え
+ * @param {string} objectName - オブジェクト名
+ */
+export function toggleOciObjectSelectionHandler(objectName) {
+  const selectedOciObjects = getSelectedOciObjects();
+  const isSelected = selectedOciObjects.includes(objectName);
+  toggleOciObjectSelection(objectName, !isSelected);
+  
+  // UIを再描画して、ボタンの活性状態を更新
+  loadOciObjects(false);
+}
+
+/**
+ * ページ全体の選択状態を切り替え
+ * @param {boolean} checked - チェック状態
+ */
+export function toggleSelectAllOciObjects(checked) {
+  const allOciObjects = appState.get('allOciObjects') || [];
+  const objects = Array.from(document.querySelectorAll('.data-table tbody tr')).map((row, idx) => {
+    const nameCell = row.cells[2];
+    return nameCell ? nameCell.textContent : null;
+  }).filter(Boolean);
+  
+  const selectableObjects = objects.filter(name => !isGeneratedPageImage(name, allOciObjects));
+  setAllOciObjectsSelection(selectableObjects, checked);
+  
+  // 再描画
+  loadOciObjects();
+}
+
+/**
+ * すべて選択
+ */
+export function selectAllOciObjects() {
+  const allOciObjects = appState.get('allOciObjects') || [];
+  const selectableObjects = allOciObjects
+    .filter(obj => !isGeneratedPageImage(obj.name, allOciObjects))
+    .map(obj => obj.name);
+  
+  setAllOciObjectsSelection(selectableObjects, true);
+  loadOciObjects();
+}
+
+/**
+ * すべて解除
+ */
+export function clearAllOciObjects() {
+  appState.set('selectedOciObjects', []);
+  loadOciObjects();
+}
+
+// ========================================
+// フィルター操作
+// ========================================
+
+/**
+ * ページ画像化フィルターを設定
+ * @param {string} filter - フィルター値 ('all' | 'done' | 'not_done')
+ */
+export function setOciObjectsFilterPageImages(filter) {
+  appState.set('ociObjectsFilterPageImages', filter);
+  appState.set('ociObjectsPage', 1);
+  loadOciObjects();
+}
+
+/**
+ * ベクトル化フィルターを設定
+ * @param {string} filter - フィルター値 ('all' | 'done' | 'not_done')
+ */
+export function setOciObjectsFilterEmbeddings(filter) {
+  appState.set('ociObjectsFilterEmbeddings', filter);
+  appState.set('ociObjectsPage', 1);
+  loadOciObjects();
+}
+
+/**
+ * すべてのフィルターをクリア
+ */
+export function clearOciObjectsFilters() {
+  appState.set('ociObjectsFilterPageImages', 'all');
+  appState.set('ociObjectsFilterEmbeddings', 'all');
+  appState.set('ociObjectsPage', 1);
+  loadOciObjects();
+}
+
+/**
+ * 表示タイプフィルターを設定
+ * @param {string} displayType - 表示タイプ ('files_only' | 'files_and_images')
+ */
+export function setOciObjectsDisplayType(displayType) {
+  appState.set('ociObjectsDisplayType', displayType);
+  appState.set('ociObjectsPage', 1);
+  loadOciObjects();
+}
+
+// ========================================
+// バッチ操作
+// ========================================
+
+/**
+ * 選択されたOCIオブジェクトをZIPでダウンロード
+ */
+export async function downloadSelectedOciObjects() {
+  const selectedOciObjects = getSelectedOciObjects();
+  
+  if (selectedOciObjects.length === 0) {
+    utilsShowToast('ダウンロードするファイルを選択してください', 'warning');
+    return;
+  }
+  
+  const ociObjectsBatchDeleteLoading = appState.get('ociObjectsBatchDeleteLoading');
+  if (ociObjectsBatchDeleteLoading) {
+    utilsShowToast('処理中です。しばらくお待ちください', 'warning');
+    return;
+  }
+  
+  // トークンを確認（localStorageから直接取得 - referenceプロジェクトに準拠）
+  const loginToken = localStorage.getItem('loginToken');
+  const debugMode = appState.get('debugMode');
+  
+  if (!loginToken && !debugMode) {
+    utilsShowToast('認証が必要です。ログインしてください', 'warning');
+    authShowLoginModal();
+    return;
+  }
+  
+  try {
+    appState.set('ociObjectsBatchDeleteLoading', true);
+    utilsShowLoading(`${selectedOciObjects.length}件のファイルをZIPに圧縮中...`);
+    
+    // リクエストヘッダーを構築
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    
+    // トークンがある場合のみAuthorizationヘッダーを追加
+    if (loginToken) {
+      headers['Authorization'] = `Bearer ${loginToken}`;
+    }
+    
+    const response = await fetch('/ai/api/oci/objects/download', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        object_names: selectedOciObjects
+      })
+    });
+    
+    if (!response.ok) {
+      // 401エラーの場合は強制ログアウト（referenceプロジェクトに準拠）
+      if (response.status === 401) {
+        utilsHideLoading();
+        appState.set('ociObjectsBatchDeleteLoading', false);
+        const requireLogin = appState.get('requireLogin');
+        if (requireLogin) {
+          authForceLogout();
+        }
+        throw new Error('無効または期限切れのトークンです');
+      }
+      
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'ダウンロードに失敗しました');
+    }
+    
+    // ZIPファイルをダウンロード
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'documents.zip';
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    
+    utilsHideLoading();
+    appState.set('ociObjectsBatchDeleteLoading', false);
+    utilsShowToast(`${selectedOciObjects.length}件のファイルをダウンロードしました`, 'success');
+    
+    // 一覧を再読み込みして状態を同期
+    await loadOciObjects(false);
+    
+  } catch (error) {
+    console.error('ダウンロードエラー:', error);
+    utilsShowToast(`ダウンロードエラー: ${error.message}`, 'error');
+    
+    // エラー時も一覧を再読み込みして状態を同期
+    utilsHideLoading();
+    appState.set('ociObjectsBatchDeleteLoading', false);
+    await loadOciObjects(false);
+  }
+}
+
+/**
+ * 選択されたOCIオブジェクトをページ毎に画像化
+ */
+export async function convertSelectedOciObjectsToImages() {
+  const selectedOciObjects = getSelectedOciObjects();
+  
+  if (selectedOciObjects.length === 0) {
+    utilsShowToast('変換するファイルを選択してください', 'warning');
+    return;
+  }
+  
+  const ociObjectsBatchDeleteLoading = appState.get('ociObjectsBatchDeleteLoading');
+  if (ociObjectsBatchDeleteLoading) {
+    utilsShowToast('処理中です。しばらくお待ちください', 'warning');
+    return;
+  }
+  
+  // トークンを確認（localStorageから直接取得 - referenceプロジェクトに準拠）
+  const loginToken = localStorage.getItem('loginToken');
+  const debugMode = appState.get('debugMode');
+  
+  if (!loginToken && !debugMode) {
+    utilsShowToast('認証が必要です。ログインしてください', 'warning');
+    authShowLoginModal();
+    return;
+  }
+  
+  // 確認モーダルを表示
+  const confirmed = await utilsShowConfirmModal(
+    `選択された${selectedOciObjects.length}件のファイルを各ページPNG画像として同名フォルダに保存します。\n\n処理には時間がかかる場合があります。実行しますか？`,
+    'ページ画像化確認'
+  );
+  
+  if (!confirmed) {
+    return;
+  }
+  
+  try {
+    appState.set('ociObjectsBatchDeleteLoading', true);
+    utilsShowLoading('ページ画像化を準備中...\nサーバーに接続しています');
+    
+    // リクエストヘッダーを構築
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    
+    // トークンがある場合のみAuthorizationヘッダーを追加
+    if (loginToken) {
+      headers['Authorization'] = `Bearer ${loginToken}`;
+    }
+    
+    const response = await fetch('/ai/api/oci/objects/convert-to-images', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        object_names: selectedOciObjects
+      })
+    });
+    
+    if (!response.ok) {
+      // 401エラーの場合は強制ログアウト（referenceプロジェクトに準拠）
+      if (response.status === 401) {
+        utilsHideLoading();
+        appState.set('ociObjectsBatchDeleteLoading', false);
+        const requireLogin = appState.get('requireLogin');
+        if (requireLogin) {
+          authForceLogout();
+        }
+        throw new Error('無効または期限切れのトークンです');
+      }
+      
+      utilsHideLoading();
+      appState.set('ociObjectsBatchDeleteLoading', false);
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'ページ画像化に失敗しました');
+    }
+    
+    // SSE (Server-Sent Events) を使用して進捗状況を受信
+    await processStreamingResponse(response, selectedOciObjects.length, 'convert');
+    
+  } catch (error) {
+    console.error('ページ画像化エラー:', error);
+    utilsShowToast(`ページ画像化エラー: ${error.message}`, 'error');
+    
+    // エラー時も一覧を再読み込みして状態を同期
+    utilsHideLoading();
+    appState.set('ociObjectsBatchDeleteLoading', false);
+    await loadOciObjects(false);
+  }
+}
+
+/**
+ * 選択されたOCIオブジェクトをベクトル化してDBに保存
+ */
+export async function vectorizeSelectedOciObjects() {
+  const selectedOciObjects = getSelectedOciObjects();
+  
+  if (selectedOciObjects.length === 0) {
+    utilsShowToast('ベクトル化するファイルを選択してください', 'warning');
+    return;
+  }
+  
+  const ociObjectsBatchDeleteLoading = appState.get('ociObjectsBatchDeleteLoading');
+  if (ociObjectsBatchDeleteLoading) {
+    utilsShowToast('処理中です。しばらくお待ちください', 'warning');
+    return;
+  }
+  
+  // トークンを確認（localStorageから直接取得 - referenceプロジェクトに準拠）
+  const loginToken = localStorage.getItem('loginToken');
+  const debugMode = appState.get('debugMode');
+  
+  if (!loginToken && !debugMode) {
+    utilsShowToast('認証が必要です。ログインしてください', 'warning');
+    authShowLoginModal();
+    return;
+  }
+  
+  // 確認モーダルを表示
+  const confirmed = await utilsShowConfirmModal(
+    `選択された<strong>${selectedOciObjects.length}件のファイル</strong>を画像ベクトル化してデータベースに保存します。
+<warning>既存の画像イメージやembeddingがある場合は削除してから再作成します。</warning>
+<small>※ファイルが未画像化の場合は、自動的にページ画像化を実行してからベクトル化します。</small>
+処理には時間がかかる場合があります。実行しますか？`,
+    'ベクトル化確認',
+    { variant: 'warning' }
+  );
+  
+  if (!confirmed) {
+    console.log('❌ User cancelled vectorization');
+    return;
+  }
+  
+  console.log('✅ User confirmed vectorization');
+  console.log('✅ selectedOciObjects:', selectedOciObjects);
+  
+  try {
+    console.log('✅ Setting loading state...');
+    appState.set('ociObjectsBatchDeleteLoading', true);
+    
+    console.log('🔵 Before showProcessProgressUI:', selectedOciObjects);
+    
+    // メインページに進捗UIを表示
+    showProcessProgressUI(selectedOciObjects, 'vectorize');
+    
+    console.log('🔵 After showProcessProgressUI');
+    
+    // リクエストヘッダーを構築
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    
+    // トークンがある場合のみAuthorizationヘッダーを追加
+    if (loginToken) {
+      headers['Authorization'] = `Bearer ${loginToken}`;
+    }
+    
+    const response = await fetch('/ai/api/oci/objects/vectorize', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        object_names: selectedOciObjects
+      })
+    });
+    
+    if (!response.ok) {
+      // 401エラーの場合は強制ログアウト（referenceプロジェクトに準拠）
+      if (response.status === 401) {
+        hideProcessProgressUI();
+        appState.set('ociObjectsBatchDeleteLoading', false);
+        const requireLogin = appState.get('requireLogin');
+        if (requireLogin) {
+          authForceLogout();
+        }
+        throw new Error('無効または期限切れのトークンです');
+      }
+      
+      hideProcessProgressUI();
+      appState.set('ociObjectsBatchDeleteLoading', false);
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'ベクトル化に失敗しました');
+    }
+    
+    // SSE (Server-Sent Events) を使用して進捗状況を受信
+    await processStreamingResponse(response, selectedOciObjects.length, 'vectorize');
+    
+  } catch (error) {
+    hideProcessProgressUI();
+    appState.set('ociObjectsBatchDeleteLoading', false);
+    console.error('ベクトル化エラー:', error);
+    utilsShowToast(`ベクトル化エラー: ${error.message}`, 'error');
+    
+    // 選択をクリアして一覧を更新
+    appState.set('selectedOciObjects', []);
+    await loadOciObjects();
+  }
+}
+
+/**
+ * 選択されたオブジェクトを削除
+ */
+export async function deleteSelectedOciObjects() {
+  const selectedOciObjects = getSelectedOciObjects();
+  
+  if (selectedOciObjects.length === 0) {
+    utilsShowToast('削除するオブジェクトを選択してください', 'warning');
+    return;
+  }
+  
+  const count = selectedOciObjects.length;
+  const confirmed = await utilsShowConfirmModal(
+    `選択された${count}件のオブジェクトを削除しますか？\n\nこの操作は元に戻せません。`,
+    'オブジェクト削除の確認',
+    { variant: 'danger', confirmText: '削除' }
+  );
+  
+  if (!confirmed) {
+    return;
+  }
+  
+  // 処理中表示を設定
+  appState.set('ociObjectsBatchDeleteLoading', true);
+  
+  console.log('🔴 Before showProcessProgressUI (delete):', selectedOciObjects);
+  
+  // メインページに進捗UIを表示
+  showProcessProgressUI(selectedOciObjects, 'delete');
+  
+  console.log('🔴 After showProcessProgressUI (delete)');
+  
+  try {
+    // SSEストリーミング対応のAPI呼び出し
+    const loginToken = localStorage.getItem('loginToken');
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    // トークンがある場合のみAuthorizationヘッダーを追加
+    if (loginToken) {
+      headers['Authorization'] = `Bearer ${loginToken}`;
+    }
+    
+    const response = await fetch('/ai/api/oci/objects/delete', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        object_names: selectedOciObjects
+      })
+    });
+    
+    if (!response.ok) {
+      hideProcessProgressUI();
+      appState.set('ociObjectsBatchDeleteLoading', false);
+      const errorData = await response.json();
+      throw new Error(errorData.detail || '削除に失敗しました');
+    }
+    
+    // SSE (Server-Sent Events) を使用して進捗状況を受信
+    await processStreamingResponse(response, selectedOciObjects.length, 'delete');
+    
+  } catch (error) {
+    hideProcessProgressUI();
+    appState.set('ociObjectsBatchDeleteLoading', false);
+    console.error('削除エラー:', error);
+    utilsShowToast(`削除エラー: ${error.message}`, 'error');
+    
+    // 選択をクリアして一覧を更新
+    appState.set('selectedOciObjects', []);
+    await loadOciObjects();
+  }
+}
+
+// ========================================
+// ストリーミング処理関数
+// ========================================
+
+/**
+ * ストリーミングレスポンスの処理（共通）
+ * @private
+ */
+async function processStreamingResponse(response, totalFiles, operationType) {
+  console.log('🔴 processStreamingResponse called:', { totalFiles, operationType });
+  
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  
+  // ジョブIDをヘッダーから取得
+  const jobId = response.headers.get('X-Job-ID');
+  
+  let currentFileIndex = 0;
+  let currentPageIndex = 0;
+  let totalPages = 0;
+  let processedPages = 0;
+  let totalPagesAllFiles = 0;
+  let totalWorkers = 1; // 並列ワーカー数
+  
+  // 削除・ベクトル化はメインページ進捗UIを使用
+  const useProgressUI = operationType === 'delete' || operationType === 'vectorize';
+  
+  console.log('🔴 useProgressUI:', useProgressUI);
+  
+  // メインページ進捗UIを使用する場合は、既存のローディングオーバーレイを確実に削除
+  if (useProgressUI) {
+    console.log('🔴 Hiding loading overlay...');
+    utilsHideLoading();
+  }
+  
+  // イベント処理用の共通関数
+  const processEventLine = async (line) => {
+    if (!line.startsWith('data: ')) return;
+    
+    try {
+      const jsonStr = line.substring(6);
+      const data = JSON.parse(jsonStr);
+          
+          // イベントタイプごとに処理
+          switch(data.type) {
+            case 'start':
+              totalFiles = data.total_files;
+              totalWorkers = data.total_workers || 1;
+              if (useProgressUI) {
+                let overallStatus = operationType === 'vectorize' 
+                  ? `ベクトル化を開始しています... (並列ワーカー: ${totalWorkers})`
+                  : `削除を開始しています...`;
+                updateProcessProgressUI({ overallStatus, jobId });
+              } else {
+                let startMessage = `ファイルをページ画像化中... (0/${totalFiles})\n並列ワーカー: ${totalWorkers}`;
+                updateLoadingMessage(startMessage, 0, jobId);
+              }
+              break;
+                        
+            case 'heartbeat':
+              // ハートビートは接続維持のため、UIは更新せず接続続行を示す
+              console.log('ハートビート受信:', data.timestamp);
+              break;
+                        
+            case 'file_start':
+              currentFileIndex = data.file_index;
+              if (data.total_files) totalFiles = data.total_files;
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: '待機中...',
+                  progress: 0,
+                  overallStatus: `処理中: ${currentFileIndex - 1}/${totalFiles}件`,
+                  jobId
+                });
+              } else {
+                const fileStartProgress = (currentFileIndex - 1) / (totalFiles || 1);
+                let fileStartMessage = `ファイル ${currentFileIndex}/${totalFiles} 待機中...\n${data.file_name}`;
+                updateLoadingMessage(fileStartMessage, fileStartProgress, jobId);
+              }
+              break;
+            
+            case 'file_checking':
+              currentFileIndex = data.file_index;
+              if (data.total_files) totalFiles = data.total_files;
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: '🔍 DB確認中',
+                  progress: 20,
+                  jobId
+                });
+              } else {
+                const checkingProgress = (currentFileIndex - 1) / (totalFiles || 1);
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🔍 DB確認中`, checkingProgress, jobId);
+              }
+              break;
+            
+            case 'delete_existing_embeddings':
+              // 既存のembeddingを削除中
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: '🗑️ 既存ベクトルデータ削除中',
+                  progress: 30,
+                  jobId
+                });
+              } else {
+                const deleteEmbProgress = (currentFileIndex - 1) / (totalFiles || 1);
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🗑️ 既存ベクトルデータ削除中`, deleteEmbProgress, jobId);
+              }
+              break;
+            
+            case 'cleanup_start':
+              // 既存画像の確認開始
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: '🔍 既存画像を確認中',
+                  progress: 15,
+                  jobId
+                });
+              } else {
+                const cleanupStartProgress = totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🔍 既存画像を確認中`, cleanupStartProgress, jobId);
+              }
+              break;
+            
+            case 'cleanup_progress':
+              // 既存画像を削除中
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: `🗑️ 既存画像 ${data.cleanup_count}件を削除中`,
+                  progress: 25,
+                  jobId
+                });
+              } else {
+                const cleanupProgress = totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🗑️ 既存画像 ${data.cleanup_count}件を削除中`, cleanupProgress, jobId);
+              }
+              break;
+            
+            case 'cleanup_complete':
+              // 既存画像削除完了
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: `✓ 既存画像 ${data.deleted_count}件を削除完了`,
+                  progress: 35,
+                  jobId
+                });
+              } else {
+                const cleanupCompleteProgress = totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: ✓ 既存画像 ${data.deleted_count}件を削除完了`, cleanupCompleteProgress, jobId);
+              }
+              break;
+                        
+            case 'auto_convert_start':
+              // 自動ページ画像化開始
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: '📄 自動ページ画像化開始',
+                  progress: 40,
+                  jobId
+                });
+              } else {
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 📄 自動ページ画像化開始`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
+              }
+              utilsShowToast(`自動的にページ画像化を実行中: ${data.file_name}`, 'info');
+              break;
+            
+            case 'auto_convert_progress':
+              // 自動ページ画像化の進捗
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: `📤 ${data.total_pages}ページをアップロード中`,
+                  progress: 50,
+                  jobId
+                });
+              } else {
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 📤 ${data.total_pages}ページをアップロード中`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
+              }
+              break;
+            
+            case 'auto_convert_complete':
+              // 自動ページ画像化完了
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: `✓ ページ画像化完了 (${data.total_pages}ページ)`,
+                  progress: 60,
+                  jobId
+                });
+              } else {
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: ✓ ページ画像化完了 (${data.total_pages}ページ)`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
+              }
+              utilsShowToast(`ページ画像化完了: ${data.file_name} (${data.total_pages}ページ)`, 'success');
+              break;
+            
+            case 'vectorize_start':
+              // ベクトル化処理開始
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: `🚀 ベクトル化開始 (${data.total_pages}ページ)`,
+                  progress: 50,
+                  jobId
+                });
+              } else {
+                updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 🚀 ベクトル化開始 (${data.total_pages}ページ)`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
+              }
+              break;
+                        
+            case 'file_uploading':
+              currentFileIndex = data.file_index;
+              if (data.total_files) totalFiles = data.total_files;
+              if (useProgressUI) {
+                let statusMsg = operationType === 'vectorize' ? '🔄 ベクトル化中' : '🔄 削除中';
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: statusMsg,
+                  progress: 50,
+                  overallStatus: `処理中: ${currentFileIndex}/${totalFiles}件`,
+                  jobId
+                });
+              } else {
+                const processingProgress = totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0;
+                let uploadingMessage = `ファイル ${data.file_index}/${totalFiles}\n${data.file_name}\nステータス: 🔄 画像化中`;
+                updateLoadingMessage(uploadingMessage, processingProgress, jobId);
+              }
+              break;
+              
+            case 'page_progress':
+              currentPageIndex = data.page_index;
+              totalPages = data.total_pages;
+              const fileIdx = data.file_index || currentFileIndex || 1;
+              if (useProgressUI) {
+                const pageProgressPercent = totalPages > 0 ? Math.round((currentPageIndex / totalPages) * 50) + 50 : 50;
+                let pageStatusMsg = operationType === 'vectorize' 
+                  ? `🔄 ページ ${currentPageIndex}/${totalPages} をベクトル化中`
+                  : `🔄 ページ ${currentPageIndex}/${totalPages} を処理中`;
+                updateProcessProgressUI({
+                  fileIndex: fileIdx,
+                  status: pageStatusMsg,
+                  progress: pageProgressPercent,
+                  jobId
+                });
+              } else {
+                const pageProgress = operationType === 'convert' ?
+                  (totalPagesAllFiles > 0 ? (processedPages + 1) / totalPagesAllFiles : 0) :
+                  (totalFiles > 0 ? (fileIdx - 1 + (currentPageIndex || 0) / (totalPages || 1)) / totalFiles : 0);
+                updateLoadingMessage(`ファイル ${fileIdx}/${data.total_files || totalFiles}\nページ ${currentPageIndex}/${totalPages} を${operationType === 'convert' ? '画像化' : 'ベクトル化'}中...`, pageProgress, jobId);
+              }
+              processedPages++;
+              break;
+              
+            case 'pages_count':
+              totalPages = data.total_pages;
+              totalPagesAllFiles += totalPages;
+              break;
+              
+            case 'file_complete':
+              currentFileIndex = data.file_index || currentFileIndex;
+              const totalForComplete = data.total_files || totalFiles || 1;
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: currentFileIndex,
+                  status: '✓ 完了',
+                  progress: 100,
+                  isSuccess: true,
+                  overallStatus: `処理中: ${currentFileIndex}/${totalForComplete}件 完了`,
+                  jobId
+                });
+              } else {
+                const completedFileProgress = totalForComplete > 0 ? currentFileIndex / totalForComplete : 0;
+                let completeMessage = `ファイル ${currentFileIndex}/${totalForComplete} ✓ 完了\n${data.file_name}`;
+                updateLoadingMessage(completeMessage, completedFileProgress, jobId);
+              }
+              break;
+              
+            case 'file_error':
+              console.error(`${operationType === 'delete' ? 'オブジェクト' : 'ファイル'} ${data.file_index}/${data.total_files || totalFiles} エラー: ${data.error}`);
+              const totalForError = data.total_files || totalFiles || 1;
+              const errorFileIdx = data.file_index || currentFileIndex || 1;
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  fileIndex: errorFileIdx,
+                  status: `✗ エラー: ${data.error}`,
+                  progress: 100,
+                  isError: true,
+                  overallStatus: `処理中: ${errorFileIdx}/${totalForError}件`,
+                  jobId
+                });
+              } else {
+                const errorProgress = totalForError > 0 && errorFileIdx > 0 ? (errorFileIdx - 1) / totalForError : 0;
+                let errorMessage = `ファイル ${errorFileIdx}/${totalForError} ✗ エラー\n${data.file_name}\n${data.error}`;
+                updateLoadingMessage(errorMessage, errorProgress, jobId);
+              }
+              break;
+              
+            case 'cancelled':
+              utilsShowToast(`処理がキャンセルされました\n${data.message}`, 'info');
+              appState.set('selectedOciObjects', []);
+              
+              // フラグをクリアしてから確実に再描画
+              if (useProgressUI) {
+                hideProcessProgressUI();
+              } else {
+                utilsHideLoading();
+              }
+              appState.set('ociObjectsBatchDeleteLoading', false);
+              // メインページ進捗UIを使用している場合は、ローディングオーバーレイを表示しない
+              await loadOciObjects(!useProgressUI);
+              break;
+              
+            case 'error':
+              utilsShowToast(`エラー: ${data.message}`, 'error');
+              
+              // フラグをクリアしてから確実に再描画
+              if (useProgressUI) {
+                hideProcessProgressUI();
+              } else {
+                utilsHideLoading();
+              }
+              appState.set('ociObjectsBatchDeleteLoading', false);
+              await loadOciObjects(!useProgressUI);
+              break;
+              
+            case 'progress_update':
+              // 進捗状況のリアルタイム更新
+              const progressPercent = data.total_count > 0 ? data.completed_count / data.total_count : 0;
+              if (useProgressUI) {
+                updateProcessProgressUI({
+                  overallStatus: `処理中: ${data.completed_count}/${data.total_count} | 成功: ${data.success_count}件 | 失敗: ${data.failed_count}件`,
+                  jobId
+                });
+              } else {
+                updateLoadingMessage(
+                  `処理中: ${data.completed_count}/${data.total_count}\n成功: ${data.success_count}件 | 失敗: ${data.failed_count}件`,
+                  progressPercent,
+                  jobId
+                );
+              }
+              // 注: progress_update時にUI更新を行わない（処理中フラグがtrueのため、チェックボックスがdisabledになり、ユーザーが選択できなくなる）
+              // 最終的にcompleteイベントでUIを更新する
+              break;
+              
+            case 'sync_complete':
+              // すべての処理が完了し、状態が完全に同期された
+              console.log('同期完了イベント受信:', data);
+              break;
+              
+            case 'complete':
+              appState.set('ociObjectsBatchDeleteLoading', false);
+              
+              if (useProgressUI) {
+                // メインページ進捗UIに完了表示
+                let finalStatus = data.success 
+                  ? `✓ すべて完了しました (${data.success_count}件)`
+                  : `完了: 成功 ${data.success_count}件 | 失敗 ${data.failed_count}件`;
+                updateProcessProgressUI({ overallStatus: finalStatus });
+                showProcessProgressCloseButton();
+              } else {
+                utilsHideLoading();
+              }
+              
+              if (data.success) {
+                utilsShowToast(data.message, 'success');
+              } else {
+                utilsShowToast(`${data.message}\n成功: ${data.success_count}件、失敗: ${data.failed_count}件`, 'warning');
+              }
+              
+              let operationName = '';
+              if (operationType === 'convert') {
+                operationName = 'ページ画像化';
+              } else if (operationType === 'vectorize') {
+                operationName = 'ベクトル化';
+              } else if (operationType === 'delete') {
+                operationName = '削除';
+              }
+              console.log(`${operationName}結果:`, data.results || data);
+              
+              // 選択をクリアして一覧を更新（最終同期）
+              appState.set('selectedOciObjects', []);
+              // 短時間待機してからリストを更新（バックエンドの処理完了を保証）
+              await new Promise(resolve => setTimeout(resolve, 500));
+              // メインページ進捗UIを使用している場合は、ローディングオーバーレイを表示しない
+              await loadOciObjects(!useProgressUI);
+              break;
+          }
+    } catch (parseError) {
+      console.error('JSONパースエラー:', parseError, '行:', line);
+    }
+  };
+  
+  while (true) {
+    const { done, value } = await reader.read();
+    
+    if (done) {
+      // ストリーム終了時にデコーダをフラッシュ
+      buffer += decoder.decode(new Uint8Array(), { stream: false });
+      
+      // バッファに残っているデータを処理（最後のcomplete/sync_completeイベント等）
+      if (buffer.trim()) {
+        const remainingLines = buffer.split('\n');
+        for (const line of remainingLines) {
+          await processEventLine(line);
+        }
+      }
+      break;
+    }
+    
+    // バッファに追加
+    buffer += decoder.decode(value, { stream: true });
+    
+    // 行ごとに処理
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // 最後の不完全な行をバッファに戻す
+    
+    for (const line of lines) {
+      await processEventLine(line);
+    }
+  }
+}
+
+/**
+ * ローディングメッセージを更新（プログレスバー付き、キャンセルボタン対応）
+ * @private
+ * @param {string} message - 表示するメッセージ
+ * @param {number|null} progress - 進捗率 (0-1)
+ * @param {string|null} jobId - ジョブID（キャンセル用）
+ */
+function updateLoadingMessage(message, progress = null, jobId = null) {
+  // メインページ進捗UIが表示されている場合は、ローディングオーバーレイを更新しない
+  const processProgressDiv = document.getElementById('processProgress');
+  if (processProgressDiv && processProgressDiv.style.display !== 'none') {
+    console.log('ℹ️ メインページ進捗UIが表示中のため、updateLoadingMessageをスキップ');
+    return;
+  }
+  
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  if (!loadingOverlay) return;
+  
+  // メッセージを更新
+  const textDiv = loadingOverlay.querySelector('.loading-overlay-text');
+  if (textDiv) {
+    textDiv.innerHTML = message.replace(/\n/g, '<br>');
+  }
+  
+  // プログレスバーを更新（utils.jsのshowLoadingで作成済みの要素を使用）
+  const progressContainer = loadingOverlay.querySelector('.loading-progress-container');
+  if (progressContainer) {
+    if (progress !== null && progress !== undefined) {
+      progressContainer.classList.remove('hidden');
+      // NaN、Infinity、-Infinityをゼロに変換
+      const validProgress = (typeof progress === 'number' && isFinite(progress)) ? progress : 0;
+      const clampedProgress = Math.max(0, Math.min(1, validProgress));
+      const percentage = Math.round(clampedProgress * 100);
+      
+      const progressBar = progressContainer.querySelector('.loading-progress-bar');
+      const progressPercent = progressContainer.querySelector('.loading-progress-percent');
+      
+      if (progressBar) {
+        progressBar.style.width = `${percentage}%`;
+      }
+      if (progressPercent) {
+        progressPercent.textContent = `${percentage}%`;
+      }
+    } else {
+      progressContainer.classList.add('hidden');
+    }
+  }
+  
+  // キャンセルボタンを更新（utils.jsのshowLoadingで作成済みの要素を使用）
+  const cancelContainer = loadingOverlay.querySelector('.loading-cancel-container');
+  if (cancelContainer) {
+    if (jobId) {
+      cancelContainer.classList.remove('hidden');
+      // XSS対策: jobIdをエスケープ
+      const safeJobId = jobId.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      cancelContainer.innerHTML = `
+        <button 
+          onclick="window.cancelCurrentJob && window.cancelCurrentJob('${safeJobId}')" 
+          class="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
+        >
+          キャンセル
+        </button>
+      `;
+    } else {
+      cancelContainer.classList.add('hidden');
+      cancelContainer.innerHTML = '';
+    }
+  }
+}
+
+// ========================================
+// メインページ進捗表示UI（削除・ベクトル化用）
+// ========================================
+
+// 処理中のファイル情報を保持
+let processTargetFiles = [];
+let processOperationType = null;
+let processJobId = null;
+
+/**
+ * 処理進捗UIを表示（削除・ベクトル化用）
+ * @param {Array<string>} objectNames - 対象オブジェクト名の配列
+ * @param {string} operationType - 操作種別 ('delete' | 'vectorize')
+ */
+function showProcessProgressUI(objectNames, operationType) {
+  console.log('✅ showProcessProgressUI called:', { objectNames, operationType });
+  
+  // 既存のローディングオーバーレイを非表示にする
+  utilsHideLoading();
+  
+  // 文書管理タブに切り替え（メインページに進捗UIを表示するため）
+  const documentManagementTab = document.querySelector('[onclick="switchTab(\'documentManagement\')"]');
+  if (documentManagementTab && !document.getElementById('documentManagement').classList.contains('active')) {
+    console.log('✅ Switching to documentManagement tab');
+    documentManagementTab.click();
+  }
+  
+  const progressDiv = document.getElementById('processProgress');
+  console.log('✅ progressDiv found:', progressDiv);
+  
+  if (!progressDiv) {
+    console.error('❌ processProgress element not found!');
+    return;
+  }
+  
+  processTargetFiles = objectNames;
+  processOperationType = operationType;
+  progressDiv.style.display = 'block';
+  
+  console.log('✅ progressDiv display set to block');
+  
+  const totalFiles = objectNames.length;
+  const operationLabel = operationType === 'delete' ? 'オブジェクトを削除中' : 'ファイルをベクトル化中';
+  const operationIcon = operationType === 'delete' ? '🗑️' : '🔢';
+  
+  // 各ファイルのHTMLを生成
+  let filesHtml = '';
+  objectNames.forEach((objName, index) => {
+    const displayName = objName.includes('/') ? objName.split('/').pop() || objName : objName;
+    const safeDisplayName = displayName.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // XSS対策: title属性用にエスケープ
+    const safeTitleName = objName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    filesHtml += `
+      <div id="process-file-${index}" class="flex items-start gap-2 p-3 rounded bg-gray-50 border border-gray-200" style="margin-bottom: 8px;">
+        <div class="flex-1">
+          <div class="text-sm font-medium text-gray-800" title="${safeTitleName}">${safeDisplayName}</div>
+          <div class="flex items-center gap-2 mt-1">
+            <div class="flex-1 bg-gray-200 rounded-full h-2">
+              <div id="process-progress-bar-${index}" class="bg-blue-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+            <span id="process-progress-percent-${index}" class="text-xs font-semibold text-gray-600" style="min-width: 40px;">0%</span>
+          </div>
+          <div id="process-status-${index}" class="text-xs text-gray-500 mt-1">待機中...</div>
+        </div>
+      </div>
+    `;
+  });
+  
+  const borderColor = operationType === 'delete' ? 'border-red-400' : 'border-purple-400';
+  
+  progressDiv.innerHTML = `
+    <div class="bg-white border-2 ${borderColor} rounded-lg p-4" style="margin-bottom: 16px;">
+      <div class="mb-3 pb-3 border-b border-gray-200 flex items-center justify-between">
+        <div>
+          <div class="text-base font-bold text-gray-800 mb-1">${operationIcon} ${operationLabel}</div>
+          <div class="text-xs text-gray-600">対象ファイル: ${totalFiles}件</div>
+        </div>
+        <button 
+          id="closeProcessProgressBtn" 
+          onclick="window.ociModule.closeProcessProgress()" 
+          class="text-gray-400 hover:text-gray-600 transition-colors" 
+          style="display: none; font-size: 24px; line-height: 1; padding: 4px;"
+          title="閉じる"
+        >
+          ✕
+        </button>
+      </div>
+      
+      <div id="process-files-container" style="max-height: 400px; overflow-y: auto;">
+        ${filesHtml}
+      </div>
+      
+      <div class="mt-3 pt-3 border-t border-gray-200">
+        <div id="process-overall-status" class="text-sm font-semibold text-gray-700">準備中...</div>
+      </div>
+      
+      <div id="process-cancel-container" class="mt-3 hidden">
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 処理進捗UIを更新
+ * @param {Object} params - 更新パラメータ
+ * @param {number} params.fileIndex - ファイルインデックス (1始まり)
+ * @param {string} params.status - ステータスメッセージ
+ * @param {number} params.progress - 進捗率 (0-100)
+ * @param {boolean} params.isSuccess - 成功フラグ
+ * @param {boolean} params.isError - エラーフラグ
+ * @param {string} params.overallStatus - 全体ステータス
+ * @param {string} params.jobId - ジョブID（キャンセル用）
+ */
+function updateProcessProgressUI(params) {
+  const { fileIndex, status, progress, isSuccess, isError, overallStatus, jobId } = params;
+  
+  // ジョブIDを保存
+  if (jobId) {
+    processJobId = jobId;
+    // キャンセルボタンを表示
+    const cancelContainer = document.getElementById('process-cancel-container');
+    if (cancelContainer) {
+      cancelContainer.classList.remove('hidden');
+      // XSS対策: jobIdをエスケープ
+      const safeJobId = jobId.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      cancelContainer.innerHTML = `
+        <button 
+          onclick="window.cancelCurrentJob && window.cancelCurrentJob('${safeJobId}')" 
+          class="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
+        >
+          キャンセル
+        </button>
+      `;
+    }
+  }
+  
+  // ファイルの進捗を更新
+  if (fileIndex !== undefined && fileIndex >= 1) {
+    const idx = fileIndex - 1; // 0始まりに変換
+    const fileDiv = document.getElementById(`process-file-${idx}`);
+    const progressBar = document.getElementById(`process-progress-bar-${idx}`);
+    const progressPercent = document.getElementById(`process-progress-percent-${idx}`);
+    const statusDiv = document.getElementById(`process-status-${idx}`);
+    
+    if (progressBar && progress !== undefined) {
+      progressBar.style.width = `${progress}%`;
+    }
+    if (progressPercent && progress !== undefined) {
+      progressPercent.textContent = `${progress}%`;
+    }
+    if (statusDiv && status) {
+      statusDiv.textContent = status;
+    }
+    
+    // 色の変更
+    if (fileDiv) {
+      if (isSuccess) {
+        fileDiv.classList.remove('bg-gray-50', 'border-gray-200', 'bg-red-50', 'border-red-200');
+        fileDiv.classList.add('bg-green-50', 'border-green-200');
+        if (progressBar) {
+          progressBar.classList.remove('bg-blue-500', 'bg-red-500');
+          progressBar.classList.add('bg-green-500');
+        }
+        if (statusDiv) {
+          statusDiv.classList.remove('text-gray-500', 'text-red-600');
+          statusDiv.classList.add('text-green-600');
+        }
+      } else if (isError) {
+        fileDiv.classList.remove('bg-gray-50', 'border-gray-200', 'bg-green-50', 'border-green-200');
+        fileDiv.classList.add('bg-red-50', 'border-red-200');
+        if (progressBar) {
+          progressBar.classList.remove('bg-blue-500', 'bg-green-500');
+          progressBar.classList.add('bg-red-500');
+        }
+        if (statusDiv) {
+          statusDiv.classList.remove('text-gray-500', 'text-green-600');
+          statusDiv.classList.add('text-red-600');
+        }
+      }
+    }
+  }
+  
+  // 全体ステータスを更新
+  if (overallStatus) {
+    const overallStatusDiv = document.getElementById('process-overall-status');
+    if (overallStatusDiv) {
+      // XSS対策: textContentを使用
+      overallStatusDiv.textContent = overallStatus;
+    }
+  }
+}
+
+/**
+ * 処理進捗UIを非表示
+ */
+function hideProcessProgressUI() {
+  const progressDiv = document.getElementById('processProgress');
+  if (progressDiv) {
+    progressDiv.style.display = 'none';
+  }
+  processTargetFiles = [];
+  processOperationType = null;
+  processJobId = null;
+  
+  // 重要: 処理中フラグをリセットして、ボタンを活性化できるようにする
+  appState.set('ociObjectsBatchDeleteLoading', false);
+  
+  // UIを更新して、ボタンの状態を反映
+  loadOciObjects(false);
+}
+
+/**
+ * 処理完了時に閉じるボタンを表示
+ */
+function showProcessProgressCloseButton() {
+  const closeBtn = document.getElementById('closeProcessProgressBtn');
+  if (closeBtn) {
+    closeBtn.style.display = 'block';
+  }
+  // キャンセルボタンを非表示
+  const cancelContainer = document.getElementById('process-cancel-container');
+  if (cancelContainer) {
+    cancelContainer.classList.add('hidden');
+    cancelContainer.innerHTML = '';
+  }
+}
+
+/**
+ * 処理進捗UIを手動で閉じる
+ */
+function closeProcessProgress() {
+  hideProcessProgressUI();
+  // 選択状態をクリアして、UI全体を更新
+  appState.set('selectedOciObjects', []);
+}
+
+// ========================================
+// エクスポート設定
+// ========================================
+
+// windowオブジェクトに登録
+window.ociModule = {
+  loadOciObjects,
+  displayOciObjectsList,
+  isGeneratedPageImage,
+  prevPage: handleOciObjectsPrevPage,
+  nextPage: handleOciObjectsNextPage,
+  jumpToPage: handleOciObjectsJumpPage,
+  toggleSelection: toggleOciObjectSelectionHandler,
+  toggleSelectAll: toggleSelectAllOciObjects,
+  selectAll: selectAllOciObjects,
+  clearAll: clearAllOciObjects,
+  setFilterPageImages: setOciObjectsFilterPageImages,
+  setFilterEmbeddings: setOciObjectsFilterEmbeddings,
+  clearFilters: clearOciObjectsFilters,
+  setDisplayType: setOciObjectsDisplayType,
+  downloadSelected: downloadSelectedOciObjects,
+  convertToImages: convertSelectedOciObjectsToImages,
+  vectorizeSelected: vectorizeSelectedOciObjects,
+  deleteSelected: deleteSelectedOciObjects,
+  closeProcessProgress: closeProcessProgress
+};
+
+// デフォルトエクスポート
+export default {
+  loadOciObjects,
+  displayOciObjectsList,
+  isGeneratedPageImage,
+  handleOciObjectsPrevPage,
+  handleOciObjectsNextPage,
+  handleOciObjectsJumpPage,
+  toggleOciObjectSelectionHandler,
+  toggleSelectAllOciObjects,
+  selectAllOciObjects,
+  clearAllOciObjects,
+  setOciObjectsFilterPageImages,
+  setOciObjectsFilterEmbeddings,
+  clearOciObjectsFilters,
+  setOciObjectsDisplayType,
+  downloadSelectedOciObjects,
+  convertSelectedOciObjectsToImages,
+  vectorizeSelectedOciObjects,
+  deleteSelectedOciObjects
+};

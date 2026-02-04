@@ -15,7 +15,7 @@ import {
   vectorizeSelectedOciObjects as ociVectorizeSelectedOciObjects,
   deleteSelectedOciObjects as ociDeleteSelectedOciObjects,
   loadOciObjects as ociLoadOciObjects
-} from './src/modules/oci.js';
+} from './src/modules/document.js';
 import { 
   loadDbConnectionSettings, 
   refreshDbConnectionFromEnv, 
