@@ -14,6 +14,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -78,11 +79,34 @@ from app.services.image_vectorizer import image_vectorizer
 from app.services.parallel_processor import parallel_processor, JobManager
 from app.utils.auth_util import do_auth, get_username_from_connection_string
 
+# ========================================
+# アプリケーションライフサイクル
+# ========================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """アプリケーションのライフサイクル管理"""
+    # startup処理（必要に応じて追加）
+    yield
+    # shutdown処理
+    logger.info("アプリケーションシャットダウン開始...")
+    
+    # データベースサービスのシャットダウン
+    try:
+        from app.services.database_service import database_service
+        database_service.shutdown()
+    except Exception as e:
+        logger.error(f"データベースサービスシャットダウンエラー: {e}")
+    
+    await parallel_processor.shutdown()
+    logger.info("アプリケーションシャットダウン完了")
+
 # FastAPIアプリケーション初期化
 app = FastAPI(
     title="セマンティック文書検索システムAPI",
     version="0.1.0",
-    description="OCI Object Storageベースのセマンティック文書検索システム"
+    description="OCI Object Storageベースのセマンティック文書検索システム",
+    lifespan=lifespan
 )
 
 # CORS設定
@@ -1747,7 +1771,7 @@ async def get_img_redirect(bucket: str, object_name: str):
 # DB管理
 # ========================================
 
-@app.get("/db/settings", response_model=DatabaseSettingsResponse)
+@app.get("/settings/database", response_model=DatabaseSettingsResponse)
 async def get_db_settings():
     """DB設定を取得（接続確認なし - パフォーマンス最適化）"""
     try:
@@ -1766,7 +1790,7 @@ async def get_db_settings():
         logger.error(f"DB設定取得エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/db/settings")
+@app.post("/settings/database")
 async def save_db_settings(settings: DatabaseSettings):
     """DB設定を保存"""
     try:
@@ -1782,7 +1806,7 @@ async def save_db_settings(settings: DatabaseSettings):
         logger.error(f"DB設定保存エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/db/test", response_model=DatabaseConnectionTestResponse)
+@app.post("/settings/database/test", response_model=DatabaseConnectionTestResponse)
 async def test_db_connection(request: DatabaseConnectionTestRequest):
     """DB接続テスト"""
     try:
@@ -1805,7 +1829,7 @@ async def test_db_connection(request: DatabaseConnectionTestRequest):
             message=f"接続テストエラー: {str(e)}"
         )
 
-@app.get("/db/info", response_model=DatabaseInfoResponse)
+@app.get("/database/info", response_model=DatabaseInfoResponse)
 async def get_db_info():
     """データベース情報を取得"""
     try:

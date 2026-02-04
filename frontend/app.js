@@ -4322,7 +4322,7 @@ async function refreshDbStorage() {
 async function loadConfig() {
   try {
     // API_BASEが空の場合は相対パス、設定されている場合は絶対パス
-    const url = API_BASE ? `${API_BASE}/api/config` : '/ai/api/config';
+    const url = API_BASE ? `${API_BASE}/config` : '/ai/config';
     const response = await fetch(url);
     if (response.ok) {
       const config = await response.json();
@@ -5560,7 +5560,7 @@ async function refreshObjectStorageSettings() {
     utilsShowLoading('.envからObject Storage設定を再取得中...');
     
     // OCI設定を取得
-    const data = await authApiCall('/ai/api/oci/settings');
+    const data = await authApiCall('/ai/oci/settings');
     const settings = data.settings;
     
     // ociSettingsとociSettingsStatusを更新
