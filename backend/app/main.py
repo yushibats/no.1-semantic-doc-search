@@ -2698,7 +2698,7 @@ async def convert_documents_to_images(request: DocumentConvertRequest):
         }
     )
 
-@app.post("/api/jobs/{job_id}/cancel")
+@app.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str):
     """
     実行中のジョブをキャンセル
@@ -2711,7 +2711,7 @@ async def cancel_job(job_id: str):
         logger.warning(f"ジョブキャンセル失敗（見つからないか既に完了）: job_id={job_id}")
         raise HTTPException(status_code=404, detail="ジョブが見つからないか、既に完了しています")
 
-@app.get("/api/jobs/{job_id}/status")
+@app.get("/jobs/{job_id}/status")
 async def get_job_status(job_id: str):
     """
     ジョブの状態を取得

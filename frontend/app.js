@@ -1361,7 +1361,9 @@ window.cancelCurrentJob = async function(jobId) {
   
   try {
     const token = localStorage.getItem('loginToken');
-    const headers = {};
+    const headers = {
+      'Content-Type': 'application/json'
+    };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
