@@ -214,25 +214,6 @@ def save_documents_metadata(documents: List[dict]):
         json.dump(documents, f, ensure_ascii=False, indent=2)
 
 # ========================================
-# アプリケーションイベント
-# ========================================
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """アプリケーションシャットダウン時のクリーンアップ"""
-    logger.info("アプリケーションシャットダウン開始...")
-    
-    # データベースサービスのシャットダウン
-    try:
-        from app.services.database_service import database_service
-        database_service.shutdown()
-    except Exception as e:
-        logger.error(f"データベースサービスシャットダウンエラー: {e}")
-    
-    await parallel_processor.shutdown()
-    logger.info("アプリケーションシャットダウン完了")
-
-# ========================================
 # ヘルスチェック
 # ========================================
 

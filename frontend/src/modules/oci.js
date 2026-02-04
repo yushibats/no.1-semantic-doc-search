@@ -5,8 +5,8 @@
  */
 
 import { appState, getSelectedOciObjects, toggleOciObjectSelection, setAllOciObjectsSelection } from '../state.js';
-import { apiCall, forceLogout, showLoginModal } from './auth.js';
-import { showLoading, hideLoading, showToast, showConfirmModal, updateStatusBadge } from './utils.js';
+import { apiCall as authApiCall, forceLogout as authForceLogout, showLoginModal as authShowLoginModal } from './auth.js';
+import { showLoading as utilsShowLoading, hideLoading as utilsHideLoading, showToast as utilsShowToast, showConfirmModal as utilsShowConfirmModal, updateStatusBadge as utilsUpdateStatusBadge } from './utils.js';
 
 // ========================================
 // OCI Objects管理
