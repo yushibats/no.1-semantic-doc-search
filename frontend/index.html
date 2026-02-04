@@ -146,18 +146,8 @@
           🔍 セマンティック検索
         </div>
         <div style="padding: 24px;">
-          <div style="margin-bottom: 20px;">
-            <label class="form-label">検索クエリ</label>
-            <textarea 
-              id="searchQuery" 
-              class="form-input" 
-              placeholder="例: セマンティック検索について"
-              rows="3"
-              onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); window.searchModule.performSearch(); }"
-            ></textarea>
-          </div>
-          
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
+          <!-- 共通フィルター（取得件数・最小スコア） -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; padding: 16px; background: #f8fafc; border-radius: 8px;">
             <div>
               <label class="form-label">取得件数</label>
               <input type="number" id="topK" class="form-input" value="10" min="1" max="50" />
@@ -168,13 +158,110 @@
             </div>
           </div>
 
-          <div style="display: flex; gap: 12px;">
-            <button class="apex-button px-4 py-2" onclick="window.searchModule.performSearch()">
-              🔍 検索実行
+          <!-- 検索タイプタブ -->
+          <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0;">
+            <button 
+              id="searchTypeTextTab"
+              class="search-type-tab active"
+              onclick="window.searchModule.switchSearchType('text')"
+              style="padding: 12px 24px; font-weight: 600; font-size: 14px; border: none; background: none; cursor: pointer; border-bottom: 3px solid #667eea; color: #667eea; transition: all 0.3s;"
+            >
+              📝 テキスト検索
             </button>
-            <button class="apex-button-secondary px-4 py-2" onclick="window.searchModule.clearSearchResults()">
-              🗑️ クリア
+            <button 
+              id="searchTypeImageTab"
+              class="search-type-tab"
+              onclick="window.searchModule.switchSearchType('image')"
+              style="padding: 12px 24px; font-weight: 600; font-size: 14px; border: none; background: none; cursor: pointer; border-bottom: 3px solid transparent; color: #64748b; transition: all 0.3s;"
+            >
+              🖼️ 画像検索
             </button>
+          </div>
+
+          <!-- テキスト検索パネル -->
+          <div id="textSearchPanel" style="display: block;">
+            <div style="margin-bottom: 20px;">
+              <label class="form-label">検索クエリ</label>
+              <textarea 
+                id="searchQuery" 
+                class="form-input" 
+                placeholder="例: セマンティック検索について"
+                rows="3"
+                onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); window.searchModule.performSearch(); }"
+              ></textarea>
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+              <button class="apex-button px-4 py-2" onclick="window.searchModule.performSearch()">
+                🔍 検索実行
+              </button>
+              <button class="apex-button-secondary px-4 py-2" onclick="window.searchModule.clearSearchResults()">
+                🗑️ クリア
+              </button>
+            </div>
+          </div>
+
+          <!-- 画像検索パネル -->
+          <div id="imageSearchPanel" style="display: none;">
+            <div style="margin-bottom: 20px;">
+              <label class="form-label">検索画像</label>
+              <div 
+                id="imageSearchDropZone"
+                onclick="document.getElementById('searchImageInput').click()"
+                style="
+                  border: 2px dashed #cbd5e1;
+                  border-radius: 8px;
+                  padding: 40px;
+                  text-align: center;
+                  cursor: pointer;
+                  background: #f8fafc;
+                  transition: all 0.3s;
+                "
+                onmouseover="this.style.borderColor='#667eea'; this.style.background='#f0f4ff';"
+                onmouseout="this.style.borderColor='#cbd5e1'; this.style.background='#f8fafc';"
+              >
+                <div id="imageSearchPreview" style="display: none;">
+                  <img id="searchImagePreviewImg" style="max-width: 100%; max-height: 300px; border-radius: 8px; margin-bottom: 12px;" />
+                  <div style="font-size: 14px; color: #64748b; margin-bottom: 8px;">
+                    <span id="searchImageFilename"></span>
+                  </div>
+                  <button 
+                    class="apex-button-secondary"
+                    onclick="event.stopPropagation(); window.searchModule.clearSearchImage();"
+                    style="padding: 6px 16px; font-size: 13px;"
+                  >
+                    🗑️ 画像をクリア
+                  </button>
+                </div>
+                <div id="imageSearchPlaceholder">
+                  <svg style="width: 64px; height: 64px; margin: 0 auto 16px; color: #94a3b8;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                  </svg>
+                  <div style="font-size: 16px; font-weight: 600; color: #475569; margin-bottom: 8px;">
+                    画像をクリックまたはドロップしてアップロード
+                  </div>
+                  <div style="font-size: 13px; color: #94a3b8;">
+                    PNG, JPG, JPEG (最大10MB)
+                  </div>
+                </div>
+              </div>
+              <input 
+                type="file" 
+                id="searchImageInput" 
+                accept="image/png,image/jpeg,image/jpg"
+                style="display: none;"
+                onchange="window.searchModule.handleSearchImageSelect(event)"
+              />
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+              <button class="apex-button px-4 py-2" onclick="window.searchModule.performImageSearch()">
+                🔍 画像検索実行
+              </button>
+              <button class="apex-button-secondary px-4 py-2" onclick="window.searchModule.clearSearchResults()">
+                🗑️ クリア
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -187,7 +274,6 @@
         </div>
         <div style="padding: 20px;">
           <div id="searchResultsList"></div>
-        </div>
         </div>
       </div>
 

@@ -1,11 +1,140 @@
 /**
  * 検索モジュール
  * 
- * セマンティック検索機能を担当
+ * セマンティック検索機能を担当（テキスト検索・画像検索）
  */
 
 import { apiCall as authApiCall } from './auth.js';
 import { showLoading as utilsShowLoading, hideLoading as utilsHideLoading, showToast as utilsShowToast, showImageModal as utilsShowImageModal } from './utils.js';
+
+// 検索画像の状態管理
+let selectedSearchImage = null;
+let currentSearchType = 'text'; // 'text' or 'image'
+
+/**
+ * 検索タイプを切り替え
+ * @param {string} type - 'text' または 'image'
+ */
+export function switchSearchType(type) {
+  currentSearchType = type;
+  
+  const textTab = document.getElementById('searchTypeTextTab');
+  const imageTab = document.getElementById('searchTypeImageTab');
+  const textPanel = document.getElementById('textSearchPanel');
+  const imagePanel = document.getElementById('imageSearchPanel');
+  
+  if (type === 'text') {
+    // テキスト検索タブをアクティブに
+    textTab.style.borderBottomColor = '#667eea';
+    textTab.style.color = '#667eea';
+    imageTab.style.borderBottomColor = 'transparent';
+    imageTab.style.color = '#64748b';
+    
+    textPanel.style.display = 'block';
+    imagePanel.style.display = 'none';
+  } else {
+    // 画像検索タブをアクティブに
+    imageTab.style.borderBottomColor = '#667eea';
+    imageTab.style.color = '#667eea';
+    textTab.style.borderBottomColor = 'transparent';
+    textTab.style.color = '#64748b';
+    
+    imagePanel.style.display = 'block';
+    textPanel.style.display = 'none';
+  }
+}
+
+/**
+ * 検索画像を選択
+ * @param {Event} event - ファイル選択イベント
+ */
+export function handleSearchImageSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  // ファイルサイズチェック (最大10MB)
+  const maxSize = 10 * 1024 * 1024;
+  if (file.size > maxSize) {
+    utilsShowToast('画像ファイルは10MB以下にしてください', 'warning');
+    return;
+  }
+  
+  // ファイルタイプチェック
+  if (!file.type.match(/^image\/(png|jpeg|jpg)$/)) {
+    utilsShowToast('PNG, JPG, JPEG形式の画像のみ対応しています', 'warning');
+    return;
+  }
+  
+  selectedSearchImage = file;
+  
+  // プレビュー表示
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const previewImg = document.getElementById('searchImagePreviewImg');
+    const previewDiv = document.getElementById('imageSearchPreview');
+    const placeholder = document.getElementById('imageSearchPlaceholder');
+    const filenameSpan = document.getElementById('searchImageFilename');
+    
+    if (previewImg && previewDiv && placeholder && filenameSpan) {
+      previewImg.src = e.target.result;
+      filenameSpan.textContent = file.name;
+      previewDiv.style.display = 'block';
+      placeholder.style.display = 'none';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+/**
+ * 検索画像をクリア
+ */
+export function clearSearchImage() {
+  selectedSearchImage = null;
+  
+  const fileInput = document.getElementById('searchImageInput');
+  const previewDiv = document.getElementById('imageSearchPreview');
+  const placeholder = document.getElementById('imageSearchPlaceholder');
+  
+  if (fileInput) fileInput.value = '';
+  if (previewDiv) previewDiv.style.display = 'none';
+  if (placeholder) placeholder.style.display = 'block';
+}
+
+/**
+ * 画像検索を実行
+ */
+export async function performImageSearch() {
+  if (!selectedSearchImage) {
+    utilsShowToast('検索する画像を選択してください', 'warning');
+    return;
+  }
+  
+  // 共通のフィルター値を使用
+  const topK = parseInt(document.getElementById('topK').value) || 10;
+  const minScore = parseFloat(document.getElementById('minScore').value) || 0.7;
+  
+  try {
+    utilsShowLoading('画像検索中...');
+    
+    // FormDataを作成
+    const formData = new FormData();
+    formData.append('image', selectedSearchImage);
+    formData.append('top_k', topK.toString());
+    formData.append('min_score', minScore.toString());
+    
+    const data = await authApiCall('/ai/api/search/image', {
+      method: 'POST',
+      body: formData
+    });
+    
+    utilsHideLoading();
+    displaySearchResults(data);
+    
+  } catch (error) {
+    utilsHideLoading();
+    utilsShowToast(`画像検索エラー: ${error.message}`, 'error');
+  }
+}
 
 /**
  * 認証トークン付きのURLを生成
@@ -253,26 +382,40 @@ export async function downloadFile(bucket, encodedObjectName) {
  * 検索結果をクリア
  */
 export function clearSearchResults() {
+  // テキスト検索のクリア
   document.getElementById('searchQuery').value = '';
+  
+  // 画像検索のクリア
+  clearSearchImage();
+  
+  // 検索結果を非表示
   document.getElementById('searchResults').style.display = 'none';
 }
 
 // windowオブジェクトに登録（HTMLから呼び出せるように）
 window.searchModule = {
   performSearch,
+  performImageSearch,
   displaySearchResults,
   showSearchImageModal,
   downloadFile,
-  clearSearchResults
+  clearSearchResults,
+  switchSearchType,
+  handleSearchImageSelect,
+  clearSearchImage
 };
 
 // デフォルトエクスポート
 export default {
   performSearch,
+  performImageSearch,
   displaySearchResults,
   showSearchImageModal,
   downloadFile,
-  clearSearchResults
+  clearSearchResults,
+  switchSearchType,
+  handleSearchImageSelect,
+  clearSearchImage
 }
 
 /**

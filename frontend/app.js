@@ -3741,3 +3741,67 @@ window.showSearchImageModal = function(imageUrl, title, vectorDistance) {
     return window.searchModule.showSearchImageModal(imageUrl, title, vectorDistance);
   }
 };
+
+// ========================================
+// 画像検索: ドラッグ&ドロップ
+// ========================================
+
+/**
+ * 画像検索ドロップゾーンの初期化
+ */
+function initImageSearchDropZone() {
+  const dropZone = document.getElementById('imageSearchDropZone');
+  if (!dropZone) return;
+  
+  // ドラッグオーバー
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.style.borderColor = '#667eea';
+    dropZone.style.background = '#f0f4ff';
+  });
+  
+  // ドラッグリーブ
+  dropZone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.style.borderColor = '#cbd5e1';
+    dropZone.style.background = '#f8fafc';
+  });
+  
+  // ドロップ
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.style.borderColor = '#cbd5e1';
+    dropZone.style.background = '#f8fafc';
+    
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      
+      // ファイルタイプチェック
+      if (!file.type.match(/^image\/(png|jpeg|jpg)$/)) {
+        utilsShowToast('PNG, JPG, JPEG形式の画像のみ対応しています', 'warning');
+        return;
+      }
+      
+      // ファイル選択を疑似的に実行
+      const fileInput = document.getElementById('searchImageInput');
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      fileInput.files = dataTransfer.files;
+      
+      // ファイル選択イベントを発火
+      const event = new Event('change', { bubbles: true });
+      fileInput.dispatchEvent(event);
+    }
+  });
+}
+
+// DOMContentLoaded時に初期化
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initImageSearchDropZone);
+} else {
+  initImageSearchDropZone();
+}
