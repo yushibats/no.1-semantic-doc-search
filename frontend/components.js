@@ -4,10 +4,14 @@
  * このファイルは、アプリケーション全体で一貫性のあるUI/UXを提供するための
  * 再利用可能なコンポーネント群を定義します。
  * 
- * @author Machine Learning Platform Team
+ * @author Semantic Document Search
  * @version 1.0.0
  * @created 2026-01-19
  */
+
+// ========================================
+// 基礎インタラクティブコンポーネント
+// ========================================
 
 // ========================================
 // 1. ボタンコンポーネント
@@ -187,6 +191,10 @@ function renderInput({
   `;
 }
 
+// ========================================
+// 3. セレクトボックスコンポーネント
+// ========================================
+
 /**
  * 統一されたセレクトボックスコンポーネントを生成
  * 
@@ -257,7 +265,11 @@ function renderSelect({
 }
 
 // ========================================
-// 3. ページネーションコンポーネント
+// ナビゲーションコンポーネント
+// ========================================
+
+// ========================================
+// 4. ページネーションコンポーネント
 // ========================================
 
 /**
@@ -348,7 +360,11 @@ function renderPagination({
 }
 
 // ========================================
-// 4. モーダルコンポーネント
+// コンテナコンポーネント
+// ========================================
+
+// ========================================
+// 5. モーダルコンポーネント
 // ========================================
 
 /**
@@ -839,226 +855,7 @@ function showModal({
 }
 
 // ========================================
-// 5. ローディング状態コンポーネント
-// ========================================
-
-/**
- * 統一されたローディングインジケーターを生成
- * 
- * @param {Object} options - ローディング設定オプション
- * @param {string} [options.message='読み込み中...'] - ローディングメッセージ
- * @param {string} [options.size='md'] - サイズ ('sm' | 'md' | 'lg')
- * @param {string} [options.variant='spinner'] - バリアント ('spinner' | 'dots' | 'text')
- * @returns {string} HTMLローディング文字列
- * 
- * @example
- * renderLoading({ message: 'データを取得中...', size: 'lg' })
- */
-function renderLoading({
-  message = '読み込み中...',
-  size = 'md',
-  variant = 'spinner'
-} = {}) {
-  // サイズ別の設定
-  const sizeConfig = {
-    sm: { spinner: 'w-4 h-4', text: 'text-xs' },
-    md: { spinner: 'w-6 h-6', text: 'text-sm' },
-    lg: { spinner: 'w-8 h-8', text: 'text-base' }
-  };
-
-  const config = sizeConfig[size] || sizeConfig.md;
-
-  // スピナー型
-  if (variant === 'spinner') {
-    return `
-      <div class="flex items-center justify-center gap-2 py-4">
-        <div class="${config.spinner} border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-        <span class="${config.text} text-gray-600">${message}</span>
-      </div>
-    `;
-  }
-
-  // ドット型
-  if (variant === 'dots') {
-    return `
-      <div class="flex items-center justify-center gap-2 py-4">
-        <div class="flex gap-1">
-          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
-          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
-          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
-        </div>
-        <span class="${config.text} text-gray-600">${message}</span>
-      </div>
-    `;
-  }
-
-  // テキスト型
-  return `
-    <div class="flex items-center justify-center py-4">
-      <span class="${config.text} text-gray-600">⏳ ${message}</span>
-    </div>
-  `;
-}
-
-// ========================================
-// 6. トースト通知コンポーネント
-// ========================================
-
-/**
- * 統一されたトースト通知を表示
- * 
- * @param {string} message - 通知メッセージ
- * @param {string} [type='info'] - 通知タイプ ('success' | 'error' | 'warning' | 'info')
- * @param {number} [duration=4000] - 表示時間（ミリ秒）
- * @returns {number} トーストID
- * 
- * @example
- * showToast('保存しました', 'success')
- * showToast('エラーが発生しました', 'error')
- */
-function showToast(message, type = 'info', duration = 4000) {
-  const id = Date.now() + Math.random();
-  
-  // タイプ別のアイコンとスタイル
-  const config = {
-    success: { icon: '✅', bgColor: 'bg-green-50', borderColor: 'border-green-500', textColor: 'text-green-800' },
-    error: { icon: '❌', bgColor: 'bg-red-50', borderColor: 'border-red-500', textColor: 'text-red-800' },
-    warning: { icon: '⚠️', bgColor: 'bg-yellow-50', borderColor: 'border-yellow-500', textColor: 'text-yellow-800' },
-    info: { icon: 'ℹ️', bgColor: 'bg-blue-50', borderColor: 'border-blue-500', textColor: 'text-blue-800' }
-  };
-
-  const typeConfig = config[type] || config.info;
-
-  // メッセージに既に絵文字が含まれているか確認
-  const hasEmoji = /[\u{1F300}-\u{1F9FF}]|[✅❌⚠️ℹ️]/u.test(message);
-  const finalMessage = hasEmoji ? message : `${typeConfig.icon} ${message}`;
-
-  // トーストコンテナが存在しない場合は作成
-  let container = document.getElementById('toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.id = 'toast-container';
-    container.className = 'fixed top-4 right-4 z-50 flex flex-col gap-2';
-    document.body.appendChild(container);
-  }
-
-  // トースト要素の作成
-  const toast = document.createElement('div');
-  toast.id = `toast-${id}`;
-  toast.className = `${typeConfig.bgColor} ${typeConfig.textColor} border-l-4 ${typeConfig.borderColor} px-4 py-3 rounded shadow-lg max-w-sm animate-slide-in-right`;
-  toast.innerHTML = `
-    <div class="flex items-center justify-between gap-2">
-      <span class="text-sm font-medium">${finalMessage}</span>
-      <button 
-        onclick="document.getElementById('toast-${id}').remove()"
-        class="text-gray-500 hover:text-gray-700 text-xl leading-none"
-      >
-        &times;
-      </button>
-    </div>
-  `;
-
-  container.appendChild(toast);
-  console.log(`トースト通知を表示: [${type}] ${message}`);
-
-  // 自動削除
-  if (duration > 0) {
-    setTimeout(() => {
-      const toastEl = document.getElementById(`toast-${id}`);
-      if (toastEl) {
-        toastEl.style.animation = 'slide-out-right 0.3s ease-out';
-        setTimeout(() => toastEl.remove(), 300);
-      }
-    }, duration);
-  }
-
-  return id;
-}
-
-// ========================================
-// 7. テーブルコンポーネント
-// ========================================
-
-/**
- * 統一されたテーブルコンポーネントを生成
- * 
- * @param {Object} options - テーブル設定オプション
- * @param {Array<{key: string, label: string, align?: string}>} options.columns - カラム定義
- * @param {Array<Object>} options.data - データ配列
- * @param {boolean} [options.striped=true] - ストライプ表示
- * @param {boolean} [options.hoverable=true] - ホバー効果
- * @param {string} [options.emptyMessage='データがありません'] - 空データ時のメッセージ
- * @returns {string} HTMLテーブル文字列
- * 
- * @example
- * renderTable({
- *   columns: [
- *     { key: 'id', label: 'ID', align: 'center' },
- *     { key: 'name', label: '名前' },
- *     { key: 'score', label: 'スコア', align: 'right' }
- *   ],
- *   data: [
- *     { id: 1, name: 'データA', score: 95.5 },
- *     { id: 2, name: 'データB', score: 88.3 }
- *   ]
- * })
- */
-function renderTable({
-  columns,
-  data,
-  striped = true,
-  hoverable = true,
-  emptyMessage = 'データがありません'
-}) {
-  // 空データの場合
-  if (!data || data.length === 0) {
-    return `
-      <div class="text-center py-8 text-gray-500">
-        ${emptyMessage}
-      </div>
-    `;
-  }
-
-  // ヘッダーの生成
-  const theadHtml = `
-    <thead class="bg-gray-100 border-b-2 border-gray-200">
-      <tr>
-        ${columns.map(col => `
-          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider ${col.align === 'center' ? 'text-center' : col.align === 'right' ? 'text-right' : ''}">
-            ${col.label}
-          </th>
-        `).join('')}
-      </tr>
-    </thead>
-  `;
-
-  // ボディの生成
-  const tbodyHtml = `
-    <tbody class="bg-white divide-y divide-gray-200">
-      ${data.map((row, idx) => `
-        <tr class="${striped && idx % 2 === 1 ? 'bg-gray-50' : ''} ${hoverable ? 'hover:bg-blue-50 transition-colors' : ''}">
-          ${columns.map(col => `
-            <td class="px-4 py-3 text-sm text-gray-800 ${col.align === 'center' ? 'text-center' : col.align === 'right' ? 'text-right' : ''}">
-              ${row[col.key] !== undefined ? row[col.key] : '-'}
-            </td>
-          `).join('')}
-        </tr>
-      `).join('')}
-    </tbody>
-  `;
-
-  return `
-    <div class="overflow-x-auto border rounded-lg">
-      <table class="min-w-full divide-y divide-gray-200">
-        ${theadHtml}
-        ${tbodyHtml}
-      </table>
-    </div>
-  `;
-}
-
-// ========================================
-// 8. カードコンポーネント
+// 6. カードコンポーネント
 // ========================================
 
 /**
@@ -1147,49 +944,148 @@ function toggleCardCollapse(contentId) {
 }
 
 // ========================================
-// 9. バッジコンポーネント
+// フィードバックコンポーネント
+// ========================================
+
+// ========================================
+// 7. ローディング状態コンポーネント
 // ========================================
 
 /**
- * 統一されたバッジコンポーネントを生成
+ * 統一されたローディングインジケーターを生成
  * 
- * @param {Object} options - バッジ設定オプション
- * @param {string} options.text - バッジテキスト
- * @param {string} [options.variant='default'] - バリアント ('default' | 'success' | 'error' | 'warning' | 'info')
+ * @param {Object} options - ローディング設定オプション
+ * @param {string} [options.message='読み込み中...'] - ローディングメッセージ
  * @param {string} [options.size='md'] - サイズ ('sm' | 'md' | 'lg')
- * @returns {string} HTMLバッジ文字列
+ * @param {string} [options.variant='spinner'] - バリアント ('spinner' | 'dots' | 'text')
+ * @returns {string} HTMLローディング文字列
  * 
  * @example
- * renderBadge({ text: '完了', variant: 'success' })
+ * renderLoading({ message: 'データを取得中...', size: 'lg' })
  */
-function renderBadge({
-  text,
-  variant = 'default',
-  size = 'md'
-}) {
-  // バリアント別のスタイル
-  const variantClasses = {
-    default: 'bg-gray-100 text-gray-800',
-    success: 'bg-green-100 text-green-800',
-    error: 'bg-red-100 text-red-800',
-    warning: 'bg-yellow-100 text-yellow-800',
-    info: 'bg-blue-100 text-blue-800'
+function renderLoading({
+  message = '読み込み中...',
+  size = 'md',
+  variant = 'spinner'
+} = {}) {
+  // サイズ別の設定
+  const sizeConfig = {
+    sm: { spinner: 'w-4 h-4', text: 'text-xs' },
+    md: { spinner: 'w-6 h-6', text: 'text-sm' },
+    lg: { spinner: 'w-8 h-8', text: 'text-base' }
   };
 
-  // サイズ別のスタイル
-  const sizeClasses = {
-    sm: 'px-2 py-0.5 text-xs',
-    md: 'px-2.5 py-1 text-sm',
-    lg: 'px-3 py-1.5 text-base'
-  };
+  const config = sizeConfig[size] || sizeConfig.md;
 
-  const finalClasses = `inline-flex items-center font-medium rounded ${variantClasses[variant]} ${sizeClasses[size]}`;
+  // スピナー型
+  if (variant === 'spinner') {
+    return `
+      <div class="flex items-center justify-center gap-2 py-4">
+        <div class="${config.spinner} border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        <span class="${config.text} text-gray-600">${message}</span>
+      </div>
+    `;
+  }
 
-  return `<span class="${finalClasses}">${text}</span>`;
+  // ドット型
+  if (variant === 'dots') {
+    return `
+      <div class="flex items-center justify-center gap-2 py-4">
+        <div class="flex gap-1">
+          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
+          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
+          <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
+        </div>
+        <span class="${config.text} text-gray-600">${message}</span>
+      </div>
+    `;
+  }
+
+  // テキスト型
+  return `
+    <div class="flex items-center justify-center py-4">
+      <span class="${config.text} text-gray-600">⏳ ${message}</span>
+    </div>
+  `;
 }
 
 // ========================================
-// 10. アラートコンポーネント
+// 8. トースト通知コンポーネント
+// ========================================
+
+/**
+ * 統一されたトースト通知を表示
+ * 
+ * @param {string} message - 通知メッセージ
+ * @param {string} [type='info'] - 通知タイプ ('success' | 'error' | 'warning' | 'info')
+ * @param {number} [duration=4000] - 表示時間（ミリ秒）
+ * @returns {number} トーストID
+ * 
+ * @example
+ * showToast('保存しました', 'success')
+ * showToast('エラーが発生しました', 'error')
+ */
+function showToast(message, type = 'info', duration = 4000) {
+  const id = Date.now() + Math.random();
+  
+  // タイプ別のアイコンとスタイル
+  const config = {
+    success: { icon: '✅', bgColor: 'bg-green-50', borderColor: 'border-green-500', textColor: 'text-green-800' },
+    error: { icon: '❌', bgColor: 'bg-red-50', borderColor: 'border-red-500', textColor: 'text-red-800' },
+    warning: { icon: '⚠️', bgColor: 'bg-yellow-50', borderColor: 'border-yellow-500', textColor: 'text-yellow-800' },
+    info: { icon: 'ℹ️', bgColor: 'bg-blue-50', borderColor: 'border-blue-500', textColor: 'text-blue-800' }
+  };
+
+  const typeConfig = config[type] || config.info;
+
+  // メッセージに既に絵文字が含まれているか確認
+  const hasEmoji = /[\u{1F300}-\u{1F9FF}]|[✅❌⚠️ℹ️]/u.test(message);
+  const finalMessage = hasEmoji ? message : `${typeConfig.icon} ${message}`;
+
+  // トーストコンテナが存在しない場合は作成
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    container.className = 'fixed top-4 right-4 z-50 flex flex-col gap-2';
+    document.body.appendChild(container);
+  }
+
+  // トースト要素の作成
+  const toast = document.createElement('div');
+  toast.id = `toast-${id}`;
+  toast.className = `${typeConfig.bgColor} ${typeConfig.textColor} border-l-4 ${typeConfig.borderColor} px-4 py-3 rounded shadow-lg max-w-sm animate-slide-in-right`;
+  toast.innerHTML = `
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-sm font-medium">${finalMessage}</span>
+      <button 
+        onclick="document.getElementById('toast-${id}').remove()"
+        class="text-gray-500 hover:text-gray-700 text-xl leading-none"
+      >
+        &times;
+      </button>
+    </div>
+  `;
+
+  container.appendChild(toast);
+  console.log(`トースト通知を表示: [${type}] ${message}`);
+
+  // 自動削除
+  if (duration > 0) {
+    setTimeout(() => {
+      const toastEl = document.getElementById(`toast-${id}`);
+      if (toastEl) {
+        toastEl.style.animation = 'slide-out-right 0.3s ease-out';
+        setTimeout(() => toastEl.remove(), 300);
+      }
+    }, duration);
+  }
+
+  return id;
+}
+
+// ========================================
+// 9. アラートコンポーネント
 // ========================================
 
 /**
@@ -1252,6 +1148,134 @@ function renderAlert({
       </div>
     </div>
   `;
+}
+
+// ========================================
+// データ表示コンポーネント
+// ========================================
+
+// ========================================
+// 10. テーブルコンポーネント
+// ========================================
+
+/**
+ * 統一されたテーブルコンポーネントを生成
+ * 
+ * @param {Object} options - テーブル設定オプション
+ * @param {Array<{key: string, label: string, align?: string}>} options.columns - カラム定義
+ * @param {Array<Object>} options.data - データ配列
+ * @param {boolean} [options.striped=true] - ストライプ表示
+ * @param {boolean} [options.hoverable=true] - ホバー効果
+ * @param {string} [options.emptyMessage='データがありません'] - 空データ時のメッセージ
+ * @returns {string} HTMLテーブル文字列
+ * 
+ * @example
+ * renderTable({
+ *   columns: [
+ *     { key: 'id', label: 'ID', align: 'center' },
+ *     { key: 'name', label: '名前' },
+ *     { key: 'score', label: 'スコア', align: 'right' }
+ *   ],
+ *   data: [
+ *     { id: 1, name: 'データA', score: 95.5 },
+ *     { id: 2, name: 'データB', score: 88.3 }
+ *   ]
+ * })
+ */
+function renderTable({
+  columns,
+  data,
+  striped = true,
+  hoverable = true,
+  emptyMessage = 'データがありません'
+}) {
+  // 空データの場合
+  if (!data || data.length === 0) {
+    return `
+      <div class="text-center py-8 text-gray-500">
+        ${emptyMessage}
+      </div>
+    `;
+  }
+
+  // ヘッダーの生成
+  const theadHtml = `
+    <thead class="bg-gray-100 border-b-2 border-gray-200">
+      <tr>
+        ${columns.map(col => `
+          <th class="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider ${col.align === 'center' ? 'text-center' : col.align === 'right' ? 'text-right' : ''}">
+            ${col.label}
+          </th>
+        `).join('')}
+      </tr>
+    </thead>
+  `;
+
+  // ボディの生成
+  const tbodyHtml = `
+    <tbody class="bg-white divide-y divide-gray-200">
+      ${data.map((row, idx) => `
+        <tr class="${striped && idx % 2 === 1 ? 'bg-gray-50' : ''} ${hoverable ? 'hover:bg-blue-50 transition-colors' : ''}">
+          ${columns.map(col => `
+            <td class="px-4 py-3 text-sm text-gray-800 ${col.align === 'center' ? 'text-center' : col.align === 'right' ? 'text-right' : ''}">
+              ${row[col.key] !== undefined ? row[col.key] : '-'}
+            </td>
+          `).join('')}
+        </tr>
+      `).join('')}
+    </tbody>
+  `;
+
+  return `
+    <div class="overflow-x-auto border rounded-lg">
+      <table class="min-w-full divide-y divide-gray-200">
+        ${theadHtml}
+        ${tbodyHtml}
+      </table>
+    </div>
+  `;
+}
+
+// ========================================
+// 11. バッジコンポーネント
+// ========================================
+
+/**
+ * 統一されたバッジコンポーネントを生成
+ * 
+ * @param {Object} options - バッジ設定オプション
+ * @param {string} options.text - バッジテキスト
+ * @param {string} [options.variant='default'] - バリアント ('default' | 'success' | 'error' | 'warning' | 'info')
+ * @param {string} [options.size='md'] - サイズ ('sm' | 'md' | 'lg')
+ * @returns {string} HTMLバッジ文字列
+ * 
+ * @example
+ * renderBadge({ text: '完了', variant: 'success' })
+ */
+function renderBadge({
+  text,
+  variant = 'default',
+  size = 'md'
+}) {
+  // バリアント別のスタイル
+  const variantClasses = {
+    default: 'bg-gray-100 text-gray-800',
+    success: 'bg-green-100 text-green-800',
+    error: 'bg-red-100 text-red-800',
+    warning: 'bg-yellow-100 text-yellow-800',
+    info: 'bg-blue-100 text-blue-800'
+  };
+
+  // サイズ別のスタイル
+  const sizeClasses = {
+    sm: 'px-2 py-0.5 text-xs',
+    md: 'px-2.5 py-1 text-sm',
+    lg: 'px-3 py-1.5 text-base'
+  };
+
+  const finalClasses = `inline-flex items-center font-medium rounded ${variantClasses[variant]} ${sizeClasses[size]}`;
+
+  return `<span class="${finalClasses}">${text}</span>`;
 }
 
 // ========================================
