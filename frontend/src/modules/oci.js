@@ -43,7 +43,7 @@ export function isGeneratedPageImage(objectName, allObjects = []) {
 export async function loadOciObjects(showLoadingOverlay = true) {
   try {
     if (showLoadingOverlay) {
-      showLoading('OCI Object Storage一覧を取得中...');
+      utilsShowLoading('OCI Object Storage一覧を取得中...');
     }
     
     const ociObjectsPage = appState.get('ociObjectsPage');
@@ -62,14 +62,14 @@ export async function loadOciObjects(showLoadingOverlay = true) {
       display_type: ociObjectsDisplayType
     });
     
-    const data = await apiCall(`/ai/api/oci/objects?${params}`);
+    const data = await authApiCall(`/ai/api/oci/objects?${params}`);
     
     if (showLoadingOverlay) {
-      hideLoading();
+      utilsHideLoading();
     }
     
     if (!data.success) {
-      showToast(`エラー: ${data.message || 'オブジェクト一覧取得失敗'}`, 'error');
+      utilsShowToast(`エラー: ${data.message || 'オブジェクト一覧取得失敗'}`, 'error');
       updateDocumentsStatusBadge('エラー', 'error');
       return;
     }
@@ -96,8 +96,8 @@ export async function loadOciObjects(showLoadingOverlay = true) {
     updateDocumentsStatisticsBadges(statistics, 'success');
     
   } catch (error) {
-    hideLoading();
-    showToast(`OCI Object Storage一覧取得エラー: ${error.message}`, 'error');
+    utilsHideLoading();
+    utilsShowToast(`OCI Object Storage一覧取得エラー: ${error.message}`, 'error');
     updateDocumentsStatusBadge('エラー', 'error');
   }
 }
@@ -391,7 +391,7 @@ function formatBytes(bytes) {
  * @private
  */
 function updateDocumentsStatusBadge(text, type) {
-  updateStatusBadge('documentsStatusBadge', text, type);
+  utilsUpdateStatusBadge('documentsStatusBadge', text, type);
 }
 
 /**
@@ -449,7 +449,7 @@ export function handleOciObjectsJumpPage() {
     appState.set('ociObjectsPage', targetPage);
     loadOciObjects();
   } else {
-    showToast(`ページ番号は1〜${totalPages}の範囲で指定してください`, 'warning');
+    utilsShowToast(`ページ番号は1〜${totalPages}の範囲で指定してください`, 'warning');
   }
 }
 
@@ -564,13 +564,13 @@ export async function downloadSelectedOciObjects() {
   const selectedOciObjects = getSelectedOciObjects();
   
   if (selectedOciObjects.length === 0) {
-    showToast('ダウンロードするファイルを選択してください', 'warning');
+    utilsShowToast('ダウンロードするファイルを選択してください', 'warning');
     return;
   }
   
   const ociObjectsBatchDeleteLoading = appState.get('ociObjectsBatchDeleteLoading');
   if (ociObjectsBatchDeleteLoading) {
-    showToast('処理中です。しばらくお待ちください', 'warning');
+    utilsShowToast('処理中です。しばらくお待ちください', 'warning');
     return;
   }
   
@@ -579,14 +579,14 @@ export async function downloadSelectedOciObjects() {
   const debugMode = appState.get('debugMode');
   
   if (!loginToken && !debugMode) {
-    showToast('認証が必要です。ログインしてください', 'warning');
-    showLoginModal();
+    utilsShowToast('認証が必要です。ログインしてください', 'warning');
+    authShowLoginModal();
     return;
   }
   
   try {
     appState.set('ociObjectsBatchDeleteLoading', true);
-    showLoading(`${selectedOciObjects.length}件のファイルをZIPに圧縮中...`);
+    utilsShowLoading(`${selectedOciObjects.length}件のファイルをZIPに圧縮中...`);
     
     // リクエストヘッダーを構築
     const headers = {
@@ -609,11 +609,11 @@ export async function downloadSelectedOciObjects() {
     if (!response.ok) {
       // 401エラーの場合は強制ログアウト（referenceプロジェクトに準拠）
       if (response.status === 401) {
-        hideLoading();
+        utilsHideLoading();
         appState.set('ociObjectsBatchDeleteLoading', false);
         const requireLogin = appState.get('requireLogin');
         if (requireLogin) {
-          forceLogout();
+          authForceLogout();
         }
         throw new Error('無効または期限切れのトークンです');
       }
@@ -633,19 +633,19 @@ export async function downloadSelectedOciObjects() {
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
     
-    hideLoading();
+    utilsHideLoading();
     appState.set('ociObjectsBatchDeleteLoading', false);
-    showToast(`${selectedOciObjects.length}件のファイルをダウンロードしました`, 'success');
+    utilsShowToast(`${selectedOciObjects.length}件のファイルをダウンロードしました`, 'success');
     
     // 一覧を再読み込みして状態を同期
     await loadOciObjects(false);
     
   } catch (error) {
     console.error('ダウンロードエラー:', error);
-    showToast(`ダウンロードエラー: ${error.message}`, 'error');
+    utilsShowToast(`ダウンロードエラー: ${error.message}`, 'error');
     
     // エラー時も一覧を再読み込みして状態を同期
-    hideLoading();
+    utilsHideLoading();
     appState.set('ociObjectsBatchDeleteLoading', false);
     await loadOciObjects(false);
   }
@@ -658,13 +658,13 @@ export async function convertSelectedOciObjectsToImages() {
   const selectedOciObjects = getSelectedOciObjects();
   
   if (selectedOciObjects.length === 0) {
-    showToast('変換するファイルを選択してください', 'warning');
+    utilsShowToast('変換するファイルを選択してください', 'warning');
     return;
   }
   
   const ociObjectsBatchDeleteLoading = appState.get('ociObjectsBatchDeleteLoading');
   if (ociObjectsBatchDeleteLoading) {
-    showToast('処理中です。しばらくお待ちください', 'warning');
+    utilsShowToast('処理中です。しばらくお待ちください', 'warning');
     return;
   }
   
@@ -673,13 +673,13 @@ export async function convertSelectedOciObjectsToImages() {
   const debugMode = appState.get('debugMode');
   
   if (!loginToken && !debugMode) {
-    showToast('認証が必要です。ログインしてください', 'warning');
-    showLoginModal();
+    utilsShowToast('認証が必要です。ログインしてください', 'warning');
+    authShowLoginModal();
     return;
   }
   
   // 確認モーダルを表示
-  const confirmed = await showConfirmModal(
+  const confirmed = await utilsShowConfirmModal(
     `選択された${selectedOciObjects.length}件のファイルを各ページPNG画像として同名フォルダに保存します。\n\n処理には時間がかかる場合があります。実行しますか？`,
     'ページ画像化確認'
   );
@@ -690,7 +690,7 @@ export async function convertSelectedOciObjectsToImages() {
   
   try {
     appState.set('ociObjectsBatchDeleteLoading', true);
-    showLoading('ページ画像化を準備中...\nサーバーに接続しています');
+    utilsShowLoading('ページ画像化を準備中...\nサーバーに接続しています');
     
     // リクエストヘッダーを構築
     const headers = {
@@ -713,16 +713,16 @@ export async function convertSelectedOciObjectsToImages() {
     if (!response.ok) {
       // 401エラーの場合は強制ログアウト（referenceプロジェクトに準拠）
       if (response.status === 401) {
-        hideLoading();
+        utilsHideLoading();
         appState.set('ociObjectsBatchDeleteLoading', false);
         const requireLogin = appState.get('requireLogin');
         if (requireLogin) {
-          forceLogout();
+          authForceLogout();
         }
         throw new Error('無効または期限切れのトークンです');
       }
       
-      hideLoading();
+      utilsHideLoading();
       appState.set('ociObjectsBatchDeleteLoading', false);
       const errorData = await response.json();
       throw new Error(errorData.detail || 'ページ画像化に失敗しました');
@@ -733,10 +733,10 @@ export async function convertSelectedOciObjectsToImages() {
     
   } catch (error) {
     console.error('ページ画像化エラー:', error);
-    showToast(`ページ画像化エラー: ${error.message}`, 'error');
+    utilsShowToast(`ページ画像化エラー: ${error.message}`, 'error');
     
     // エラー時も一覧を再読み込みして状態を同期
-    hideLoading();
+    utilsHideLoading();
     appState.set('ociObjectsBatchDeleteLoading', false);
     await loadOciObjects(false);
   }
@@ -749,13 +749,13 @@ export async function vectorizeSelectedOciObjects() {
   const selectedOciObjects = getSelectedOciObjects();
   
   if (selectedOciObjects.length === 0) {
-    showToast('ベクトル化するファイルを選択してください', 'warning');
+    utilsShowToast('ベクトル化するファイルを選択してください', 'warning');
     return;
   }
   
   const ociObjectsBatchDeleteLoading = appState.get('ociObjectsBatchDeleteLoading');
   if (ociObjectsBatchDeleteLoading) {
-    showToast('処理中です。しばらくお待ちください', 'warning');
+    utilsShowToast('処理中です。しばらくお待ちください', 'warning');
     return;
   }
   
@@ -764,13 +764,13 @@ export async function vectorizeSelectedOciObjects() {
   const debugMode = appState.get('debugMode');
   
   if (!loginToken && !debugMode) {
-    showToast('認証が必要です。ログインしてください', 'warning');
-    showLoginModal();
+    utilsShowToast('認証が必要です。ログインしてください', 'warning');
+    authShowLoginModal();
     return;
   }
   
   // 確認モーダルを表示
-  const confirmed = await showConfirmModal(
+  const confirmed = await utilsShowConfirmModal(
     `選択された<strong>${selectedOciObjects.length}件のファイル</strong>を画像ベクトル化してデータベースに保存します。
 <warning>既存の画像イメージやembeddingがある場合は削除してから再作成します。</warning>
 <small>※ファイルが未画像化の場合は、自動的にページ画像化を実行してからベクトル化します。</small>
@@ -823,7 +823,7 @@ export async function vectorizeSelectedOciObjects() {
         appState.set('ociObjectsBatchDeleteLoading', false);
         const requireLogin = appState.get('requireLogin');
         if (requireLogin) {
-          forceLogout();
+          authForceLogout();
         }
         throw new Error('無効または期限切れのトークンです');
       }
@@ -841,7 +841,7 @@ export async function vectorizeSelectedOciObjects() {
     hideProcessProgressUI();
     appState.set('ociObjectsBatchDeleteLoading', false);
     console.error('ベクトル化エラー:', error);
-    showToast(`ベクトル化エラー: ${error.message}`, 'error');
+    utilsShowToast(`ベクトル化エラー: ${error.message}`, 'error');
     
     // 選択をクリアして一覧を更新
     appState.set('selectedOciObjects', []);
@@ -856,12 +856,12 @@ export async function deleteSelectedOciObjects() {
   const selectedOciObjects = getSelectedOciObjects();
   
   if (selectedOciObjects.length === 0) {
-    showToast('削除するオブジェクトを選択してください', 'warning');
+    utilsShowToast('削除するオブジェクトを選択してください', 'warning');
     return;
   }
   
   const count = selectedOciObjects.length;
-  const confirmed = await showConfirmModal(
+  const confirmed = await utilsShowConfirmModal(
     `選択された${count}件のオブジェクトを削除しますか？\n\nこの操作は元に戻せません。`,
     'オブジェクト削除の確認',
     { variant: 'danger', confirmText: '削除' }
@@ -914,7 +914,7 @@ export async function deleteSelectedOciObjects() {
     hideProcessProgressUI();
     appState.set('ociObjectsBatchDeleteLoading', false);
     console.error('削除エラー:', error);
-    showToast(`削除エラー: ${error.message}`, 'error');
+    utilsShowToast(`削除エラー: ${error.message}`, 'error');
     
     // 選択をクリアして一覧を更新
     appState.set('selectedOciObjects', []);
@@ -951,7 +951,7 @@ async function processStreamingResponse(response, totalFiles, operationType) {
   // メインページ進捗UIを使用する場合は、既存のローディングオーバーレイを確実に削除
   if (useProgressUI) {
     console.log('🔴 Hiding loading overlay...');
-    hideLoading();
+    utilsHideLoading();
   }
   
   // イベント処理用の共通関数
@@ -1089,7 +1089,7 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               } else {
                 updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: 📄 自動ページ画像化開始`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
               }
-              showToast(`自動的にページ画像化を実行中: ${data.file_name}`, 'info');
+              utilsShowToast(`自動的にページ画像化を実行中: ${data.file_name}`, 'info');
               break;
             
             case 'auto_convert_progress':
@@ -1118,7 +1118,7 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               } else {
                 updateLoadingMessage(`ファイル ${currentFileIndex}/${totalFiles}\n${data.file_name}\nステータス: ✓ ページ画像化完了 (${data.total_pages}ページ)`, totalFiles > 0 ? (currentFileIndex - 1) / totalFiles : 0, jobId);
               }
-              showToast(`ページ画像化完了: ${data.file_name} (${data.total_pages}ページ)`, 'success');
+              utilsShowToast(`ページ画像化完了: ${data.file_name} (${data.total_pages}ページ)`, 'success');
               break;
             
             case 'vectorize_start':
@@ -1223,14 +1223,14 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               break;
               
             case 'cancelled':
-              showToast(`処理がキャンセルされました\n${data.message}`, 'info');
+              utilsShowToast(`処理がキャンセルされました\n${data.message}`, 'info');
               appState.set('selectedOciObjects', []);
               
               // フラグをクリアしてから確実に再描画
               if (useProgressUI) {
                 hideProcessProgressUI();
               } else {
-                hideLoading();
+                utilsHideLoading();
               }
               appState.set('ociObjectsBatchDeleteLoading', false);
               // メインページ進捗UIを使用している場合は、ローディングオーバーレイを表示しない
@@ -1238,13 +1238,13 @@ async function processStreamingResponse(response, totalFiles, operationType) {
               break;
               
             case 'error':
-              showToast(`エラー: ${data.message}`, 'error');
+              utilsShowToast(`エラー: ${data.message}`, 'error');
               
               // フラグをクリアしてから確実に再描画
               if (useProgressUI) {
                 hideProcessProgressUI();
               } else {
-                hideLoading();
+                utilsHideLoading();
               }
               appState.set('ociObjectsBatchDeleteLoading', false);
               await loadOciObjects(!useProgressUI);
@@ -1285,13 +1285,13 @@ async function processStreamingResponse(response, totalFiles, operationType) {
                 updateProcessProgressUI({ overallStatus: finalStatus });
                 showProcessProgressCloseButton();
               } else {
-                hideLoading();
+                utilsHideLoading();
               }
               
               if (data.success) {
-                showToast(data.message, 'success');
+                utilsShowToast(data.message, 'success');
               } else {
-                showToast(`${data.message}\n成功: ${data.success_count}件、失敗: ${data.failed_count}件`, 'warning');
+                utilsShowToast(`${data.message}\n成功: ${data.success_count}件、失敗: ${data.failed_count}件`, 'warning');
               }
               
               let operationName = '';
@@ -1435,7 +1435,7 @@ function showProcessProgressUI(objectNames, operationType) {
   console.log('✅ showProcessProgressUI called:', { objectNames, operationType });
   
   // 既存のローディングオーバーレイを非表示にする
-  hideLoading();
+  utilsHideLoading();
   
   // 文書管理タブに切り替え（メインページに進捗UIを表示するため）
   const documentManagementTab = document.querySelector('[onclick="switchTab(\'documentManagement\')"]');
