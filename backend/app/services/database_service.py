@@ -259,9 +259,6 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
         
         return {'success': False, 'message': user_msg}
     
-    return {'success': False, 'message': f'不明な操作: {func_name}'}
-
-
 class DatabaseService:
     """データベース管理サービス（単例モード）
     
@@ -1976,6 +1973,22 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"ストレージ情報取得エラー: {e}")
             return None
+
+
+    def shutdown(self):
+        """データベースサービスのシャットダウン処理"""
+        logger.info("DatabaseServiceをシャットダウン中...")
+        
+        try:
+            # 接続プールのクローズ
+            if hasattr(self, 'pool_manager') and self.pool_manager:
+                logger.info("データベース接続プールをクローズ中...")
+                self.pool_manager.close_pool(timeout=30, force=True)  # 30秒タイムアウト、強制モード
+                logger.info("データベース接続プールをクローズしました")
+        except Exception as e:
+            logger.error(f"データベースサービスシャットダウンエラー: {e}")
+        
+        logger.info("DatabaseServiceシャットダウン完了")
 
 
 # グローバルインスタンス

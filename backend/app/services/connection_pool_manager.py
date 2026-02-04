@@ -355,17 +355,70 @@ class ConnectionPoolManager:
                     logger.error(f"接続取得失敗: {self.MAX_RETRIES}回試行後")
                     raise
     
-    def close_pool(self):
-        """接続プールをクローズ"""
-        if self._pool:
-            try:
-                logger.info("接続プールをクローズしています...")
+    def close_pool(self, timeout: Optional[int] = 30, force: bool = False):
+        """接続プールをクローズ
+        
+        Args:
+            timeout: クローズタイムアウト（秒）。Noneの場合はデフォルト動作
+            force: 強制クローズフラグ。Trueの場合、タイムアウト後に強制的にプールをクリア
+        """
+        if not self._pool:
+            logger.debug("接続プールは既にクローズされています")
+            return
+            
+        try:
+            logger.info(f"接続プールをクローズしています...(timeout={timeout}s, force={force})")
+            
+            if timeout is not None:
+                # タイムアウト付きクローズの実装
+                import threading
+                import signal
+                
+                def close_with_timeout():
+                    try:
+                        self._pool.close()
+                        return True
+                    except Exception as e:
+                        logger.error(f"接続プールクローズ中にエラー発生: {e}")
+                        return False
+                
+                # スレッドでクローズ処理を実行
+                close_thread = threading.Thread(target=close_with_timeout)
+                close_thread.daemon = True
+                close_thread.start()
+                
+                close_thread.join(timeout=timeout)
+                
+                if close_thread.is_alive():
+                    logger.warning(f"接続プールクローズが{timeout}秒以内に完了しませんでした")
+                    if force:
+                        logger.warning("強制モード: プールを強制的にクリアします")
+                        # スレッドを強制終了できないので、プール参照をクリア
+                        self._pool = None
+                        logger.info("強制的にプール参照をクリアしました")
+                        return
+                    else:
+                        logger.warning("タイムアウトしましたが、強制フラグがFalseのため待機継続")
+                        # 追加の待機時間
+                        close_thread.join(timeout=10)
+                        if close_thread.is_alive():
+                            logger.error("追加待機後もクローズが完了しませんでした")
+                        else:
+                            logger.info("追加待機後にクローズが完了しました")
+                else:
+                    logger.info("✔ 接続プールを正常にクローズしました")
+            else:
+                # デフォルトのクローズ処理
                 self._pool.close()
                 logger.info("✔ 接続プールをクローズしました")
-            except Exception as e:
-                logger.error(f"接続プールクローズエラー: {e}")
-            finally:
-                self._pool = None
+                
+        except Exception as e:
+            logger.error(f"接続プールクローズエラー: {e}")
+            if force:
+                logger.warning("エラー発生時の強制モード: プールを強制的にクリアします")
+        finally:
+            self._pool = None
+            logger.debug("プール参照をクリアしました")
     
     def get_pool_status(self) -> Dict[str, Any]:
         """接続プールの状態を取得
