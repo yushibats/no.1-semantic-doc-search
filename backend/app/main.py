@@ -1483,7 +1483,7 @@ async def search_documents(query: SearchQuery, request: Request):
     try:
         start_time = time.time()
         
-        logger.info(f"検索開始: query='{query.query}', top_k={query.top_k}, min_score={query.min_score}")
+        logger.info(f"検索開始: query='{query.query}', top_k={query.top_k}, min_score={query.min_score}, filename_filter='{query.filename_filter}'")
         
         # 1. テキストクエリからembeddingベクトルを生成
         query_embedding = image_vectorizer.generate_text_embedding(query.query)
@@ -1504,7 +1504,8 @@ async def search_documents(query: SearchQuery, request: Request):
         search_results = await image_vectorizer.search_similar_images_async(
             query_embedding=query_embedding,
             limit=query.top_k,
-            threshold=query.min_score
+            threshold=query.min_score,
+            filename_filter=query.filename_filter
         )
         
         if not search_results:
@@ -1638,6 +1639,7 @@ async def search_documents_by_image(
     image: UploadFile = File(...),
     top_k: int = Form(10),
     min_score: float = Form(0.7),
+    filename_filter: str = Form(None),
     request: Request = None
 ):
     """
@@ -1647,6 +1649,7 @@ async def search_documents_by_image(
         image: 検索する画像ファイル (PNG, JPG, JPEG)
         top_k: 取得する最大件数
         min_score: 最小スコア (0.0-1.0)
+        filename_filter: ファイル名部分一致フィルタ（任意）
         request: HTTPリクエスト
     
     Returns:
@@ -1676,7 +1679,7 @@ async def search_documents_by_image(
         if file_size == 0:
             raise HTTPException(status_code=400, detail="空のファイルです")
         
-        logger.info(f"画像検索開始: filename={image.filename}, size={file_size}, top_k={top_k}, min_score={min_score}")
+        logger.info(f"画像検索開始: filename={image.filename}, size={file_size}, top_k={top_k}, min_score={min_score}, filename_filter='{filename_filter}'")
         
         # 1. 画像からembeddingベクトルを生成
         image_data = io.BytesIO(await image.read())
@@ -1699,7 +1702,8 @@ async def search_documents_by_image(
         search_results = await image_vectorizer.search_similar_images_async(
             query_embedding=query_embedding,
             limit=top_k,
-            threshold=min_score
+            threshold=min_score,
+            filename_filter=filename_filter
         )
         
         if not search_results:

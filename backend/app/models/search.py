@@ -7,6 +7,7 @@ class SearchQuery(BaseModel):
     query: str
     top_k: Optional[int] = 10
     min_score: Optional[float] = 0.7  # デフォルトを0.7に設定
+    filename_filter: Optional[str] = None  # ファイル名部分一致フィルタ（任意）
 
 class ImageSearchResult(BaseModel):
     """画像検索結果(個別のページ画像)"""

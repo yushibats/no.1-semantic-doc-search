@@ -110,6 +110,7 @@ export async function performImageSearch() {
   }
   
   // 共通のフィルター値を使用
+  const filenameFilter = document.getElementById('filenameFilter').value.trim();
   const topK = parseInt(document.getElementById('topK').value) || 10;
   const minScore = parseFloat(document.getElementById('minScore').value) || 0.7;
   
@@ -121,6 +122,9 @@ export async function performImageSearch() {
     formData.append('image', selectedSearchImage);
     formData.append('top_k', topK.toString());
     formData.append('min_score', minScore.toString());
+    if (filenameFilter) {
+      formData.append('filename_filter', filenameFilter);
+    }
     
     const data = await authApiCall('/ai/api/search/image', {
       method: 'POST',
@@ -173,6 +177,7 @@ function getAuthenticatedImageUrl(urlOrBucket, objectName) {
  */
 export async function performSearch() {
   const query = document.getElementById('searchQuery').value.trim();
+  const filenameFilter = document.getElementById('filenameFilter').value.trim();
   const topK = parseInt(document.getElementById('topK').value) || 10;
   const minScore = parseFloat(document.getElementById('minScore').value) || 0.7;
   
@@ -184,10 +189,15 @@ export async function performSearch() {
   try {
     utilsShowLoading('検索中...');
     
+    const requestBody = { query, top_k: topK, min_score: minScore };
+    if (filenameFilter) {
+      requestBody.filename_filter = filenameFilter;
+    }
+    
     const data = await authApiCall('/ai/api/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, top_k: topK, min_score: minScore })
+      body: JSON.stringify(requestBody)
     });
     
     utilsHideLoading();

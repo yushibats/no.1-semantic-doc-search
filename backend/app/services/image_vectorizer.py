@@ -495,7 +495,7 @@ class ImageVectorizer:
             logger.error(f"ベクトル化状態取得エラー: {e}")
             return result
     
-    def search_similar_images(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7) -> Optional[List[Dict[str, Any]]]:
+    def search_similar_images(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7, filename_filter: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """
         類似画像を検索（2テーブルJOIN、接続プール経由）
             
@@ -503,6 +503,7 @@ class ImageVectorizer:
             query_embedding: 検索用のembeddingベクトル
             limit: 最大取得件数
             threshold: 類似度閾値（0.0-1.0）
+            filename_filter: ファイル名部分一致フィルタ（任意）
                 
         Returns:
             類似画像のリスト（FILE_INFOとIMG_EMBEDDINGSをJOINした結果）
@@ -518,7 +519,12 @@ class ImageVectorizer:
                     
                 with connection.cursor() as cursor:
                     # FILE_INFOとIMG_EMBEDDINGSをJOINしてベクトル検索
-                    sql = """
+                    # filename_filterが指定されている場合はLIKE検索を追加（大文字小文字を区別しない）
+                    where_clause = "VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) <= :threshold"
+                    if filename_filter:
+                        where_clause += " AND UPPER(f.ORIGINAL_FILENAME) LIKE UPPER(:filename_filter)"
+                    
+                    sql = f"""
                     SELECT 
                         ie.ID as embed_id,
                         ie.FILE_ID as file_id,
@@ -539,17 +545,22 @@ class ImageVectorizer:
                     INNER JOIN 
                         FILE_INFO f ON ie.FILE_ID = f.FILE_ID
                     WHERE 
-                        VECTOR_DISTANCE(ie.EMBEDDING, :query_embedding, COSINE) <= :threshold
+                        {where_clause}
                     ORDER BY 
                         vector_distance
                     FETCH FIRST :limit ROWS ONLY
                     """
-                        
-                    cursor.execute(sql, {
+                    
+                    # パラメータ設定
+                    params = {
                         'query_embedding': embedding_array,
                         'threshold': threshold,
                         'limit': limit
-                    })
+                    }
+                    if filename_filter:
+                        params['filename_filter'] = f'%{filename_filter}%'
+                        
+                    cursor.execute(sql, params)
                         
                     results = []
                     for row in cursor:
@@ -573,15 +584,16 @@ class ImageVectorizer:
                             'uploaded_at': uploaded_at_str,
                             'vector_distance': float(row[13])
                         })
-                        
-                    logger.info(f"ベクトル検索完了: {len(results)}件の画像がマッチ, threshold={threshold}")
+                    
+                    filter_info = f", filename_filter='{filename_filter}'" if filename_filter else ""
+                    logger.info(f"ベクトル検索完了: {len(results)}件の画像がマッチ, threshold={threshold}{filter_info}")
                     return results
                     
         except Exception as e:
             logger.error(f"ベクトル検索エラー: {e}", exc_info=True)
             return None
     
-    async def search_similar_images_async(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7) -> Optional[List[Dict[str, Any]]]:
+    async def search_similar_images_async(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7, filename_filter: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """
         非同期バージョン: 類似画像を検索（イベントループをブロックしない）
             
@@ -591,6 +603,7 @@ class ImageVectorizer:
             query_embedding: 検索用のembeddingベクトル
             limit: 最大取得件数
             threshold: 類似度閾値（0.0-1.0）
+            filename_filter: ファイル名部分一致フィルタ（任意）
                 
         Returns:
             類似画像のリスト、または失敗時はNone
@@ -605,7 +618,8 @@ class ImageVectorizer:
                 self.search_similar_images,
                 query_embedding,
                 limit,
-                threshold
+                threshold,
+                filename_filter
             )
                 
             if results is not None:
