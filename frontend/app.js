@@ -20,7 +20,9 @@ import {
   loadDbStorage,
   refreshDbStorage,
   refreshDbTables,
-  loadOciObjects
+  loadOciObjects,
+  vectorizeSelectedOciObjects,
+  deleteSelectedOciObjects
 } from './src/modules/document.js';
 import { 
   loadDbConnectionSettings, 
@@ -1927,8 +1929,8 @@ window.removeFileFromSelection = removeFileFromSelection;
 window.closeUploadProgress = closeUploadProgress;
 
 // OCI Object Storage操作（モジュール版を使用）
-window.vectorizeSelectedOciObjects = ociVectorizeSelectedOciObjects;
-window.deleteSelectedOciObjects = ociDeleteSelectedOciObjects;
+window.vectorizeSelectedOciObjects = vectorizeSelectedOciObjects;
+window.deleteSelectedOciObjects = deleteSelectedOciObjects;
 
 // 検索関連（window.searchModuleを使用）
 // 注: window.searchModule.performSearch(), window.searchModule.clearSearchResults() を使用してください
@@ -2012,9 +2014,78 @@ function initImageSearchDropZone() {
   });
 }
 
+/**
+ * 画像検索ペースト機能の初期化
+ */
+function initImageSearchPaste() {
+  // グローバルペーストイベントをリスン
+  document.addEventListener('paste', (e) => {
+    // 画像検索タブがアクティブかチェック
+    const imageSearchPanel = document.getElementById('imageSearchPanel');
+    if (!imageSearchPanel || imageSearchPanel.style.display === 'none') {
+      return; // 画像検索タブが表示されていない場合は何もしない
+    }
+    
+    // テキストエリアやインプットフィールドにフォーカスがある場合は通常のペースト動作を維持
+    const activeElement = document.activeElement;
+    if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA')) {
+      return;
+    }
+    
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    
+    // クリップボードから画像を探す
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      
+      if (item.type.match(/^image\/(png|jpeg|jpg)$/)) {
+        e.preventDefault(); // デフォルトのペースト動作を防ぐ
+        
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        
+        // ファイルサイズチェック (最大10MB)
+        const maxSize = 10 * 1024 * 1024;
+        if (blob.size > maxSize) {
+          utilsShowToast('画像ファイルは10MB以下にしてください', 'warning');
+          return;
+        }
+        
+        // ファイル名を生成（タイムスタンプ付き）
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const ext = blob.type.split('/')[1] || 'png';
+        const fileName = `pasted-image-${timestamp}.${ext}`;
+        
+        // Blobから新しいFileオブジェクトを作成
+        const file = new File([blob], fileName, { type: blob.type });
+        
+        // ファイル選択を疑似的に実行
+        const fileInput = document.getElementById('searchImageInput');
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        fileInput.files = dataTransfer.files;
+        
+        // ファイル選択イベントを発火
+        const event = new Event('change', { bubbles: true });
+        fileInput.dispatchEvent(event);
+        
+        // トーストで通知
+        utilsShowToast('クリップボードから画像を読み込みました', 'success');
+        
+        break; // 最初の画像のみ処理
+      }
+    }
+  });
+}
+
 // DOMContentLoaded時に初期化
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initImageSearchDropZone);
+  document.addEventListener('DOMContentLoaded', () => {
+    initImageSearchDropZone();
+    initImageSearchPaste();
+  });
 } else {
   initImageSearchDropZone();
+  initImageSearchPaste();
 }
