@@ -1,11 +1,9 @@
 // ========================================
 // モジュールインポート
 // ========================================
-import { appState, setAuthState, getAuthState } from './src/state.js';
-import { apiCall as authApiCall, loadConfig, showLoginModal as authShowLoginModal, 
-         hideLoginModal as authHideLoginModal, updateUserInfo as authUpdateUserInfo, 
+import { appState, setAuthState } from './src/state.js';
+import { apiCall as authApiCall, loadConfig as authLoadConfig, showLoginModal as authShowLoginModal, 
          checkLoginStatus as authCheckLoginStatus } from './src/modules/auth.js';
-import { closeImageModal as searchCloseImageModal } from './src/modules/search.js';
 import { 
   showToast as utilsShowToast, 
   showLoading as utilsShowLoading, 
@@ -16,13 +14,6 @@ import {
 } from './src/modules/utils.js';
 import {
   loadOciSettings,
-  saveOciSettings,
-  testOciConnection,
-  handlePrivateKeyFileSelect,
-  clearPrivateKey,
-  updateObjectStorageStatusBadge,
-  refreshObjectStorageSettings,
-  testObjectStorageConnection
 } from './src/modules/oci.js';
 import {
   vectorizeSelectedOciObjects as ociVectorizeSelectedOciObjects,
@@ -3266,7 +3257,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // console.log('資料みつかるくん - 初期化開始');
   
   // 設定を読み込む
-  await loadConfig();
+  await authLoadConfig();
   
   // ログイン状態を確認
   await authCheckLoginStatus();
