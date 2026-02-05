@@ -134,6 +134,9 @@ export async function performImageSearch() {
     utilsHideLoading();
     displaySearchResults(data);
     
+    // 検索完了メッセージを表示
+    utilsShowToast('画像検索が完了しました', 'success');
+    
   } catch (error) {
     utilsHideLoading();
     utilsShowToast(`画像検索エラー: ${error.message}`, 'error');
@@ -202,6 +205,9 @@ export async function performSearch() {
     
     utilsHideLoading();
     displaySearchResults(data);
+    
+    // 検索完了メッセージを表示
+    utilsShowToast('検索が完了しました', 'success');
     
   } catch (error) {
     utilsHideLoading();
