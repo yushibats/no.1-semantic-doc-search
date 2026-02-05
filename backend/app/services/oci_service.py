@@ -651,9 +651,11 @@ class OCIService:
                         # ファイルの場合：画像ファイル → 画像フォルダ → ファイル本体の順に削除
                         # ステップ1: ページ画像化で生成された画像ファイルを削除
                         # 注: 画像フォルダ名は「ファイル名.pdf/」ではなく「ファイル名/」（拡張子なし）
-                        from pathlib import Path
-                        file_path = Path(obj_name)
-                        file_name_without_ext = file_path.stem  # 拡張子を除去
+                        # 拡張子を除去（最後の.より前の部分を取得）
+                        if '.' in obj_name:
+                            file_name_without_ext = obj_name.rsplit('.', 1)[0]
+                        else:
+                            file_name_without_ext = obj_name
                         image_folder_name = file_name_without_ext + '/'
                         logger.info(f"画像フォルダ名: {image_folder_name} (元のファイル: {obj_name})")
                         try:
