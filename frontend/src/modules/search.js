@@ -299,7 +299,7 @@ export function displaySearchResults(data) {
                     background: white;
                     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
                   "
-                  onclick="window.searchModule.showSearchImageModal('${imageUrl}', 'ページ ${img.page_number}', ${img.vector_distance})"
+                  onclick="window.searchModule.showSearchImageModal(${fileIndex}, ${imgIndex})"
                   onmouseover="this.style.transform='translateY(-4px)'; this.style.boxShadow='0 8px 16px rgba(102, 126, 234, 0.3)'; this.style.borderColor='#667eea';"
                   onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 4px rgba(0,0,0,0.1)'; this.style.borderColor='#e2e8f0';"
                 >
@@ -354,20 +354,44 @@ export function displaySearchResults(data) {
     
     return fileCardHtml;
   }).join('');
+  
+  // 検索結果データをグローバルに保存（画像モーダル用）
+  window._searchResultsData = data;
 }
 
 /**
- * 検索結果用画像モーダルを表示（vectorDistance対応版）
- * @param {string} imageUrl - 画像URL
- * @param {string} title - タイトル
- * @param {number} vectorDistance - ベクトル距離
+ * 検索結果用画像モーダルを表示（ナビゲーション対応版）
+ * @param {number} fileIndex - ファイルのインデックス
+ * @param {number} imageIndex - 画像のインデックス
  */
-export function showSearchImageModal(imageUrl, title, vectorDistance) {
-  const matchPercent = (1 - vectorDistance) * 100;
-  const filename = `${title} - マッチ度: ${matchPercent.toFixed(1)}% | 距離: ${vectorDistance.toFixed(4)}`;
+export function showSearchImageModal(fileIndex, imageIndex) {
+  // グローバルに保存された検索結果データを取得
+  const data = window._searchResultsData;
+  if (!data || !data.results || !data.results[fileIndex]) {
+    utilsShowToast('画像データが見つかりません', 'error');
+    return;
+  }
   
-  // 共通のshowImageModal関数を呼び出す
-  utilsShowImageModal(imageUrl, filename);
+  const fileResult = data.results[fileIndex];
+  const matchedImages = fileResult.matched_images;
+  
+  if (!matchedImages || imageIndex >= matchedImages.length) {
+    utilsShowToast('画像が見つかりません', 'error');
+    return;
+  }
+  
+  // 画像URLとタイトルのリストを作成
+  const imageUrls = matchedImages.map(img => {
+    return img.url ? getAuthenticatedImageUrl(img.url) : getAuthenticatedImageUrl(img.bucket, img.object_name);
+  });
+  
+  const imageTitles = matchedImages.map(img => {
+    const matchPercent = (1 - img.vector_distance) * 100;
+    return `ページ ${img.page_number} - マッチ度: ${matchPercent.toFixed(1)}% | 距離: ${img.vector_distance.toFixed(4)}`;
+  });
+  
+  // 共通のshowImageModal関数を呼び出す（画像リストとインデックスを渡す）
+  utilsShowImageModal(imageUrls[imageIndex], imageTitles[imageIndex], imageUrls, imageIndex, imageTitles);
 }
 
 /**

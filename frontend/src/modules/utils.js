@@ -99,13 +99,19 @@ export function hideLoading() {
 
 // ESCキーハンドラーを保持するグローバル変数
 let _imageModalEscHandler = null;
+let _imageModalCurrentIndex = 0;
+let _imageModalImages = [];
+let _imageModalTitles = [];
 
 /**
  * 画像モーダルを表示
  * @param {string} imageUrl - 画像URL
  * @param {string} filename - ファイル名
+ * @param {Array} images - 画像URLの配列（ナビゲーション用、オプション）
+ * @param {number} currentIndex - 現在の画像のインデックス（オプション）
+ * @param {Array} titles - 画像タイトルの配列（オプション）
  */
-export function showImageModal(imageUrl, filename = '') {
+export function showImageModal(imageUrl, filename = '', images = null, currentIndex = 0, titles = null) {
   const existingModal = document.getElementById('imageModalOverlay');
   if (existingModal) {
     existingModal.remove();
@@ -117,11 +123,126 @@ export function showImageModal(imageUrl, filename = '') {
     _imageModalEscHandler = null;
   }
   
+  // 画像リストとインデックスを保存
+  _imageModalImages = images || [imageUrl];
+  _imageModalCurrentIndex = currentIndex;
+  _imageModalTitles = titles || [filename];
+  
+  const hasNavigation = images && images.length > 1;
+  
   const modal = document.createElement('div');
   modal.id = 'imageModalOverlay';
   modal.className = 'image-modal-overlay';
+  
+  // ナビゲーションボタンを含むHTML
   modal.innerHTML = `
-    <img src="${imageUrl}" alt="${filename}" class="image-modal-img" onclick="event.stopPropagation()">
+    <div style="position: relative; max-width: 90vw; max-height: 90vh; display: flex; align-items: center; justify-content: center;">
+      ${hasNavigation ? `
+        <button 
+          id="imageModalPrevBtn"
+          style="
+            position: absolute;
+            left: -60px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid #667eea;
+            color: #667eea;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 24px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 10001;
+          "
+          onclick="event.stopPropagation()"
+          onmouseover="this.style.background='#667eea'; this.style.color='white'; this.style.transform='translateY(-50%) scale(1.1)';"
+          onmouseout="this.style.background='rgba(255, 255, 255, 0.9)'; this.style.color='#667eea'; this.style.transform='translateY(-50%) scale(1)';"
+        >&lt;</button>
+      ` : ''}
+      
+      <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+        ${hasNavigation ? `
+          <div style="
+            position: absolute;
+            top: -40px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            color: white;
+            font-size: 14px;
+            background: rgba(0,0,0,0.5);
+            padding: 6px 12px;
+            border-radius: 6px;
+            backdrop-filter: blur(4px);
+          ">
+            <span id="imageModalFilename">${filename}</span>
+            <span style="margin-left: 12px; opacity: 0.8;">${currentIndex + 1} / ${images.length}</span>
+          </div>
+        ` : `
+          ${filename ? `
+            <div style="
+              position: absolute;
+              top: -40px;
+              left: 0;
+              right: 0;
+              text-align: center;
+              color: white;
+              font-size: 14px;
+              background: rgba(0,0,0,0.5);
+              padding: 6px 12px;
+              border-radius: 6px;
+              backdrop-filter: blur(4px);
+            ">${filename}</div>
+          ` : ''}
+        `}
+        
+        <img 
+          id="imageModalImg"
+          src="${imageUrl}" 
+          alt="${filename}" 
+          class="image-modal-img" 
+          onclick="event.stopPropagation()"
+          style="max-width: 90vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.5);"
+        >
+      </div>
+      
+      ${hasNavigation ? `
+        <button 
+          id="imageModalNextBtn"
+          style="
+            position: absolute;
+            right: -60px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid #667eea;
+            color: #667eea;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 24px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 10001;
+          "
+          onclick="event.stopPropagation()"
+          onmouseover="this.style.background='#667eea'; this.style.color='white'; this.style.transform='translateY(-50%) scale(1.1)';"
+          onmouseout="this.style.background='rgba(255, 255, 255, 0.9)'; this.style.color='#667eea'; this.style.transform='translateY(-50%) scale(1)';"
+        >&gt;</button>
+      ` : ''}
+    </div>
   `;
   
   // モーダルを閉じる関数
@@ -134,13 +255,68 @@ export function showImageModal(imageUrl, filename = '') {
     }
   }
   
+  // 画像を更新する関数
+  const updateImage = (newIndex) => {
+    if (newIndex < 0 || newIndex >= _imageModalImages.length) return;
+    
+    _imageModalCurrentIndex = newIndex;
+    const img = document.getElementById('imageModalImg');
+    const filenameEl = document.getElementById('imageModalFilename');
+    
+    if (img) {
+      img.src = _imageModalImages[newIndex];
+      img.alt = _imageModalTitles[newIndex] || '';
+    }
+    
+    if (filenameEl) {
+      filenameEl.textContent = _imageModalTitles[newIndex] || '';
+      // カウンター表示も更新
+      const counterEl = filenameEl.nextElementSibling;
+      if (counterEl) {
+        counterEl.textContent = `${newIndex + 1} / ${_imageModalImages.length}`;
+      }
+    }
+  }
+  
+  // ナビゲーションボタンのイベント設定
+  if (hasNavigation) {
+    setTimeout(() => {
+      const prevBtn = document.getElementById('imageModalPrevBtn');
+      const nextBtn = document.getElementById('imageModalNextBtn');
+      
+      if (prevBtn) {
+        prevBtn.onclick = (e) => {
+          e.stopPropagation();
+          const newIndex = (_imageModalCurrentIndex - 1 + _imageModalImages.length) % _imageModalImages.length;
+          updateImage(newIndex);
+        };
+      }
+      
+      if (nextBtn) {
+        nextBtn.onclick = (e) => {
+          e.stopPropagation();
+          const newIndex = (_imageModalCurrentIndex + 1) % _imageModalImages.length;
+          updateImage(newIndex);
+        };
+      }
+    }, 0);
+  }
+  
   // クリックで閉じる
   modal.onclick = closeModal;
   
-  // ESCキーで閉じる
+  // ESCキーで閉じる、矢印キーでナビゲーション
   _imageModalEscHandler = (e) => {
     if (e.key === 'Escape') {
       closeModal();
+    } else if (hasNavigation && e.key === 'ArrowLeft') {
+      e.preventDefault();
+      const newIndex = (_imageModalCurrentIndex - 1 + _imageModalImages.length) % _imageModalImages.length;
+      updateImage(newIndex);
+    } else if (hasNavigation && e.key === 'ArrowRight') {
+      e.preventDefault();
+      const newIndex = (_imageModalCurrentIndex + 1) % _imageModalImages.length;
+      updateImage(newIndex);
     }
   }
   document.addEventListener('keydown', _imageModalEscHandler);
