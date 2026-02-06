@@ -359,15 +359,15 @@ function generateObjectRow(obj, allOciObjects, selectedOciObjects, ociObjectsBat
   const icon = isFolder ? '📁' : (isPageImage ? '🖼️' : '📄');
   const isChecked = selectedOciObjects.includes(obj.name);
   
-  // ページ画像化状態
+  // ページ画像化状態（ページ画像の場合は空表示）
   const hasPageImages = obj.has_page_images;
-  const pageImagesStatusHtml = hasPageImages === null ? '' :
+  const pageImagesStatusHtml = (isPageImage || hasPageImages == null) ? '' :
     (hasPageImages ? '<span class="badge badge-success">✓ 完了</span>' : 
     '<span class="badge badge-neutral">未実行</span>');
   
-  // ベクトル化状態
+  // ベクトル化状態（ページ画像の場合は空表示）
   const hasEmbeddings = obj.has_embeddings;
-  const embeddingsStatusHtml = hasEmbeddings === null ? '' :
+  const embeddingsStatusHtml = (isPageImage || hasEmbeddings == null) ? '' :
     (hasEmbeddings ? '<span class="badge badge-success">✓ 完了</span>' : 
     '<span class="badge badge-neutral">未実行</span>');
   
