@@ -169,7 +169,7 @@ def _convert_file_to_images_worker(
         if file_ext == 'pdf':
             pil_images = convert_from_path(str(temp_file), dpi=200, fmt='PNG')
             images = pil_images
-        elif file_ext in ['ppt', 'pptx', 'doc', 'docx']:
+        elif file_ext in ['ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx']:
             # LibreOfficeでPDFに変換
             subprocess.run(
                 ['soffice', '--headless', '--convert-to', 'pdf', '--outdir', str(temp_dir), str(temp_file)],

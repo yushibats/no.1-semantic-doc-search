@@ -1331,6 +1331,13 @@ function displayDocumentsList(documents) {
     return;
   }
   
+  // 名前降順でソート
+  const sortedDocuments = [...documents].sort((a, b) => {
+    const nameA = (a.filename || '').toLowerCase();
+    const nameB = (b.filename || '').toLowerCase();
+    return nameB.localeCompare(nameA, 'ja');
+  });
+  
   listDiv.innerHTML = `
     <div class="table-wrapper">
       <table class="data-table">
@@ -1345,7 +1352,7 @@ function displayDocumentsList(documents) {
           </tr>
         </thead>
         <tbody>
-          ${documents.map(doc => `
+          ${sortedDocuments.map(doc => `
             <tr>
               <td style="font-weight: 500;">${doc.filename}</td>
               <td>${doc.page_count || '-'}</td>

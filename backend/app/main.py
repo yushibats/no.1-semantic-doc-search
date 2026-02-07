@@ -940,7 +940,7 @@ async def upload_document(file: UploadFile = File(...)):
         
         # 環境変数から設定を取得
         max_size = int(os.getenv("MAX_FILE_SIZE", 200000000))  # 200MB
-        allowed_extensions_str = os.getenv("ALLOWED_EXTENSIONS", "pdf,docx,doc,pptx,ppt,png,jpg,jpeg")
+        allowed_extensions_str = os.getenv("ALLOWED_EXTENSIONS", "pdf,xlsx,xls,docx,doc,pptx,ppt,png,jpg,jpeg")
         allowed_extensions = [ext.strip() for ext in allowed_extensions_str.split(",")]
         
         # ファイル拡張子チェック
@@ -952,6 +952,8 @@ async def upload_document(file: UploadFile = File(...)):
         # 許可されたMIMEタイプ
         allowed_mime_types = {
             'pdf': 'application/pdf',
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'xls': 'application/vnd.ms-excel',
             'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'doc': 'application/msword',
             'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -1066,12 +1068,14 @@ async def upload_multiple_documents(files: List[UploadFile] = File(...)):
             
             # 環境変数から設定を取得
             max_size = int(os.getenv("MAX_FILE_SIZE", 200000000))  # 200MB
-            allowed_extensions_str = os.getenv("ALLOWED_EXTENSIONS", "pdf,docx,doc,pptx,ppt,png,jpg,jpeg")
+            allowed_extensions_str = os.getenv("ALLOWED_EXTENSIONS", "pdf,xlsx,xls,docx,doc,pptx,ppt,png,jpg,jpeg")
             allowed_extensions = [ext.strip() for ext in allowed_extensions_str.split(",")]
             
             # 許可されたMIMEタイプ(品質確保)
             allowed_mime_types = {
                 'pdf': 'application/pdf',
+                'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'xls': 'application/vnd.ms-excel',
                 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                 'doc': 'application/msword',
                 'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',

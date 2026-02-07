@@ -315,8 +315,13 @@ export function displayOciObjectsList(data) {
     disabled: ociObjectsBatchDeleteLoading
   }) || '';
   
-  // テーブル行を生成
-  const tableRowsHtml = objects.map(obj => generateObjectRow(obj, allOciObjects, selectedOciObjects, ociObjectsBatchDeleteLoading)).join('');
+  // テーブル行を生成（名前降順でソート）
+  const sortedObjects = [...objects].sort((a, b) => {
+    const nameA = (a.name || '').toLowerCase();
+    const nameB = (b.name || '').toLowerCase();
+    return nameB.localeCompare(nameA, 'ja');
+  });
+  const tableRowsHtml = sortedObjects.map(obj => generateObjectRow(obj, allOciObjects, selectedOciObjects, ociObjectsBatchDeleteLoading)).join('');
   
   listDiv.innerHTML = `
     <div>
@@ -486,12 +491,24 @@ export function handleOciObjectsJumpPage() {
  * @param {string} objectName - オブジェクト名
  */
 export function toggleOciObjectSelectionHandler(objectName) {
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
   const selectedOciObjects = getSelectedOciObjects();
   const isSelected = selectedOciObjects.includes(objectName);
   toggleOciObjectSelection(objectName, !isSelected);
   
   // UIを再描画して、ボタンの活性状態を更新
-  loadOciObjects(false);
+  loadOciObjects(false).then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 /**
@@ -499,6 +516,10 @@ export function toggleOciObjectSelectionHandler(objectName) {
  * @param {boolean} checked - チェック状態
  */
 export function toggleSelectAllOciObjects(checked) {
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
   const allOciObjects = appState.get('allOciObjects') || [];
   const objects = Array.from(document.querySelectorAll('.data-table tbody tr')).map((row, idx) => {
     const nameCell = row.cells[2];
@@ -509,28 +530,60 @@ export function toggleSelectAllOciObjects(checked) {
   setAllOciObjectsSelection(selectableObjects, checked);
   
   // 再描画
-  loadOciObjects();
+  loadOciObjects().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 /**
  * すべて選択
  */
 export function selectAllOciObjects() {
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
   const allOciObjects = appState.get('allOciObjects') || [];
   const selectableObjects = allOciObjects
     .filter(obj => !isGeneratedPageImage(obj.name, allOciObjects))
     .map(obj => obj.name);
   
   setAllOciObjectsSelection(selectableObjects, true);
-  loadOciObjects();
+  loadOciObjects().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 /**
  * すべて解除
  */
 export function clearAllOciObjects() {
+  // スクロール位置を保存
+  const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
+  const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
+  
   appState.set('selectedOciObjects', []);
-  loadOciObjects();
+  loadOciObjects().then(() => {
+    // スクロール位置を復元
+    const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');
+    if (scrollableAreaAfter) {
+      requestAnimationFrame(() => {
+        scrollableAreaAfter.scrollTop = scrollTop;
+      });
+    }
+  });
 }
 
 // ========================================

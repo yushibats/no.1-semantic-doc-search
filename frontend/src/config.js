@@ -20,9 +20,13 @@ export const API_CONFIG = {
 export const UPLOAD_CONFIG = {
   MAX_FILES: 10,
   MAX_FILE_SIZE: 200 * 1024 * 1024, // 200MB
-  ALLOWED_EXTENSIONS: ['pdf', 'pptx', 'ppt', 'png', 'jpg', 'jpeg'],
+  ALLOWED_EXTENSIONS: ['pdf', 'xlsx', 'xls', 'docx', 'doc', 'pptx', 'ppt', 'png', 'jpg', 'jpeg'],
   ALLOWED_MIME_TYPES: {
     pdf: 'application/pdf',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls: 'application/vnd.ms-excel',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc: 'application/msword',
     pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     ppt: 'application/vnd.ms-powerpoint',
     png: 'image/png',
