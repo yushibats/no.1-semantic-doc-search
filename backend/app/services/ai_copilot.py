@@ -17,6 +17,12 @@ Oracle Generative AIを使用したAIアシスタント機能を提供するサ�
 - コンテキスト長の制限考慮
 - セキュリティとプライバシーの確保
 - エラーハンドリングとフォールバック処理
+
+ネットワーク通信に関する注意点:
+- OCI Generative AI APIへのHTTPS通信
+- レート制限による指数バックオフリトライ
+- タイムアウト設定（接続: 10秒、読み取り: 240秒）
+- エラーレスポンスの適切な処理と再試行
 """
 import asyncio
 import base64
@@ -77,11 +83,21 @@ class AICopilotService:
         """
         Generative AI APIのレート制限エラーを判定
         
+        OCI Generative AI APIから返されるレート制限エラーを
+        識別するためのヘルパー関数です。
+        
         Args:
             error: 発生した例外
             
         Returns:
             bool: レート制限エラーの場合はTrue
+            
+        ネットワークエラー判定の詳細:
+        - HTTP 429 ステータスコード
+        - "too many requests" メッセージ
+        - "rate limit exceeded" メッセージ
+        - "quota exceeded" メッセージ
+        - モデルビジー状態の検出
         """
         error_str = str(error).lower()
         return (

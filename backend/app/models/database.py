@@ -1,12 +1,33 @@
 """
 データベース管理関連のデータモデル
+
+Oracle Database との接続、クエリ実行、テーブル管理など
+データベース操作に必要なデータ構造を定義します。
+
+主な機能:
+- データベース接続設定の管理
+- テーブル情報とストレージ情報の表現
+- データベース操作のリクエスト/レスポンス定義
+- ページネーション情報の管理
 """
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 
 class DatabaseSettings(BaseModel):
-    """データベース接続設定"""
+    """
+    データベース接続設定
+    
+    Oracle Database への接続に必要な設定情報を保持します。
+    Wallet ファイルの管理と利用可能なサービス名のリストも含まれます。
+    
+    Attributes:
+        username (Optional[str]): データベースユーザー名
+        password (Optional[str]): データベースパスワード
+        dsn (Optional[str]): データソース名（表示用）
+        wallet_uploaded (bool): Wallet ファイルがアップロード済みかどうか
+        available_services (List[str]): 利用可能なサービス名リスト
+    """
     username: Optional[str] = None
     password: Optional[str] = None
     dsn: Optional[str] = None  # 表示用DSN
