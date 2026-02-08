@@ -21,13 +21,15 @@ import { showLoading as utilsShowLoading, hideLoading as utilsHideLoading, showT
 /**
  * ページ画像化で生成されたファイルかどうかを判定します。
  * 親ファイル名とフォルダ構造に基づいて判定します。
+ * 3桁（page_001.png）および6桁（page_000001.png）の形式に対応しています。
  * 
  * @param {string} objectName - 判定対象のオブジェクト名
  * @param {Array<Object>} [allObjects=[]] - 全オブジェクトのリスト（親ファイルの存在確認用）
  * @returns {boolean} ページ画像化されたファイルの場合true
  */
 export function isGeneratedPageImage(objectName, allObjects = []) {
-  const pageImagePattern = /\/page_\d{3}\.png$/;
+  // 3桁または6桁のページ番号に対応
+  const pageImagePattern = /\/page_(\d{3}|\d{6})\.png$/;
   if (!pageImagePattern.test(objectName)) {
     return false;
   }
@@ -42,6 +44,35 @@ export function isGeneratedPageImage(objectName, allObjects = []) {
     const objNameWithoutExt = obj.name.replace(/\.[^.]+$/, '');
     return objNameWithoutExt === parentFolderPath;
   });
+}
+
+/**
+ * ページ画像からページ番号を抽出します。
+ * 3桁（page_001.png）および6桁（page_000001.png）の形式に対応しています。
+ * 
+ * @param {string} objectName - ページ画像のオブジェクト名
+ * @returns {number|null} ページ番号（数値）、抽出できない場合はnull
+ */
+export function extractPageNumber(objectName) {
+  const match = objectName.match(/\/page_(\d{3}|\d{6})\.png$/);
+  if (match) {
+    return parseInt(match[1], 10);
+  }
+  return null;
+}
+
+/**
+ * ページ画像の親ファイルパス（拡張子なし）を取得します。
+ * 
+ * @param {string} objectName - ページ画像のオブジェクト名
+ * @returns {string|null} 親ファイルパス、取得できない場合はnull
+ */
+export function getPageImageParentPath(objectName) {
+  const lastSlashIndex = objectName.lastIndexOf('/');
+  if (lastSlashIndex === -1) {
+    return null;
+  }
+  return objectName.substring(0, lastSlashIndex);
 }
 
 /**
@@ -328,11 +359,48 @@ export function displayOciObjectsList(data) {
     disabled: ociObjectsBatchDeleteLoading
   }) || '';
   
-  // テーブル行を生成（名前降順でソート）
+  // テーブル行を生成（ファイル先 → ページ画像後、ページ画像は数値順でソート）
+  // 期待順序: ファイルA → ファイルAのページ画像（001,002,...,010,011,...） → ファイルB → ファイルBのページ画像...
   const sortedObjects = [...objects].sort((a, b) => {
-    const nameA = (a.name || '').toLowerCase();
-    const nameB = (b.name || '').toLowerCase();
-    return nameB.localeCompare(nameA, 'ja');
+    const nameA = a.name || '';
+    const nameB = b.name || '';
+    
+    const isPageImageA = isGeneratedPageImage(nameA, allOciObjects);
+    const isPageImageB = isGeneratedPageImage(nameB, allOciObjects);
+    
+    // ソート用の基準名を取得（ファイルは拡張子なし名、ページ画像は親ファイル名）
+    const baseNameA = isPageImageA ? getPageImageParentPath(nameA) : nameA.replace(/\.[^.]+$/, '');
+    const baseNameB = isPageImageB ? getPageImageParentPath(nameB) : nameB.replace(/\.[^.]+$/, '');
+    
+    // 基準名が異なる場合、基準名の降順でソート
+    if (baseNameA !== baseNameB) {
+      return (baseNameB || '').localeCompare(baseNameA || '', 'ja');
+    }
+    
+    // 基準名が同じ場合（同じファイルグループ内）
+    // ファイル優先（ファイルが先、ページ画像が後）
+    if (!isPageImageA && isPageImageB) {
+      return -1; // ファイルが先
+    }
+    if (isPageImageA && !isPageImageB) {
+      return 1; // ページ画像が後
+    }
+    
+    // 両方ともファイル（通常起きないが念のため）
+    if (!isPageImageA && !isPageImageB) {
+      return nameB.localeCompare(nameA, 'ja');
+    }
+    
+    // 両方ともページ画像の場合、ページ番号昇順
+    const pageNumA = extractPageNumber(nameA);
+    const pageNumB = extractPageNumber(nameB);
+    
+    if (pageNumA !== null && pageNumB !== null) {
+      return pageNumA - pageNumB; // 昇順（001, 002, ..., 010, 011, ...）
+    }
+    
+    // ページ番号が抽出できない場合はフォールバック
+    return nameA.localeCompare(nameB, 'ja');
   });
   const tableRowsHtml = sortedObjects.map(obj => generateObjectRow(obj, allOciObjects, selectedOciObjects, ociObjectsBatchDeleteLoading)).join('');
   
