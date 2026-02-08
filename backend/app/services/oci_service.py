@@ -12,7 +12,6 @@ Object Storageへのファイルアップロード、ダウンロード、およ
 """
 import base64
 import configparser
-import json
 import logging
 import os
 import random
