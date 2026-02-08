@@ -10,6 +10,7 @@ Object Storageへのファイルアップロード、ダウンロード、およ
 - ファイルのアップロード/ダウンロード
 - レート制限対応のリトライ処理
 """
+import base64
 import configparser
 import json
 import logging
