@@ -611,8 +611,8 @@ async def list_oci_objects(
         
         total_pages = (total + page_size - 1) // page_size if total > 0 else 1
         
-        # 最適化: 正規表現パターンを事前コンパイル（3桁または6桁に対応）
-        page_image_pattern = re.compile(r'/page_(\d{3}|\d{6})\.png$')
+        # 最適化: 正規表現パターンを事前コンパイル
+        page_image_pattern = re.compile(r'/page_\d{3}\.png$')
         
         # 最適化: O(1)高速検索用のマップを構築
         page_images_map = {}  # {file_base_name: True}
@@ -1044,7 +1044,6 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"文書アップロードエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/documents/upload/multiple")
 async def upload_multiple_documents(files: List[UploadFile] = File(...)):
     """

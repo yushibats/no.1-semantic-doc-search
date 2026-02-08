@@ -36,7 +36,6 @@ class ImageVectorizer:
     """
     
     def __init__(self):
-        """初期化"""
         self.genai_client = None
         # 注: self.db_connectionは使用しない（並列処理の競合防止）
         self._initialize_genai_only()
@@ -44,13 +43,13 @@ class ImageVectorizer:
     
     def _is_embedding_rate_limit_error(self, error: Exception) -> bool:
         """
-        Embedding APIのレート制限エラーを判定します。
+        Embedding APIのレート制限エラーを判定
         
         Args:
-            error (Exception): 発生した例外オブジェクト
+            error: 発生した例外
             
         Returns:
-            bool: レート制限エラーの場合はTrue、それ以外はFalse
+            bool: レート制限エラーの場合はTrue
         """
         error_str = str(error).lower()
         return (
@@ -63,14 +62,14 @@ class ImageVectorizer:
     
     def _calculate_embedding_backoff_delay(self, attempt: int, is_rate_limit: bool = False) -> float:
         """
-        Embedding API用の指数バックオフ遅延時間を計算します。
+        Embedding API用の指数バックオフ遅延時間を計算
         
         Args:
-            attempt (int): 現在の試行回数 (0から開始)
-            is_rate_limit (bool): レート制限エラーによるリトライかどうか
+            attempt: 試行回数 (0から開始)
+            is_rate_limit: レート制限エラーかどうか
             
         Returns:
-            float: 次のリトライまでの待機時間（秒）
+            float: 待機時間（秒）
         """
         if is_rate_limit:
             # レート制限の場合はより長い待機時間
@@ -93,18 +92,18 @@ class ImageVectorizer:
     
     def _retry_embedding_api_call(self, func, *args, **kwargs) -> Any:
         """
-        Embedding API呼び出しにリトライメカニズムを適用して実行します。
+        Embedding API呼び出しにリトライメカニズムを適用
         
         Args:
-            func (Callable): 実行するAPI関数
-            *args: 関数への位置引数
-            **kwargs: 関数へのキーワード引数
+            func: 実行する関数
+            *args: 関数の引数
+            **kwargs: 関数のキーワード引数
             
         Returns:
-            Any: API関数の実行結果
+            関数の戻り値
             
         Raises:
-            Exception: 最大リトライ回数に達しても成功しなかった場合に送出されます
+            Exception: 最大リトライ回数に達した場合
         """
         last_exception = None
         
@@ -140,10 +139,7 @@ class ImageVectorizer:
             raise last_exception
     
     def _initialize_genai_only(self):
-        """
-        OCI Generative AIクライアントのみを初期化します（DB接続は遅延作成）。
-        設定ファイルが見つからない場合はログに警告を出力して終了します。
-        """
+        """OCIクライアントのみを初期化（DB接続は遅延作成）"""
         try:
             # OCI設定を読み込み
             config_file = os.path.expanduser("~/.oci/config")
@@ -173,32 +169,17 @@ class ImageVectorizer:
             self.genai_client = None
     
     def _get_pool_manager(self):
-        """
-        データベース接続プールマネージャーを取得します。
-        
-        Returns:
-            ConnectionPoolManager: 接続プールマネージャーのインスタンス
-        """
+        """接続プールマネージャーを取得"""
         from app.services.database_service import database_service
         return database_service.pool_manager
     
     def _ensure_pool_initialized(self) -> bool:
-        """
-        接続プールが初期化されているか確認し、必要であれば初期化を試みます。
-        
-        Returns:
-            bool: プールが利用可能な場合はTrue、そうでない場合はFalse
-        """
+        """接続プールの初期化を確認"""
         from app.services.database_service import database_service
         return database_service._ensure_pool_initialized()
     
     def is_connected(self) -> bool:
-        """
-        データベース接続状態をチェックします（接続プール経由）。
-        
-        Returns:
-            bool: 接続が有効な場合はTrue、そうでない場合はFalse
-        """
+        """データベース接続状態をチェック（接続プール経由）"""
         try:
             if not self._ensure_pool_initialized():
                 return False
@@ -212,11 +193,10 @@ class ImageVectorizer:
             return False
     
     def _ensure_tables_exist(self, connection):
-        """
-        必要なテーブル（FILE_INFO, IMG_EMBEDDINGS）が存在することを確認し、なければ作成します。
+        """必要なテーブルが存在することを確認し、なければ作成
         
         Args:
-            connection (oracledb.Connection): データベース接続オブジェクト
+            connection: データベース接続
         """
         if not connection:
             return
@@ -295,16 +275,7 @@ class ImageVectorizer:
                 connection.rollback()
     
     def _image_to_base64(self, image_data: io.BytesIO, content_type: str = "image/png") -> str:
-        """
-        画像データをbase64エンコード文字列に変換します。
-        
-        Args:
-            image_data (io.BytesIO): 画像のバイナリデータ
-            content_type (str): 画像のMIMEタイプ (例: "image/png")
-            
-        Returns:
-            str: Data URIスキーム形式のbase64文字列
-        """
+        """画像データをbase64エンコード"""
         image_data.seek(0)
         image_bytes = image_data.read()
         base64_string = base64.b64encode(image_bytes).decode('utf-8')
@@ -312,14 +283,14 @@ class ImageVectorizer:
     
     def generate_embedding(self, image_data: io.BytesIO, content_type: str = "image/png") -> Optional[np.ndarray]:
         """
-        画像からembeddingベクトルを生成します（リトライ対応）。
+        画像からembeddingベクトルを生成（リトライ対応）
         
         Args:
-            image_data (io.BytesIO): 画像データ
-            content_type (str): 画像のContent-Type
+            image_data: 画像データ（BytesIO）
+            content_type: 画像のContent-Type
             
         Returns:
-            Optional[np.ndarray]: embeddingベクトル（numpy array）、生成失敗時はNone
+            embeddingベクトル（numpy array）、失敗時はNone
         """
         # GenAIクライアントが初期化されていない場合、リトライして初期化を試みる
         if not self.genai_client:
@@ -373,13 +344,13 @@ class ImageVectorizer:
     
     def generate_text_embedding(self, text: str) -> Optional[np.ndarray]:
         """
-        テキストからembeddingベクトルを生成します（検索クエリ用、リトライ対応）。
+        テキストからembeddingベクトルを生成（検索クエリ用、リトライ対応）
         
         Args:
-            text (str): 入力テキスト
+            text: 入力テキスト
             
         Returns:
-            Optional[np.ndarray]: embeddingベクトル（numpy array）、生成失敗時はNone
+            embeddingベクトル（numpy array）、失敗時はNone
         """
         # GenAIクライアントが初期化されていない場合、リトライして初期化を試みる
         if not self.genai_client:
@@ -430,19 +401,7 @@ class ImageVectorizer:
     
     def save_file_info(self, bucket: str, object_name: str, original_filename: str, 
                       file_size: int, content_type: str) -> Optional[int]:
-        """
-        ファイル情報をFILE_INFOテーブルに保存します（接続プール経由）。
-        
-        Args:
-            bucket (str): バケット名
-            object_name (str): オブジェクト名
-            original_filename (str): 元のファイル名
-            file_size (int): ファイルサイズ（バイト）
-            content_type (str): コンテンツタイプ
-            
-        Returns:
-            Optional[int]: 保存されたファイルのID、失敗時はNone
-        """
+        """ファイル情報をFILE_INFOテーブルに保存（接続プール経由）"""
         try:
             if not self._ensure_pool_initialized():
                 logger.error("接続プールの初期化に失敗")
@@ -485,21 +444,7 @@ class ImageVectorizer:
     def save_image_embedding(self, file_id: int, bucket: str, object_name: str, 
                            page_number: int, content_type: str, file_size: int, 
                            embedding: np.ndarray) -> Optional[int]:
-        """
-        画像embeddingをIMG_EMBEDDINGSテーブルに保存します（接続プール経由）。
-        
-        Args:
-            file_id (int): 関連するファイルのID
-            bucket (str): バケット名
-            object_name (str): オブジェクト名
-            page_number (int): ページ番号
-            content_type (str): コンテンツタイプ
-            file_size (int): ファイルサイズ
-            embedding (np.ndarray): embeddingベクトル
-            
-        Returns:
-            Optional[int]: 保存されたembeddingのID、失敗時はNone
-        """
+        """画像embeddingをIMG_EMBEDDINGSテーブルに保存（接続プール経由）"""
         try:
             if not self._ensure_pool_initialized():
                 logger.error("接続プールの初期化に失敗")
@@ -542,15 +487,7 @@ class ImageVectorizer:
             return None
     
     def delete_file_embeddings(self, file_id: int) -> bool:
-        """
-        ファイルに関連するすべてのembeddingを削除します（接続プール経由）。
-        
-        Args:
-            file_id (int): 削除対象のファイルID
-            
-        Returns:
-            bool: 削除成功時はTrue、失敗時はFalse
-        """
+        """ファイルに関連するすべてのembeddingを削除（接続プール経由）"""
         try:
             if not self._ensure_pool_initialized():
                 logger.error("接続プールの初期化に失敗")
@@ -574,16 +511,7 @@ class ImageVectorizer:
             return False
     
     def get_file_id_by_object_name(self, bucket: str, object_name: str) -> Optional[int]:
-        """
-        Object NameからFILE_IDを取得します（接続プール経由）。
-        
-        Args:
-            bucket (str): バケット名
-            object_name (str): オブジェクト名
-            
-        Returns:
-            Optional[int]: ファイルID、見つからない場合やエラー時はNone
-        """
+        """Object NameからFILE_IDを取得（接続プール経由）"""
         try:
             if not self._ensure_pool_initialized():
                 return None
@@ -608,14 +536,14 @@ class ImageVectorizer:
 
     def get_vectorization_status(self, bucket: str, object_names: List[str]) -> Dict[str, bool]:
         """
-        複数ファイルのベクトル化状態を一括取得します（接続プール経由）。
+        複数ファイルのベクトル化状態を一括取得（接続プール経由）
         
         Args:
-            bucket (str): バケット名
-            object_names (List[str]): オブジェクト名のリスト
+            bucket: バケット名
+            object_names: オブジェクト名のリスト
             
         Returns:
-            Dict[str, bool]: {object_name: has_embeddings} の形式で各ファイルのベクトル化状態を返します
+            Dict[object_name, has_embeddings] - 各ファイルのベクトル化状態
         """
         result = {name: False for name in object_names}
         
@@ -666,16 +594,16 @@ class ImageVectorizer:
     
     def search_similar_images(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7, filename_filter: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """
-        類似画像を検索します（2テーブルJOIN、接続プール経由）。
+        類似画像を検索（2テーブルJOIN、接続プール経由）
             
         Args:
-            query_embedding (np.ndarray): 検索用のembeddingベクトル
-            limit (int): 最大取得件数
-            threshold (float): 類似度閾値（0.0-1.0）
-            filename_filter (Optional[str]): ファイル名部分一致フィルタ（任意）
+            query_embedding: 検索用のembeddingベクトル
+            limit: 最大取得件数
+            threshold: 類似度閾値（0.0-1.0）
+            filename_filter: ファイル名部分一致フィルタ（任意）
                 
         Returns:
-            Optional[List[Dict[str, Any]]]: 類似画像のリスト（FILE_INFOとIMG_EMBEDDINGSをJOINした結果）、失敗時はNone
+            類似画像のリスト（FILE_INFOとIMG_EMBEDDINGSをJOINした結果）
         """
         try:
             if not self._ensure_pool_initialized():
@@ -764,18 +692,18 @@ class ImageVectorizer:
     
     async def search_similar_images_async(self, query_embedding: np.ndarray, limit: int = 10, threshold: float = 0.7, filename_filter: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """
-        非同期バージョン: 類似画像を検索します（イベントループをブロックしない）。
+        非同期バージョン: 類似画像を検索（イベントループをブロックしない）
             
         接続プールを使用し、asyncio.to_thread()で同期メソッドを非同期実行します。
             
         Args:
-            query_embedding (np.ndarray): 検索用のembeddingベクトル
-            limit (int): 最大取得件数
-            threshold (float): 類似度閾値（0.0-1.0）
-            filename_filter (Optional[str]): ファイル名部分一致フィルタ（任意）
+            query_embedding: 検索用のembeddingベクトル
+            limit: 最大取得件数
+            threshold: 類似度閾値（0.0-1.0）
+            filename_filter: ファイル名部分一致フィルタ（任意）
                 
         Returns:
-            Optional[List[Dict[str, Any]]]: 類似画像のリスト、または失敗時はNone
+            類似画像のリスト、または失敗時はNone
         """
         import asyncio
             

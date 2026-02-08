@@ -58,13 +58,13 @@ class AICopilotService:
     
     def _is_genai_rate_limit_error(self, error: Exception) -> bool:
         """
-        Generative AI APIのレート制限エラーを判定します。
+        Generative AI APIのレート制限エラーを判定
         
         Args:
-            error (Exception): 判定対象の例外オブジェクト
+            error: 発生した例外
             
         Returns:
-            bool: レート制限エラーの場合はTrue、それ以外はFalse
+            bool: レート制限エラーの場合はTrue
         """
         error_str = str(error).lower()
         return (
@@ -78,14 +78,14 @@ class AICopilotService:
     
     def _calculate_genai_backoff_delay(self, attempt: int, is_rate_limit: bool = False) -> float:
         """
-        Generative AI API用の指数バックオフ遅延時間を計算します。
+        Generative AI API用の指数バックオフ遅延時間を計算
         
         Args:
-            attempt (int): 現在の試行回数 (0から開始)
-            is_rate_limit (bool): レート制限エラーによるリトライかどうか
+            attempt: 試行回数 (0から開始)
+            is_rate_limit: レート制限エラーかどうか
             
         Returns:
-            float: 次のリトライまでの待機時間（秒）
+            float: 待機時間（秒）
         """
         if is_rate_limit:
             # レート制限の場合はより長い待機時間
@@ -108,18 +108,18 @@ class AICopilotService:
     
     def _retry_genai_api_call(self, func, *args, **kwargs) -> Any:
         """
-        Generative AI API呼び出しにリトライメカニズムを適用して実行します。
+        Generative AI API呼び出しにリトライメカニズムを適用
         
         Args:
-            func (Callable): 実行するAPI関数
-            *args: 関数への位置引数
-            **kwargs: 関数へのキーワード引数
+            func: 実行する関数
+            *args: 関数の引数
+            **kwargs: 関数のキーワード引数
             
         Returns:
-            Any: API関数の実行結果
+            関数の戻り値
             
         Raises:
-            Exception: 最大リトライ回数に達しても成功しなかった場合に送出されます
+            Exception: 最大リトライ回数に達した場合
         """
         last_exception = None
         
@@ -162,16 +162,16 @@ class AICopilotService:
         images: Optional[List[Dict[str, Any]]] = None
     ) -> AsyncGenerator[str, None]:
         """
-        AIとチャットを行い、レスポンスをストリーミング形式で返します。
+        AIとチャットしてストリーミングレスポンスを取得
             
         Args:
-            message (str): ユーザーからのメッセージ
-            context (Optional[Dict[str, Any]]): コンテキスト情報(データセット情報など)
-            history (Optional[List[Dict[str, str]]]): 過去の会話履歴
-            images (Optional[List[Dict[str, Any]]]): 画像リスト(最大5枚)
+            message: ユーザーメッセージ
+            context: コンテキスト情報(データセット情報など)
+            history: 会話履歴
+            images: 画像リスト(最大5枚)
                 
         Yields:
-            str: 生成されたAIレスポンスのチャンク
+            str: AIレスポンスのチャンク
         """
         try:
             system_prompt = self._build_system_prompt(context)
@@ -206,17 +206,7 @@ class AICopilotService:
         history: Optional[List[Dict[str, str]]],
         message: str
     ) -> str:
-        """
-        システムプロンプト、会話履歴、ユーザーメッセージを結合して1つのプロンプトを作成します。
-        
-        Args:
-            system_prompt (str): システムプロンプト
-            history (Optional[List[Dict[str, str]]]): 会話履歴のリスト
-            message (str): 現在のユーザーメッセージ
-            
-        Returns:
-            str: 結合されたプロンプト文字列
-        """
+        """システムプロンプト、会話履歴、ユーザーメッセージを結合"""
         lines: List[str] = [system_prompt.strip()]
         if history:
             lines.append("")
@@ -235,16 +225,9 @@ class AICopilotService:
 
     async def _oci_generate_text_with_images_streaming(self, prompt: str, images: List[Dict[str, Any]]) -> AsyncGenerator[str, None]:
         """
-        Gemini APIを呼び出してストリーミング出力を生成します。
+        Gemini APIを呼び出してストリーミング出力
         
-        OCI Generative AI Inference APIのネイティブなストリーミング機能を使用します。
-        
-        Args:
-            prompt (str): 入力プロンプト
-            images (List[Dict[str, Any]]): 画像データのリスト
-            
-        Yields:
-            str: 生成されたテキストのチャンク
+        OCI Generative AI Inference APIのネイティブなストリーミング機能を使用。
         """
         # API呼び出しを別スレッドで実行
         async for chunk in self._oci_generate_text_with_images_native_streaming(prompt, images):
@@ -252,14 +235,9 @@ class AICopilotService:
 
     async def _oci_generate_text_with_images_native_streaming(self, prompt: str, images: List[Dict[str, Any]]) -> AsyncGenerator[str, None]:
         """
-        OCI Generative AIのネイティブストリーミングを使用してテキスト生成を行います。
-        
-        Args:
-            prompt (str): 入力プロンプト
-            images (List[Dict[str, Any]]): 画像データのリスト
-            
-        Yields:
-            str: 生成されたテキストのチャンク
+        OCI Generative AIのネイティブストリーミングを使用
+        Qiita記事：for event in response.events(): yield json.loads(event.data)["text"]
+        リアルタイムストリーミングのためキューを使用
         """
         import json
         import queue
@@ -451,29 +429,9 @@ class AICopilotService:
             raise
 
     async def _oci_generate_text_with_images(self, prompt: str, images: List[Dict[str, Any]]) -> str:
-        """
-        画像付きテキスト生成を実行します（非同期ラッパー）。
-        
-        Args:
-            prompt (str): 入力プロンプト
-            images (List[Dict[str, Any]]): 画像データのリスト
-            
-        Returns:
-            str: 生成されたテキスト
-        """
         return await asyncio.to_thread(self._oci_generate_text_with_images_sync, prompt, images)
 
     def _oci_generate_text_with_images_sync(self, prompt: str, images: List[Dict[str, Any]]) -> str:
-        """
-        画像付きテキスト生成を実行します（同期処理）。
-        
-        Args:
-            prompt (str): 入力プロンプト
-            images (List[Dict[str, Any]]): 画像データのリスト
-            
-        Returns:
-            str: 生成されたテキスト
-        """
         # クライアント作成を最大3回リトライ
         max_init_retries = 3
         client = None
@@ -602,15 +560,6 @@ class AICopilotService:
         return mime, b64_data
 
     def _extract_oci_chat_text(self, data: Dict[str, Any]) -> str:
-        """
-        OCIチャットレスポンスからテキストを抽出します。
-        
-        Args:
-            data (Dict[str, Any]): APIレスポンスデータ
-            
-        Returns:
-            str: 抽出されたテキスト
-        """
         try:
             content = (
                 data.get("chat_response", {})

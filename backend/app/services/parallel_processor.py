@@ -579,7 +579,7 @@ class ParallelProcessor:
                     images_to_delete = [
                         obj.get("name", "") for obj in existing_objects
                         if not obj.get("name", "").endswith('/') and 
-                        re.search(r'/page_(\d{3}|\d{6})\.png$', obj.get("name", ""))
+                        re.search(r'/page_\d{3}\.png$', obj.get("name", ""))
                     ]
                     
                     if images_to_delete:
@@ -597,14 +597,11 @@ class ParallelProcessor:
                 total_pages = len(page_images)
                 uploaded_count = 0
                 
-                # ページ番号のフォーマットを決定（999ページ以上は6桁、それ以外は3桁）
-                page_num_format = "06d" if total_pages > 999 else "03d"
-                
                 for page_num, img_bytes in page_images:
                     if JobManager.is_cancelled(job_id):
                         return
                     
-                    image_object_name = f"{folder_name}/page_{page_num:{page_num_format}}.png"
+                    image_object_name = f"{folder_name}/page_{page_num:03d}.png"
                     
                     img_stream = io.BytesIO(img_bytes)
                     upload_success = await asyncio.to_thread(
@@ -612,7 +609,7 @@ class ParallelProcessor:
                         file_content=img_stream,
                         object_name=image_object_name,
                         content_type="image/png",
-                        original_filename=f"page_{page_num:{page_num_format}}.png",
+                        original_filename=f"page_{page_num:03d}.png",
                         file_size=len(img_bytes)
                     )
                     
@@ -644,7 +641,7 @@ class ParallelProcessor:
                 if verification_result.get("success"):
                     verification_objects = verification_result.get("objects", [])
                     verified_count = sum(1 for obj in verification_objects 
-                                       if re.search(r'/page_(\d{3}|\d{6})\.png$', obj.get("name", "")))
+                                       if re.search(r'/page_\d{3}\.png$', obj.get("name", "")))
                     if verified_count != total_pages:
                         logger.warning(f"アップロード検証: 期待{total_pages}ページ、実際{verified_count}ページ ({obj_name})")
                     else:
@@ -1080,7 +1077,7 @@ class ParallelProcessor:
                         objects = page_images_result.get("objects", [])
                         for obj in objects:
                             obj_name_str = obj.get("name", "")
-                            if not obj_name_str.endswith('/') and re.search(r'/page_(\d{3}|\d{6})\.png$', obj_name_str):
+                            if not obj_name_str.endswith('/') and re.search(r'/page_\d{3}\.png$', obj_name_str):
                                 page_images.append(obj_name_str)
                     
                     if page_images:
@@ -1091,11 +1088,7 @@ class ParallelProcessor:
                         logger.warning(f"ページ画像取得リトライ {retry + 1}/{max_retries}: {obj_name}")
                         await asyncio.sleep(1.0)
                 
-                # ページ画像を数値順でソート（page_001, page_002, ..., page_010, page_011, ...）
-                def extract_page_num(path):
-                    match = re.search(r'/page_(\d{3}|\d{6})\.png$', path)
-                    return int(match.group(1)) if match else 0
-                page_images.sort(key=extract_page_num)
+                page_images.sort()
                 
                 # ページ画像が見つからない場合、自動的にページ画像化を実行
                 if not page_images:
@@ -1242,10 +1235,6 @@ class ParallelProcessor:
                         
                         # 変換した画像をObject Storageにアップロード
                         total_converted_pages = len(converted_images)
-                        
-                        # ページ番号のフォーマットを決定（999ページ以上は6桁、それ以外は3桁）
-                        page_num_format_inner = "06d" if total_converted_pages > 999 else "03d"
-                        
                         await event_queue.put({
                             'type': 'auto_convert_progress',
                             'file_index': file_idx,
@@ -1257,7 +1246,7 @@ class ParallelProcessor:
                         # 並列アップロード（セマフォで制限）
                         async def upload_single_page(page_num: int, img_bytes: bytes) -> dict:
                             """1ページをアップロード"""
-                            page_file_name = f"{folder_name}/page_{page_num:{page_num_format_inner}}.png"
+                            page_file_name = f"{folder_name}/page_{page_num:03d}.png"
                             async with semaphore:
                                 if JobManager.is_cancelled(job_id):
                                     return {'success': False, 'page': page_num}
@@ -1349,14 +1338,10 @@ class ParallelProcessor:
                             objects = page_images_result.get("objects", [])
                             for obj in objects:
                                 obj_name_str = obj.get("name", "")
-                                if not obj_name_str.endswith('/') and re.search(r'/page_(\d{3}|\d{6})\.png$', obj_name_str):
+                                if not obj_name_str.endswith('/') and re.search(r'/page_\d{3}\.png$', obj_name_str):
                                     page_images.append(obj_name_str)
                         
-                        # ページ画像を数値順でソート（page_001, page_002, ..., page_010, page_011, ...）
-                        def extract_page_num_inner(path):
-                            match = re.search(r'/page_(\d{3}|\d{6})\.png$', path)
-                            return int(match.group(1)) if match else 0
-                        page_images.sort(key=extract_page_num_inner)
+                        page_images.sort()
                         
                         if not page_images:
                             result['message'] = 'ページ画像化後もページ画像が見つかりません'
