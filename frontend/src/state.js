@@ -158,6 +158,7 @@ export const appState = new StateManager({
   selectedOciObjects: [],
   ociObjectsBatchDeleteLoading: false,
   allOciObjects: [],
+  currentPageOciObjects: [], // 現在ページに表示されているオブジェクト
   
   // フィルター状態
   ociObjectsFilterPageImages: 'all',

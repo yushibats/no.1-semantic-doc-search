@@ -76,47 +76,6 @@ import {
 } from './src/modules/ai.js';
 
 // ========================================
-// グローバル変数（非推奨 - appStateへの移行中）
-// ========================================
-// 開発時はViteのプロキシを使うため空文字列、本番ビルド時は環境変数から設定
-// const API_BASE = import.meta.env.VITE_API_BASE || '';
-// NOTE: API_BASEはauth.jsに移動しました
-
-// 注: 以下の変数はappStateに完全移行済み。削除済み。
-// let selectedFile = null;           // -> appState.get('selectedFile')
-// let documentsCache = [];           // -> appState.get('documentsCache')
-// let isLoggedIn = false;            // -> appState.get('isLoggedIn')
-// let loginToken = null;             // -> appState.get('loginToken')
-// let loginUser = null;              // -> appState.get('loginUser')
-// let debugMode = false;             // -> appState.get('debugMode')
-// let requireLogin = true;           // -> appState.get('requireLogin')
-
-// AI Assistant状態（appStateへ移行済み）
-// let copilotOpen = false;            // -> appState.get('copilotOpen')
-// let copilotExpanded = false;        // -> appState.get('copilotExpanded')
-// let copilotMessages = [];           // -> appState.get('copilotMessages')
-// let copilotLoading = false;         // -> appState.get('copilotLoading')
-// let copilotImages = [];             // -> appState.get('copilotImages')
-
-// テーブル一覧ページング状態（appStateへ移行済み）
-// let dbTablesPage = 1;               // -> appState.get('dbTablesPage')
-// let dbTablesPageSize = 20;          // -> appState.get('dbTablesPageSize')
-// let dbTablesTotalPages = 1;         // -> appState.get('dbTablesTotalPages')
-
-// テーブル一覧選択状態（appStateへ移行済み）
-// let selectedDbTables = [];          // -> appState.get('selectedDbTables')
-// let dbTablesBatchDeleteLoading = false; // -> appState.get('dbTablesBatchDeleteLoading')
-// let currentPageDbTables = [];       // -> appState.get('currentPageDbTables')
-
-// テーブルデータプレビュー状態（appStateへ移行済み）
-// let selectedTableForPreview = null; // -> appState.get('selectedTableForPreview')
-// let tableDataPage = 1;              // -> appState.get('tableDataPage')
-// let tableDataPageSize = 20;         // -> appState.get('tableDataPageSize')
-// let tableDataTotalPages = 1;        // -> appState.get('tableDataTotalPages')
-// let selectedTableDataRows = [];     // -> appState.get('selectedTableDataRows')
-// let currentPageTableDataRows = [];  // -> appState.get('currentPageTableDataRows')
-
-// ========================================
 // ユーティリティ関数（モジュールから直接使用）
 // ========================================
 

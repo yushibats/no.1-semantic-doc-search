@@ -174,6 +174,9 @@ export function displayOciObjectsList(data) {
   const ociObjectsFilterEmbeddings = appState.get('ociObjectsFilterEmbeddings');
   const ociObjectsDisplayType = appState.get('ociObjectsDisplayType');
   
+  // 現在のページに表示されているオブジェクトを保存
+  appState.set('currentPageOciObjects', objects);
+  
   // デバッグログ
   console.log('========== displayOciObjectsList ==========');
   console.log('現在表示中のオブジェクト:', objects.map(o => o.name));
@@ -203,7 +206,7 @@ export function displayOciObjectsList(data) {
           </button>
         </div>
       </div>
-      <div class="w-px h-6 bg-gray-300"></div>
+      <div class="w-px h-6 bg-gray-300" style="display: none;"></div>
       <div class="flex items-center gap-2" style="display: none;">
         <span class="text-xs font-medium text-gray-600">🖼️ ページ画像化:</span>
         <div class="flex gap-1">
@@ -621,13 +624,14 @@ export function toggleSelectAllOciObjects(checked) {
   const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
   const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
   
+  // 現在のページに表示されているオブジェクトを使用
+  const currentPageObjects = appState.get('currentPageOciObjects') || [];
   const allOciObjects = appState.get('allOciObjects') || [];
-  const objects = Array.from(document.querySelectorAll('.data-table tbody tr')).map((row, idx) => {
-    const nameCell = row.cells[2];
-    return nameCell ? nameCell.textContent : null;
-  }).filter(Boolean);
   
-  const selectableObjects = objects.filter(name => !isGeneratedPageImage(name, allOciObjects));
+  const selectableObjects = currentPageObjects
+    .filter(obj => !isGeneratedPageImage(obj.name, allOciObjects))
+    .map(obj => obj.name);
+  
   setAllOciObjectsSelection(selectableObjects, checked);
   
   // 再描画
@@ -644,18 +648,25 @@ export function toggleSelectAllOciObjects(checked) {
 
 /**
  * リスト内のすべての選択可能なオブジェクトを選択します。
+ * 現在のページに表示されているオブジェクトのみを選択します。
  */
 export function selectAllOciObjects() {
   // スクロール位置を保存
   const scrollableArea = document.querySelector('#documentsList .table-wrapper-scrollable');
   const scrollTop = scrollableArea ? scrollableArea.scrollTop : 0;
   
+  // 現在のページに表示されているオブジェクトのみを対象にする
+  const currentPageObjects = appState.get('currentPageOciObjects') || [];
   const allOciObjects = appState.get('allOciObjects') || [];
-  const selectableObjects = allOciObjects
+  const selectableObjects = currentPageObjects
     .filter(obj => !isGeneratedPageImage(obj.name, allOciObjects))
     .map(obj => obj.name);
   
-  setAllOciObjectsSelection(selectableObjects, true);
+  // 現在の選択に追加（既存の選択を保持しながら追加）
+  const currentSelection = getSelectedOciObjects();
+  const newSelection = [...new Set([...currentSelection, ...selectableObjects])];
+  appState.set('selectedOciObjects', newSelection);
+  
   loadOciObjects().then(() => {
     // スクロール位置を復元
     const scrollableAreaAfter = document.querySelector('#documentsList .table-wrapper-scrollable');

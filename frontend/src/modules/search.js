@@ -2,6 +2,18 @@
  * 検索モジュール
  * 
  * セマンティック検索機能を担当（テキスト検索・画像検索）
+ * 
+ * 主な機能:
+ * - テキストベースのセマンティック検索
+ * - 画像ベースの類似画像検索
+ * - 検索結果の表示と管理
+ * - ファイルダウンロード機能
+ * 
+ * ネットワーク通信:
+ * - バックエンドAPIとのHTTPS通信
+ * - ファイルアップロード（FormData）
+ * - 認証トークン付きリクエスト
+ * - エラーハンドリングとユーザー通知
  */
 
 import { apiCall as authApiCall } from './auth.js';
@@ -13,7 +25,14 @@ let currentSearchType = 'text'; // 'text' or 'image'
 
 /**
  * 検索タイプを切り替え
- * @param {string} type - 'text' または 'image'
+ * 
+ * テキスト検索と画像検索のUIを切り替える関数です。
+ * 
+ * @param {string} type - 検索タイプ ('text' または 'image')
+ * 
+ * ネットワーク通信の影響:
+ * - UIの表示切り替えのみ（ネットワーク通信なし）
+ * - ユーザーエクスペリエンスの向上
  */
 export function switchSearchType(type) {
   currentSearchType = type;
