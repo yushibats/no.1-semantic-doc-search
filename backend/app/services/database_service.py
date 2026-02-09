@@ -116,18 +116,18 @@ def _execute_db_operation(func_name: str, **kwargs) -> Dict[str, Any]:
         logger.error(f"  ✘ TNS_ADMINディレクトリが存在しません: {tns_admin}")
         return {'success': False, 'message': f'Walletディレクトリが見つかりません: {tns_admin}'}
     
-    # Walletファイル確認
+    # ウォレットファイル確認
     wallet_files = os.listdir(tns_admin)
-    logger.info(f"  Walletファイル: {wallet_files}")
+    logger.info(f"  ウォレットファイル: {wallet_files}")
     
     # 必須ウォレットファイルのチェック（4つ）
     required_files = ['cwallet.sso', 'ewallet.pem', 'sqlnet.ora', 'tnsnames.ora']
     missing = [f for f in required_files if f not in wallet_files]
     if missing:
-        logger.error(f"  ✘ 必要なWalletファイルが不足: {missing}")
+        logger.error(f"  ✘ 必要なウォレットファイルが不足: {missing}")
         logger.error("  必須: cwallet.sso (自動ログイン), ewallet.pem (PEM形式証明書), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)")
-        return {'success': False, 'message': f'必要なWalletファイルが不足: {missing}'}
-    logger.info("  ✔ すべての必須Walletファイルが確認されました")
+        return {'success': False, 'message': f'必要なウォレットファイルが不足: {missing}'}
+    logger.info("  ✔ すべての必須ウォレットファイルが確認されました")
     logger.info("    - cwallet.sso (自動ログイン)")
     logger.info("    - ewallet.pem (PEM形式証明書)")
     logger.info("    - sqlnet.ora (ネットワーク設定)")
@@ -438,18 +438,18 @@ class DatabaseService:
             logger.error(f"  ✘ Walletディレクトリが存在しません: {wallet_location}")
             return None
         
-        # Walletファイルの確認
+        # ウォレットファイルの確認
         wallet_files = os.listdir(wallet_location)
-        logger.info(f"  Walletファイル: {wallet_files}")
+        logger.info(f"  ウォレットファイル: {wallet_files}")
         
         # 必須ウォレットファイルのチェック（4つ）
         required_files = ['cwallet.sso', 'ewallet.pem', 'sqlnet.ora', 'tnsnames.ora']
         missing_files = [f for f in required_files if f not in wallet_files]
         if missing_files:
-            logger.error(f"  ✘ 必要なWalletファイルが不足: {missing_files}")
+            logger.error(f"  ✘ 必要なウォレットファイルが不足: {missing_files}")
             logger.error("  必須: cwallet.sso (自動ログイン), ewallet.pem (PEM形式証明書), sqlnet.ora (ネットワーク設定), tnsnames.ora (接続文字列)")
             return None
-        logger.info("  ✔ すべての必須Walletファイルが確認されました")
+        logger.info("  ✔ すべての必須ウォレットファイルが確認されました")
         
         # TNS_ADMIN設定
         os.environ['TNS_ADMIN'] = wallet_location
@@ -829,7 +829,7 @@ class DatabaseService:
         return None
     
     def upload_wallet(self, wallet_file_path: str) -> Dict[str, Any]:
-        """�Walletファイルをアップロードして解凍"""
+        """�ウォレットファイルをアップロードして解凍"""
         try:
             # 優先順位に従ってウォレット場所を決定
             wallet_location = None
@@ -858,7 +858,7 @@ class DatabaseService:
             
             wallet_location = os.path.join(lib_dir, "network", "admin")
             
-            logger.info(f"Walletアップロード先: {wallet_location}")
+            logger.info(f"ウォレットアップロード先: {wallet_location}")
             
             # ディレクトリが存在する場合はバックアップ
             if os.path.exists(wallet_location):
@@ -921,7 +921,7 @@ class DatabaseService:
             }
             
         except Exception as e:
-            logger.error(f"Walletアップロードエラー: {e}")
+            logger.error(f"ウォレットアップロードエラー: {e}")
             return {
                 "success": False,
                 "message": f"Walletのアップロードに失敗しました: {str(e)}",
@@ -1202,7 +1202,7 @@ class DatabaseService:
                 connection.commit()
                 cursor.close()
                 
-                message = f"{updated_count}件のテーブルの統計情報を更新しました"
+                message = f"{updated_count}件のテーブル情報を更新しました"
                 if errors:
                     message += f" ({len(errors)}件のエラー)"
                 

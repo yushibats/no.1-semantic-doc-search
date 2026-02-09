@@ -945,7 +945,7 @@ EOL
         sleep 45
         
         # Configure wallet files to containers
-        echo "Difyコンテナにwalletファイルを設定中..."
+        echo "Difyコンテナにウォレットファイルを設定中..."
         if [ -d "${WALLET_DIR}" ]; then
             # Copy wallet to Dify containers
             WORKER_CONTAINER=$(docker ps --filter "name=worker" --format "{{.Names}}" | head -n 1)

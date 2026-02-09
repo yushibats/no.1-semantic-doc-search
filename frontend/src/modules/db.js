@@ -29,11 +29,11 @@ export async function loadDbConnectionSettings() {
     
     document.getElementById('dbUser').value = settings.username || '';
     
-    // Walletアップロード状況を表示
+    // ウォレットアップロード状況を表示
     if (settings.wallet_uploaded) {
       const walletStatus = document.getElementById('walletStatus');
       walletStatus.style.display = 'block';
-      walletStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle"></i> Walletアップロード済み</span>';
+      walletStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle"></i> ウォレットアップロード済み</span>';
       
       // 利用可能なDSNを表示
       if (settings.available_services && settings.available_services.length > 0) {
@@ -97,7 +97,7 @@ export async function refreshDbConnectionFromEnv() {
     const walletStatus = document.getElementById('walletStatus');
     if (envData.wallet_exists) {
       walletStatus.style.display = 'block';
-      walletStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle"></i> Wallet検出済み (' + envData.wallet_location + ')</span>';
+      walletStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle"></i> ウォレット検出済み (' + envData.wallet_location + ')</span>';
       
       // 利用可能なDSNを表示
       if (envData.available_services && envData.available_services.length > 0) {
@@ -225,7 +225,7 @@ export async function retryLoadDbSettings() {
 let selectedWalletFile = null;
 
 /**
- * Walletファイル選択時の処理
+ * ウォレットファイル選択時の処理
  * @param {Event} event - ファイル選択イベント
  */
 export function handleWalletFileSelect(event) {
@@ -280,7 +280,7 @@ export async function uploadWalletFile(file) {
         }
       }
       const error = await response.json();
-      throw new Error(error.detail || 'Walletアップロードに失敗しました');
+      throw new Error(error.detail || 'ウォレットアップロードに失敗しました');
     }
     
     const data = await response.json();
@@ -288,7 +288,7 @@ export async function uploadWalletFile(file) {
     if (data.success) {
       const walletStatus = document.getElementById('walletStatus');
       walletStatus.style.display = 'block';
-      walletStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle"></i> Walletアップロード成功</span>';
+      walletStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle"></i> ウォレットアップロード成功</span>';
       
       utilsShowToast(data.message, 'success');
       

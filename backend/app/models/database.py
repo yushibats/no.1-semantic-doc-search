@@ -31,7 +31,7 @@ class DatabaseSettings(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     dsn: Optional[str] = None  # 表示用DSN
-    wallet_uploaded: bool = False  # Walletアップロード済みか
+    wallet_uploaded: bool = False  # ウォレットアップロード済みか
     available_services: List[str] = []  # tnsnames.oraから抽出したDSNリスト
 
 
@@ -91,7 +91,7 @@ class DatabaseTablesResponse(BaseModel):
 
 
 class WalletUploadResponse(BaseModel):
-    """�Walletアップロードレスポンス"""
+    """�ウォレットアップロードレスポンス"""
     success: bool
     message: str
     wallet_location: Optional[str] = None

@@ -706,7 +706,7 @@ async function processUploadStreamingResponse(response, totalFiles) {
           
           // 成功時のトースト
           if (data.success) {
-            utilsShowToast(`${data.success_count}件のファイルアップロードが完了しました`, 'success');
+            utilsShowToast(`${data.success_count}件のファイルアップロードが完了しました。一覧に反映するには、登録済み文書の「再取得」を推してください。`, 'success');
           } else {
             utilsShowToast(data.message, 'warning');
           }
@@ -1482,11 +1482,11 @@ window.handleDropForInput = handleDropForInput;
     
 //     document.getElementById('dbUser').value = settings.username || '';
     
-//     // Walletアップロード状況を表示
+//     // ウォレットアップロード状況を表示
 //     if (settings.wallet_uploaded) {
 //       const walletStatus = document.getElementById('walletStatus');
 //       walletStatus.style.display = 'block';
-//       walletStatus.innerHTML = '<span class="text-green-600">✅ Walletアップロード済み</span>';
+//       walletStatus.innerHTML = '<span class="text-green-600">✅ ウォレットアップロード済み</span>';
       
 //       // 利用可能なDSNを表示
 //       if (settings.available_services && settings.available_services.length > 0) {
@@ -1547,7 +1547,7 @@ window.handleDropForInput = handleDropForInput;
 //     const walletStatus = document.getElementById('walletStatus');
 //     if (envData.wallet_exists) {
 //       walletStatus.style.display = 'block';
-//       walletStatus.innerHTML = '<span class="text-green-600">✅ Wallet検出済み (' + envData.wallet_location + ')</span>';
+//       walletStatus.innerHTML = '<span class="text-green-600">✅ ウォレット検出済み (' + envData.wallet_location + ')</span>';
       
 //       // 利用可能なDSNを表示
 //       if (envData.available_services && envData.available_services.length > 0) {
@@ -1642,7 +1642,7 @@ function forceLogout() {
 
 // ページロード時の初期化
 window.addEventListener('DOMContentLoaded', async () => {
-  // console.log('資料みつかるくん - 初期化開始');
+  // console.log('資料見つかるくん - 初期化開始');
   
   // 設定を読み込む
   await authLoadConfig();
@@ -1650,7 +1650,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // ログイン状態を確認
   await authCheckLoginStatus();
   
-  // console.log('資料みつかるくん - 初期化完了');
+  // console.log('資料見つかるくん - 初期化完了');
 });
 
 // ========================================

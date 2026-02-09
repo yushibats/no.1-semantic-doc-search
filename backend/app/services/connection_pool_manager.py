@@ -125,16 +125,16 @@ class ConnectionPoolManager:
             logger.error(f"✘ Walletディレクトリが存在しません: {wallet_location}")
             return None
         
-        # Walletファイルの確認
+        # ウォレットファイルの確認
         wallet_files = os.listdir(wallet_location)
         required_files = ['cwallet.sso', 'ewallet.pem', 'sqlnet.ora', 'tnsnames.ora']
         missing_files = [f for f in required_files if f not in wallet_files]
         if missing_files:
-            logger.error(f"✘ 必要なWalletファイルが不足: {missing_files}")
+            logger.error(f"✘ 必要なウォレットファイルが不足: {missing_files}")
             return None
         
         logger.info(f"✔ Wallet場所確認完了: {wallet_location}")
-        logger.info("✔ すべての必須Walletファイルが確認されました")
+        logger.info("✔ すべての必須ウォレットファイルが確認されました")
         
         # TNS_ADMIN設定
         os.environ['TNS_ADMIN'] = wallet_location

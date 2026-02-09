@@ -338,7 +338,7 @@ export function displayOciObjectsList(data) {
         <i class="fas fa-image"></i> ページ画像化 (${selectedOciObjects.length}件)
       </button>
       <button 
-        class="px-3 py-1 text-xs rounded transition-colors ${canExecuteAction ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-green-300 text-white cursor-not-allowed'}" 
+        class="apex-button px-4 py-2" 
         onclick="window.ociModule.vectorizeSelected()" 
         ${canExecuteAction ? '' : 'disabled'}
         title="${canExecuteAction ? `選択されたファイルの画像をベクトル化してDBに保存: ${selectedOciObjects.length}件` : 'ベクトル化するファイルを選択してください'}"
@@ -512,7 +512,9 @@ function formatBytes(bytes) {
  * @param {string} type - バッジタイプ ('success', 'error'など)
  */
 function updateDocumentsStatusBadge(text, type) {
-  utilsUpdateStatusBadge('documentsStatusBadge', text, type);
+  const badge = document.getElementById('documentsStatusBadge');
+  if (!badge) return;
+  badge.textContent = text;
 }
 
 /**

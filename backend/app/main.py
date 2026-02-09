@@ -2458,7 +2458,7 @@ async def get_database_storage():
 
 @app.post("/settings/database/wallet", response_model=WalletUploadResponse)
 async def upload_wallet(file: UploadFile = File(...)):
-    """Walletファイルをアップロード"""
+    """ウォレットファイルをアップロード"""
     try:
         # ファイル拡張子チェック
         if not file.filename.lower().endswith('.zip'):
@@ -2470,7 +2470,7 @@ async def upload_wallet(file: UploadFile = File(...)):
         with open(temp_file, 'wb') as f:
             f.write(content)
         
-        # Walletアップロード処理
+        # ウォレットアップロード処理
         result = await asyncio.to_thread(database_service.upload_wallet, str(temp_file))
         
         # 一時ファイル削除
@@ -2492,8 +2492,8 @@ async def upload_wallet(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Walletアップロードエラー: {e}")
-        raise HTTPException(status_code=500, detail=f"Walletアップロードエラー: {str(e)}")
+        logger.error(f"ウォレットアップロードエラー: {e}")
+        raise HTTPException(status_code=500, detail=f"ウォレットアップロードエラー: {str(e)}")
 
 # ========================================
 # Autonomous Database管理
