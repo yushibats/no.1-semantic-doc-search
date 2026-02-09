@@ -30,6 +30,8 @@ variableGroups:
       - instance_image_source_id
       - instance_shape
       - vcn_ai_vcn_id
+      - adb_subnet_type
+      - subnet_private_id      
       - subnet_ai_subnet_id
       - ssh_authorized_keys
       - oci_bucket_name
@@ -115,6 +117,30 @@ variables:
     description: "Select existing virtual cloud network"
     dependsOn:
       compartmentId: ${compartment_ocid}
+
+  adb_subnet_type:
+    type: enum
+    required: true
+    visible: true
+    title: "ADB Subnet Type"
+    description: "ADBのサブネットタイプを選択（Private Subnetを選択すると専用サブネットを指定できます）"
+    enum:
+      - "PUBLIC"
+      - "PRIVATE"
+    default: "PUBLIC"
+
+  subnet_private_id:
+    type: oci:core:subnet:id
+    required: true
+    visible:
+      eq:
+        - adb_subnet_type
+        - "PRIVATE"
+    title: "Private Subnet for ADB"
+    description: "ADB用のプライベートサブネットを選択"
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+      vcnId: ${vcn_ai_vcn_id}
 
   subnet_ai_subnet_id:
     type: oci:core:subnet:id

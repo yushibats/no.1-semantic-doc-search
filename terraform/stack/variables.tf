@@ -28,6 +28,18 @@ variable "license_model" {
   default = ""
 }
 
+variable "adb_subnet_type" {
+  description = "ADBのサブネットタイプ (PUBLIC or PRIVATE)"
+  type        = string
+  default     = "PUBLIC"
+}
+
+variable "subnet_private_id" {
+  description = "ADB用のプライベートサブネットID (adb_subnet_type=PRIVATEの場合に使用)"
+  type        = string
+  default     = ""
+}
+
 variable "instance_display_name" {
   default = "AIDOC_INSTANCE"
 }
