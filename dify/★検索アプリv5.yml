@@ -466,7 +466,10 @@ workflow:
 
           {{#1769782770648.output#}}
 
-          ---'
+
+          ---
+
+          '
         isInIteration: true
         isInLoop: false
         iteration_id: '1769782657385'
@@ -490,7 +493,7 @@ workflow:
       width: 241
       zIndex: 1002
     viewport:
-      x: -805.6999999999998
+      x: -805.6999999999999
       y: 317
       zoom: 0.7
   rag_pipeline_variables: []
