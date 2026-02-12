@@ -1,8 +1,8 @@
 ## Copyright © 2020, Oracle and/or its affiliates.
 ## All rights reserved. The Universal Permissive License (UPL), Version 1.0 as shown at http://oss.oracle.com/licenses/upl
 
-title: "Deploy Machine Learning Platform on Oracle Cloud Infrastructure Compute instance"
-stackDescription: "Deploy Machine Learning Platform on Oracle Cloud Infrastructure Compute instance"
+title: "Semantic Document Search on OCI"
+stackDescription: "Deploy Semantic Document Search application on Oracle Cloud Infrastructure Compute instance"
 schemaVersion: 1.1.0
 version: "20220422"
 locale: "en"
