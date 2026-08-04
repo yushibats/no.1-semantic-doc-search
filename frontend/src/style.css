@@ -1160,38 +1160,6 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
 .document-library-main { min-width: 0; }
 .document-library-toolbar { margin-bottom: 12px; }
 .document-library-toolbar input { flex: 1; }
-.document-library-sort-control {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: -2px 0 12px;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 650;
-}
-.document-library-sort-tabs {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid #dbe4ef;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-.document-library-sort-tab {
-  min-height: 28px;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: #52647a;
-  font-size: 11px;
-  font-weight: 650;
-  cursor: pointer;
-}
-.document-library-sort-tab:hover { background: #e8eef6; color: #172b4d; }
-.document-library-sort-tab.active { background: #17375e; color: #fff; box-shadow: 0 1px 2px rgba(15, 23, 42, .15); }
-.document-library-sort-tab:focus-visible { outline: 3px solid #93c5fd; outline-offset: 1px; }
 .document-library-table th { padding: 8px 10px; }
 .document-library-table td { padding: 6px 10px; vertical-align: middle; }
 .document-library-table th:first-child { width: 48%; }
@@ -1585,10 +1553,13 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
 }
 
 /* Registered-document bulk actions */
-.document-library-bulk-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; padding:9px 10px; border:1px solid #dbe4ef; border-radius:8px; background:#f8fafc; }
+.document-library-bulk-toolbar { display:flex; align-items:center; flex-wrap:nowrap; gap:8px; margin-bottom:10px; padding:9px 10px; border:1px solid #dbe4ef; border-radius:8px; background:#f8fafc; }
 .document-library-bulk-toolbar > strong { min-width:86px; color:#334155; font-size:12px; }
 .document-library-bulk-move { display:flex; align-items:center; gap:6px; }
 .document-library-bulk-move select { width:190px; min-height:30px; padding:3px 8px; font-size:12px; }
+.document-library-bulk-sort { display:flex; flex:0 0 auto; align-items:center; gap:6px; margin-left:auto; }
+.document-library-bulk-sort label { color:#52647a; font-size:11px; font-weight:650; white-space:nowrap; }
+.document-library-bulk-sort select { width:170px; min-height:30px; padding:3px 8px; font-size:12px; }
 .apex-button-danger { display:inline-flex; align-items:center; justify-content:center; border:1px solid #dc2626; border-radius:6px; background:#fff; color:#b91c1c; font-weight:600; cursor:pointer; }
 .apex-button-danger:hover:not(:disabled) { background:#fef2f2; }
 .apex-button-danger:disabled { opacity:.45; cursor:not-allowed; }
@@ -1618,6 +1589,8 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
   .document-library-bulk-toolbar { align-items:stretch; flex-direction:column; }
   .document-library-bulk-move { align-items:stretch; flex-direction:column; }
   .document-library-bulk-move select { width:100%; }
+  .document-library-bulk-sort { align-items:stretch; flex-direction:column; margin-left:0; }
+  .document-library-bulk-sort select { width:100%; }
   .search-related-document { align-items:flex-start; }
   .search-related-document-actions { flex-direction:column; align-items:stretch; }
 }

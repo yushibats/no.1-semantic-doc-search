@@ -1157,6 +1157,15 @@ function renderLibrary(data) {
       </div>
       <button type="button" data-library-bulk-action class="apex-button-secondary apex-button-xs" onclick="window.documentLibraryModule.bulkReprocessSelectedDocuments()"><i class="fas fa-rotate"></i> 前処理をすべて再実行</button>
       <button type="button" data-library-bulk-action class="apex-button-danger apex-button-xs" onclick="window.documentLibraryModule.bulkDeleteSelectedDocuments()"><i class="fas fa-trash"></i> 削除</button>
+      <div class="document-library-bulk-sort">
+        <label for="librarySortSelect"><i class="fas fa-sort-amount-down"></i> 並び順</label>
+        <select id="librarySortSelect" class="form-input" aria-label="文書の並び順" onchange="window.documentLibraryModule.setLibrarySort(this.value)">
+          <option value="updated_desc" ${state.sort === 'updated_desc' ? 'selected' : ''}>更新日時の新しい順</option>
+          <option value="created_desc" ${state.sort === 'created_desc' ? 'selected' : ''}>登録日時の新しい順</option>
+          <option value="updated_asc" ${state.sort === 'updated_asc' ? 'selected' : ''}>更新日時の古い順</option>
+          <option value="filename_asc" ${state.sort === 'filename_asc' ? 'selected' : ''}>ファイル名順</option>
+        </select>
+      </div>
     </div>
     <div class="table-wrapper-scrollable"><table class="apex-table document-library-table"><thead><tr><th class="document-library-selection-cell"><input id="librarySelectAll" type="checkbox" aria-label="表示中の文書をすべて選択" onchange="window.documentLibraryModule.toggleAllVisibleDocuments(this.checked)"></th><th>文書</th><th>フォルダ</th><th>サイズ</th><th>索引</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="document-library-pagination"><button class="apex-button-secondary apex-button-xs" ${data.page <= 1 ? 'disabled' : ''} onclick="window.documentLibraryModule.changePage(-1)">前へ</button><span>${data.page} / ${data.total_pages}</span><button class="apex-button-secondary apex-button-xs" ${data.page >= data.total_pages ? 'disabled' : ''} onclick="window.documentLibraryModule.changePage(1)">次へ</button></div>`;
@@ -1249,12 +1258,9 @@ const LIBRARY_SORT_VALUES = new Set([
   'filename_asc'
 ]);
 
-function updateLibrarySortTabs() {
-  document.querySelectorAll('[data-library-sort]').forEach(button => {
-    const selected = button.dataset.librarySort === state.sort;
-    button.classList.toggle('active', selected);
-    button.setAttribute('aria-selected', String(selected));
-  });
+function updateLibrarySortControl() {
+  const select = document.getElementById('librarySortSelect');
+  if (select) select.value = state.sort;
 }
 
 export async function setLibrarySort(sort) {
@@ -1262,7 +1268,7 @@ export async function setLibrarySort(sort) {
   state.sort = sort;
   state.page = 1;
   state.selectedLibraryDocumentIds.clear();
-  updateLibrarySortTabs();
+  updateLibrarySortControl();
   await refresh();
 }
 

@@ -563,15 +563,6 @@
                 <input id="libraryQuery" class="form-input" placeholder="ファイル名・顧客名で絞り込み" onkeydown="if(event.key==='Enter') window.documentLibraryModule.refresh()">
                 <button type="button" class="apex-button-secondary px-3 py-2" onclick="window.documentLibraryModule.refresh()"><i class="fas fa-search"></i> 絞り込み</button>
               </div>
-              <div class="document-library-sort-control" aria-label="文書の並び順">
-                <span>並び順</span>
-                <div class="document-library-sort-tabs" role="tablist">
-                  <button type="button" role="tab" class="document-library-sort-tab active" data-library-sort="updated_desc" aria-selected="true" onclick="window.documentLibraryModule.setLibrarySort('updated_desc')">更新が新しい</button>
-                  <button type="button" role="tab" class="document-library-sort-tab" data-library-sort="created_desc" aria-selected="false" onclick="window.documentLibraryModule.setLibrarySort('created_desc')">作成が新しい</button>
-                  <button type="button" role="tab" class="document-library-sort-tab" data-library-sort="updated_asc" aria-selected="false" onclick="window.documentLibraryModule.setLibrarySort('updated_asc')">更新が古い</button>
-                  <button type="button" role="tab" class="document-library-sort-tab" data-library-sort="filename_asc" aria-selected="false" onclick="window.documentLibraryModule.setLibrarySort('filename_asc')">ファイル名</button>
-                </div>
-              </div>
               <div id="documentsList"></div>
             </section>
           </div>
