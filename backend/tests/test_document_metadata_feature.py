@@ -394,6 +394,32 @@ def test_folder_counts_exclude_drafts_and_non_current_documents() -> None:
     assert normalized.count("d.is_current=1 and d.status<>'draft'") == 2
 
 
+def test_document_list_supports_only_the_declared_sort_orders() -> None:
+    expected = {
+        "updated_desc": "order by d.updated_at desc nulls last, d.document_id",
+        "created_desc": "order by d.uploaded_at desc nulls last, d.document_id",
+        "updated_asc": "order by d.updated_at asc nulls last, d.document_id",
+        "filename_asc": (
+            "order by lower(d.file_name) asc, d.file_name asc, d.document_id"
+        ),
+    }
+    for sort, order_by in expected.items():
+        cursor = _ResultCursor(rows=[], one=(0,))
+        repository = _MetadataCaptureRepository(cursor)
+        result = repository.list_documents(page=1, page_size=20, sort=sort)
+        assert result.total == 0
+        sql, _ = cursor.calls[1]
+        assert order_by in " ".join(sql.casefold().split())
+
+    repository = _MetadataCaptureRepository(_ResultCursor(rows=[], one=(0,)))
+    try:
+        repository.list_documents(page=1, page_size=20, sort="sql injection")
+    except ValueError as error:
+        assert "未対応" in str(error)
+    else:
+        raise AssertionError("未対応の並び順が受理されました")
+
+
 def test_active_batches_are_scoped_to_owner_and_expose_recovery_counts() -> None:
     cursor = _ResultCursor(rows=[(
         "batch-a", "REVIEW_REQUIRED", "folder-a", "rules-a", None,

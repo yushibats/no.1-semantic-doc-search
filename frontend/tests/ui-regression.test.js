@@ -1884,6 +1884,20 @@ test('登録済み文書は表示中の選択・一括移動・完全削除・FU
   assert.match(styles, /tr\.is-selected/);
 });
 
+test('登録済み文書は4種類の並び順をAPIへ渡し年月編集欄を上揃えにする', async () => {
+  const source = await readFile(new URL('../src/modules/document-library.js', import.meta.url), 'utf8');
+  const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
+
+  assert.match(source, /sort:\s*state\.sort/);
+  assert.match(source, /export async function setLibrarySort/);
+  for (const value of ['updated_desc', 'created_desc', 'updated_asc', 'filename_asc']) {
+    assert.match(html, new RegExp(`data-library-sort="${value}"`));
+  }
+  assert.match(styles, /\.metadata-editor \{[^}]*align-items:\s*start;/s);
+  assert.match(styles, /\.metadata-editor \.metadata-year-range \{\s*align-items:\s*flex-start;/);
+});
+
 test('検索ページ詳細は技術経路をメインから隠し、生成テキストと関連度内訳をポップアップ表示する', async () => {
   document.body.innerHTML = `
     <div id="searchResults" style="display:none"><span id="searchResultsSummary"></span><div id="searchResultsList"></div></div>

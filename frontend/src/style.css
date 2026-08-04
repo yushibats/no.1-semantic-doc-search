@@ -1160,6 +1160,38 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
 .document-library-main { min-width: 0; }
 .document-library-toolbar { margin-bottom: 12px; }
 .document-library-toolbar input { flex: 1; }
+.document-library-sort-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -2px 0 12px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 650;
+}
+.document-library-sort-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.document-library-sort-tab {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #52647a;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.document-library-sort-tab:hover { background: #e8eef6; color: #172b4d; }
+.document-library-sort-tab.active { background: #17375e; color: #fff; box-shadow: 0 1px 2px rgba(15, 23, 42, .15); }
+.document-library-sort-tab:focus-visible { outline: 3px solid #93c5fd; outline-offset: 1px; }
 .document-library-table th { padding: 8px 10px; }
 .document-library-table td { padding: 6px 10px; vertical-align: middle; }
 .document-library-table th:first-child { width: 48%; }
@@ -1283,9 +1315,13 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
 .metadata-editor {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: start;
   gap: 12px;
   padding: 12px;
 }
+.metadata-editor > * { min-width: 0; align-self: start; }
+.metadata-editor .metadata-year-range { align-items: flex-start; }
+.metadata-editor .metadata-year-range > div { flex: 1 1 0; }
 .metadata-editor-tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
 .metadata-tag-group { border: 0; padding: 0; margin: 0; }
 .metadata-tag-group legend { font-size: 11px; color: #64748b; margin-bottom: 5px; }
