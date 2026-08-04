@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.rag.clients import VlmClient
+from app.rag.clients import VlmClient, _json_from_text
 
 
 def _settings() -> SimpleNamespace:
@@ -69,3 +69,21 @@ async def test_vlm_client_closes_connection_pool_after_error() -> None:
         await VlmClient().generate_json(prompt="extract")
 
     client.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            '{"explanation":"一致しました"}\n補足説明です。',
+            {"explanation": "一致しました"},
+        ),
+        ('```json\n{"ok":true}\n```\n追加の文章', {"ok": True}),
+        ('回答: [{"keyword":"LDK"}] 以上です', [{"keyword": "LDK"}]),
+        ('{"first":1} {"example":2}', {"first": 1}),
+    ],
+)
+def test_json_parser_accepts_one_complete_value_with_trailing_text(
+    raw: str, expected: object
+) -> None:
+    assert _json_from_text(raw) == expected

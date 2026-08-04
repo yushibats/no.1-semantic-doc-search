@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -26,6 +27,7 @@ from app.rag.service_settings import retrieval_service_settings
 from app.services.oci_service import oci_service
 
 router = APIRouter(tags=["pipeline"])
+logger = logging.getLogger(__name__)
 
 
 def _require_schema() -> None:
@@ -41,12 +43,31 @@ def _plan(request: PipelineJobRequest):
     recipes = pipeline_repository.list_recipes()
     mineru = retrieval_service_settings.get_mineru()
     ocr = retrieval_service_settings.get_ocr()
+    try:
+        from app.rag.document_metadata_repository import (
+            document_metadata_repository,
+        )
+
+        concept_enabled = document_metadata_repository.get_concept_settings().enabled
+    except Exception as error:
+        # A FULL job is an immutable snapshot of the stages selected here. A
+        # temporary settings/DB error must never become a permanently
+        # incomplete job by silently treating the feature as OFF.
+        logger.exception("AI検索候補設定を取得できないためJob計画を中止します")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AI検索候補設定を取得できないため、文書処理を開始できません。"
+                "DB接続を確認して再度実行してください。"
+            ),
+        ) from error
     return plan_steps(
         request,
         recipes=recipes,
         profile_slots=[item.slot_no for item in profiles],
         mineru_enabled=mineru.enabled and bool(mineru.base_url),
         ocr_enabled=ocr.enabled,
+        concept_enabled=concept_enabled,
     )
 
 
@@ -55,7 +76,7 @@ def preview_job(request: PipelineJobRequest) -> PipelineJobPreview:
     _require_schema()
     planned, prerequisites, downstream = _plan(request)
     calls_per_document = sum(
-        item.kind in {"OCR", "VLM", "EMBED"} for item in planned
+        item.kind in {"OCR", "VLM", "CONCEPT", "EMBED"} for item in planned
     )
     return PipelineJobPreview(
         object_count=len(request.object_names),
@@ -372,5 +393,4 @@ def publish_release(document_id: str, release_id: str) -> dict[str, Any]:
 def list_recipes() -> list[EmbeddingRecipe]:
     _require_schema()
     return pipeline_repository.list_recipes()
-
 

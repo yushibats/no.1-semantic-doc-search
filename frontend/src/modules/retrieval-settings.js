@@ -93,10 +93,20 @@ function renderProfilePanel() {
               <span id="profile-test-image-name" class="block text-xs text-gray-500" aria-live="polite">対応形式: PNG, JPG, WEBP</span>
             </button>
             <input id="profile-test-image" type="file" accept="image/png,image/jpeg,image/webp" class="hidden"
-              onchange="document.getElementById('profile-test-image-name').textContent=this.files[0]?'選択済み: '+this.files[0].name:'対応形式: PNG, JPG, WEBP'">
+              onchange="const file=this.files[0];document.getElementById('profile-test-image-name').textContent=file?'選択済み: '+file.name:'対応形式: PNG, JPG, WEBP';const name=document.getElementById('profile-test-file-name');if(file&&(!name.value||name.dataset.auto==='true')){name.value=file.name;name.dataset.auto='true'}">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="profile-test-file-name">元ファイル名</label>
+            <input id="profile-test-file-name" class="form-input" maxlength="1024" placeholder="例: 20250314_提案プラン.pdf" oninput="this.dataset.auto='false'">
+            <p class="retrieval-help">本番と同じ対象判定を試すためにVLMへ渡します。Object Storageの技術的なキーは判定に使いません。</p>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="profile-test-page-text">ページテキスト（任意）</label>
+            <textarea id="profile-test-page-text" class="form-input retrieval-prompt-small" maxlength="20000" placeholder="OCR・MinerU・ネイティブ抽出で得られたページ文字を貼り付けると、本番に近い条件で確認できます。"></textarea>
           </div>
         </div>
       </details>
+      <div id="profile-test-message" class="retrieval-test-message" role="status" hidden></div>
       <pre id="profile-test-result" class="retrieval-test-result" hidden></pre>
       <div class="retrieval-actions retrieval-primary-actions">
         <button type="button" class="apex-button px-4 py-2" data-action="apply-profile" ${settings.schema_ready ? '' : 'disabled'}><i class="fas fa-save"></i> 保存して反映</button>
@@ -285,11 +295,22 @@ function bindEvents(root) {
         const profile = collectProfile();
         if (!profile.name || !profile.extraction_prompt) throw new Error('名前と抽出したい内容を入力してください');
         const image = document.getElementById('profile-test-image').files[0];
-        const result = await api(`/profiles/${activeSlot}/test`, { method: 'POST', timeout: 120000, body: JSON.stringify({ extraction_prompt: profile.extraction_prompt, image_base64: await fileToBase64(image) }) });
+        const result = await api(`/profiles/${activeSlot}/test`, { method: 'POST', timeout: 120000, body: JSON.stringify({
+          extraction_prompt: profile.extraction_prompt,
+          image_base64: await fileToBase64(image),
+          image_media_type: image.type || 'image/png',
+          file_name: document.getElementById('profile-test-file-name').value.trim() || image.name,
+          page_number: 1,
+          page_text: document.getElementById('profile-test-page-text').value
+        }) });
+        const message = document.getElementById('profile-test-message');
+        message.textContent = result.message;
+        message.classList.toggle('warning', Boolean(result.empty_output));
+        message.hidden = false;
         const output = document.getElementById('profile-test-result');
         output.textContent = JSON.stringify(result.result, null, 2);
         output.hidden = false;
-        utilsShowToast('抽出テストが完了しました', 'success');
+        utilsShowToast(result.empty_output ? '抽出結果は空でした。画面の説明を確認してください' : '抽出テストが完了しました', result.empty_output ? 'warning' : 'success');
       } else if (action === 'apply-profile') {
         const profile = collectProfile();
         const preview = await api(`/profiles/${activeSlot}/preview`, { method: 'POST', body: JSON.stringify(profile) });

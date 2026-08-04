@@ -13,6 +13,7 @@ StageKind = Literal[
     "OCR",
     "NORMALIZE",
     "VLM",
+    "CONCEPT",
     "EMBED",
     "PUBLISH",
 ]
@@ -51,6 +52,8 @@ class PipelineStepSelector(BaseModel):
             return f"vlm:{self.key}"
         if self.kind == "EMBED":
             return f"embedding:{self.key}"
+        if self.kind == "CONCEPT":
+            return "concepts"
         return self.kind.casefold()
 
 

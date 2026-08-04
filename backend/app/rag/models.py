@@ -114,17 +114,82 @@ class VlmFact(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class VlmRoomDimensionRectangle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    width_mm: float = Field(gt=0, le=50_000)
+    depth_mm: float = Field(gt=0, le=50_000)
+    operation: Literal["ADD", "SUBTRACT"] = "ADD"
+
+
+class VlmRoomAreaEstimate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    room_name: str = Field(min_length=1, max_length=200)
+    rectangles: list[VlmRoomDimensionRectangle] = Field(min_length=1, max_length=8)
+    source_locator: str = Field(min_length=1, max_length=512)
+    evidence: str = Field(min_length=1, max_length=4000)
+    confidence: float = Field(ge=0, le=1)
+    area_m2: float = 0
+    tatami_equivalent: float = 0
+    conversion_m2_per_tatami: float = 1.62
+
+    @model_validator(mode="after")
+    def calculate_area(self) -> VlmRoomAreaEstimate:
+        signed_mm2 = sum(
+            item.width_mm
+            * item.depth_mm
+            * (1 if item.operation == "ADD" else -1)
+            for item in self.rectangles
+        )
+        if signed_mm2 <= 0:
+            raise ValueError("room dimension rectangles must produce a positive area")
+        area_m2 = signed_mm2 / 1_000_000
+        object.__setattr__(self, "conversion_m2_per_tatami", 1.62)
+        object.__setattr__(self, "area_m2", round(area_m2, 2))
+        object.__setattr__(self, "tatami_equivalent", round(area_m2 / 1.62, 1))
+        return self
+
+    def search_text(self) -> str:
+        dimensions = "、".join(
+            f"{item.operation} {item.width_mm:g}mm×{item.depth_mm:g}mm"
+            for item in self.rectangles
+        )
+        return (
+            f"{self.room_name}: 図面寸法（{dimensions}）から面積約{self.area_m2:g}㎡、"
+            f"約{self.tatami_equivalent:g}帖（1帖=1.62㎡換算の概算）。{self.evidence}"
+        )
+
+
 class VlmExtractionOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str = Field(default="", max_length=8000)
     keywords: list[str] = Field(default_factory=list, max_length=200)
     facts: list[VlmFact] = Field(default_factory=list, max_length=500)
+    room_area_estimates: list[VlmRoomAreaEstimate] = Field(
+        default_factory=list, max_length=100
+    )
 
     @field_validator("keywords")
     @classmethod
     def clean_keywords(cls, values: list[str]) -> list[str]:
         return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @field_validator("room_area_estimates", mode="before")
+    @classmethod
+    def keep_only_reliable_room_estimates(cls, values: Any) -> list[VlmRoomAreaEstimate]:
+        if not isinstance(values, list):
+            return []
+        reliable: list[VlmRoomAreaEstimate] = []
+        for value in values:
+            try:
+                estimate = VlmRoomAreaEstimate.model_validate(value)
+            except (TypeError, ValueError):
+                continue
+            if estimate.confidence >= 0.8:
+                reliable.append(estimate)
+        return reliable
 
     def search_text(self) -> str:
         return "\n".join(
@@ -133,6 +198,7 @@ class VlmExtractionOutput(BaseModel):
                 self.summary.strip(),
                 " ".join(self.keywords),
                 "\n".join(item.text for item in self.facts),
+                "\n".join(item.search_text() for item in self.room_area_estimates),
             )
             if value
         )
@@ -329,8 +395,83 @@ class FieldFilter(BaseModel):
     value: Any
 
 
+class FolderSearchScope(BaseModel):
+    folder_id: str = Field(min_length=1, max_length=64)
+    include_descendants: bool = False
+
+
+class TagSearchFilter(BaseModel):
+    all_of: list[str] = Field(default_factory=list, max_length=100)
+    any_of: list[str] = Field(default_factory=list, max_length=100)
+    none_of: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("all_of", "any_of", "none_of")
+    @classmethod
+    def unique_tag_ids(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value for value in values if value))
+
+
+class CustomerSearchFilter(BaseModel):
+    values: list[str] = Field(default_factory=list, max_length=100)
+    match: Literal["normalized_exact", "contains", "search_key_exact"] = (
+        "normalized_exact"
+    )
+
+    @field_validator("values")
+    @classmethod
+    def unique_customer_values(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
+class MetadataSearchFilters(BaseModel):
+    folder: FolderSearchScope | None = None
+    tags: TagSearchFilter = Field(default_factory=TagSearchFilter)
+    customer: CustomerSearchFilter | None = None
+    document_year_from: int | None = Field(default=None, ge=1000, le=9999)
+    document_year_to: int | None = Field(default=None, ge=1000, le=9999)
+    document_months: list[int] = Field(default_factory=list, max_length=12)
+    concept_ids: list[str] = Field(default_factory=list, max_length=30)
+    concept_mode: Literal["BOOST", "REQUIRE_ALL"] = "BOOST"
+
+    @field_validator("document_months")
+    @classmethod
+    def valid_months(cls, values: list[int]) -> list[int]:
+        result = list(dict.fromkeys(values))
+        if any(value < 1 or value > 12 for value in result):
+            raise ValueError("document_monthsは1〜12で指定してください")
+        return result
+
+    @field_validator("concept_ids")
+    @classmethod
+    def unique_concept_ids(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value for value in values if value))
+
+    @model_validator(mode="after")
+    def valid_year_range(self) -> "MetadataSearchFilters":
+        if (
+            self.document_year_from is not None
+            and self.document_year_to is not None
+            and self.document_year_from > self.document_year_to
+        ):
+            raise ValueError("document_year_fromはdocument_year_to以下にしてください")
+        return self
+
+    def active(self) -> bool:
+        return bool(
+            self.folder
+            or self.tags.all_of
+            or self.tags.any_of
+            or self.tags.none_of
+            or (self.customer and self.customer.values)
+            or self.document_year_from is not None
+            or self.document_year_to is not None
+            or self.document_months
+            or (self.concept_ids and self.concept_mode == "REQUIRE_ALL")
+        )
+
+
 class SearchV2Request(BaseModel):
-    query: str = Field(min_length=1, max_length=4000)
+    query: str = Field(default="", max_length=4000)
     top_k: int = Field(default=20, ge=1, le=100)
     min_score: float = Field(
         default=0.0,
@@ -343,6 +484,9 @@ class SearchV2Request(BaseModel):
     )
     filename_filter: str | None = Field(default=None, max_length=1024)
     field_filters: list[FieldFilter] = Field(default_factory=list, max_length=50)
+    metadata_filters: MetadataSearchFilters = Field(default_factory=MetadataSearchFilters)
+    selected_concept_ids: list[str] = Field(default_factory=list, max_length=30)
+    concept_mode: Literal["BOOST", "REQUIRE_ALL"] = "BOOST"
     document_types: list[str] = Field(default_factory=list, max_length=50)
     current_version_only: bool = True
     retrieval_modes: list[RetrievalMode] | None = Field(
@@ -352,6 +496,17 @@ class SearchV2Request(BaseModel):
     )
     verify: bool = False
     debug: bool = False
+
+    @field_validator("selected_concept_ids")
+    @classmethod
+    def unique_selected_concepts(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value for value in values if value))
+
+    @model_validator(mode="after")
+    def require_query_or_concept(self) -> "SearchV2Request":
+        if not self.query.strip() and not self.selected_concept_ids:
+            raise ValueError("検索文または検索コンセプトを指定してください")
+        return self
 
 
 class EvidenceResult(BaseModel):
@@ -390,6 +545,22 @@ class DocumentSearchResult(BaseModel):
     image_similarity_score: float | None = None
     profile_slots: list[int]
     evidence: list[EvidenceResult]
+    document_set_id: str | None = None
+    document_set_label: str | None = None
+    direct_match: bool = True
+    matched_concept_ids: list[str] = Field(default_factory=list)
+    thumbnail_object_name: str | None = None
+    thumbnail_page_number: int | None = None
+
+
+class DocumentSetSearchGroup(BaseModel):
+    group_key: str
+    document_set_id: str | None = None
+    label: str
+    score: float
+    matched_concept_ids: list[str] = Field(default_factory=list)
+    direct_matches: list[DocumentSearchResult] = Field(default_factory=list)
+    related_documents: list[DocumentSearchResult] = Field(default_factory=list)
 
 
 class SearchV2Response(BaseModel):
@@ -397,6 +568,8 @@ class SearchV2Response(BaseModel):
     trace_id: str
     query: str
     results: list[DocumentSearchResult]
+    groups: list[DocumentSetSearchGroup] = Field(default_factory=list)
+    total_groups: int = 0
     total_documents: int
     total_evidence: int
     processing_time: float

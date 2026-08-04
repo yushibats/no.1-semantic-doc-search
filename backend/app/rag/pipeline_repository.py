@@ -11,7 +11,14 @@ from typing import Any, Iterator, Sequence
 from uuid import uuid4
 
 from app.rag.oracle_schema import SCHEMA_VERSION, schema_digest
-from app.rag.pipeline_models import EmbeddingRecipe, EmbeddingRecipeInput, EmbeddingRecipeUpsert
+from app.rag.pipeline_models import (
+    EmbeddingRecipe,
+    EmbeddingRecipeInput,
+    EmbeddingRecipeUpsert,
+    PipelineJobRequest,
+)
+from app.rag.pipeline_planner import PlannedStep, plan_steps, planned_dependencies
+from app.rag.profile_repository import profile_repository
 from app.rag.pipeline_repository_types import (
     embedding_input_fingerprint,
     stable_hash_value,
@@ -39,6 +46,103 @@ def _json_value(value: object, default: Any) -> Any:
 
 def stable_hash(value: object) -> str:
     return stable_hash_value(value)
+
+
+def retry_job_step_specs(
+    source_steps: Sequence[dict[str, Any]],
+    *,
+    publish_recovery_plan: Sequence[PlannedStep] = (),
+    publish_recovery_dependencies: dict[str, set[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build a retry graph and restore prerequisites omitted by a failed publish.
+
+    A plain retry only needs FAILED/BLOCKED nodes.  Publish is different: its
+    validation can discover a newly enabled or previously omitted component
+    that was never present in the source Job.  For those objects, rebuild the
+    current FULL graph.  Immutable cache entries keep already-successful work
+    cheap while missing/stale inputs and their downstream stages are repaired.
+    """
+    retry_components = {
+        (str(step["object_name"]), str(step["component_key"]))
+        for step in source_steps
+        if str(step["status"]) in {"FAILED", "BLOCKED"}
+    }
+    if not retry_components:
+        return []
+    recovery_objects = {
+        object_name
+        for object_name, component in retry_components
+        if component == "publish"
+    }
+    dependencies = publish_recovery_dependencies or {}
+    status_by_component = {
+        (str(step["object_name"]), str(step["component_key"])): str(step["status"])
+        for step in source_steps
+    }
+    object_order = list(
+        dict.fromkeys(str(step["object_name"]) for step in source_steps)
+    )
+    specs: list[dict[str, Any]] = []
+    for object_name in object_order:
+        if object_name in recovery_objects:
+            if not publish_recovery_plan:
+                raise ValueError("公開の回復に必要な処理計画を作成できません")
+            specs.extend(
+                {
+                    "object_name": object_name,
+                    "kind": step.kind,
+                    "component_key": step.component_key,
+                    "force": status_by_component.get(
+                        (object_name, step.component_key)
+                    )
+                    == "FAILED",
+                    "depends_on": sorted(dependencies.get(step.component_key, set())),
+                }
+                for step in publish_recovery_plan
+            )
+            continue
+        specs.extend(
+            {
+                "object_name": object_name,
+                "kind": str(step["stage_kind"]),
+                "component_key": str(step["component_key"]),
+                "force": str(step["status"]) == "FAILED",
+                "depends_on": [
+                    dependency
+                    for dependency in step.get("depends_on", [])
+                    if (object_name, dependency) in retry_components
+                ],
+            }
+            for step in source_steps
+            if str(step["object_name"]) == object_name
+            and (object_name, str(step["component_key"])) in retry_components
+        )
+    return specs
+
+
+def effective_document_status(
+    document_status: str,
+    latest_job_status: str | None,
+) -> str:
+    """Expose terminal Job failures instead of leaving documents as PROCESSING."""
+    document_status = str(document_status or "UNPROCESSED")
+    latest_job_status = str(latest_job_status or "")
+    if latest_job_status in {"FAILED", "PARTIAL_FAILED"}:
+        if document_status == "UPDATE_AVAILABLE":
+            return "UPDATE_FAILED"
+        if document_status in {"PROCESSING", "UNPROCESSED"}:
+            return "FAILED"
+    if latest_job_status == "CANCELLED" and document_status in {
+        "PROCESSING",
+        "UNPROCESSED",
+    }:
+        return "CANCELLED"
+    if latest_job_status in {"QUEUED", "RUNNING"} and document_status in {
+        "UNPROCESSED",
+        "PROCESSING",
+    }:
+        return "PROCESSING"
+    return document_status
 
 
 def release_validation_error_message(validation: dict[str, Any]) -> str:
@@ -339,9 +443,10 @@ class OraclePipelineRepository:
         generation: int | None = None,
     ) -> RevisionRecord:
         digest = hashlib.sha256(content).hexdigest()
-        file_name = PurePosixPath(object_name).name
-        media_type = media_type or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
-        document_type = PurePosixPath(file_name).suffix.casefold().lstrip(".")
+        source_file_name = PurePosixPath(object_name).name
+        media_type = media_type or mimetypes.guess_type(source_file_name)[0] or "application/octet-stream"
+        file_name = source_file_name
+        document_type = PurePosixPath(source_file_name).suffix.casefold().lstrip(".")
         with self.connection() as connection, connection.cursor() as cursor:
             if job_id is not None:
                 cursor.execute(
@@ -357,13 +462,20 @@ class OraclePipelineRepository:
                     connection.rollback()
                     raise LeaseLostError("処理Jobのリースが失効しました")
             cursor.execute(
-                "SELECT document_id, current_revision_id, content_sha256 "
+                "SELECT document_id, current_revision_id, content_sha256, file_name, "
+                "document_type "
                 "FROM sds_documents WHERE bucket=:bucket AND object_name=:object FOR UPDATE",
                 {"bucket": bucket, "object": object_name},
             )
             row = cursor.fetchone()
             document_id = str(row[0]) if row else uuid4().hex
             content_changed = not row or str(row[2] or "") != digest
+            if row:
+                # Stable storage keys intentionally look like
+                # documents/<id>/source.pdf.  The user-facing original name is
+                # already stored on SDS_DOCUMENTS and must survive re-indexing.
+                file_name = str(row[3] or source_file_name)
+                document_type = str(row[4] or document_type)
             if not row:
                 cursor.execute(
                     """
@@ -393,23 +505,34 @@ class OraclePipelineRepository:
             revision_id = str(revision_row[0]) if revision_row else uuid4().hex
             if not revision_row:
                 cursor.execute(
-                    """
+                    "SELECT COUNT(*) FROM user_tab_columns "
+                    "WHERE table_name='SDS_DOCUMENT_REVISIONS' "
+                    "AND column_name='SOURCE_OBJECT_NAME'"
+                )
+                has_source_object_name = bool(cursor.fetchone()[0])
+                source_column = ", source_object_name" if has_source_object_name else ""
+                source_bind = ", :source_object_name" if has_source_object_name else ""
+                binds = {
+                    "revision": revision_id,
+                    "document": document_id,
+                    "hash": digest,
+                    "version": object_version,
+                    "etag": etag,
+                    "file_size_bind": len(content),
+                    "media": media_type,
+                    "metadata": json.dumps({"bucket": bucket, "object_name": object_name}),
+                }
+                if has_source_object_name:
+                    binds["source_object_name"] = object_name
+                cursor.execute(
+                    f"""
                     INSERT INTO sds_document_revisions
                         (revision_id, document_id, content_sha256, object_version, etag,
-                         file_size, media_type, source_metadata_json)
+                         file_size, media_type, source_metadata_json{source_column})
                     VALUES (:revision, :document, :hash, :version, :etag,
-                            :file_size_bind, :media, :metadata)
+                            :file_size_bind, :media, :metadata{source_bind})
                     """,
-                    {
-                        "revision": revision_id,
-                        "document": document_id,
-                        "hash": digest,
-                        "version": object_version,
-                        "etag": etag,
-                        "file_size_bind": len(content),
-                        "media": media_type,
-                        "metadata": json.dumps({"bucket": bucket, "object_name": object_name}),
-                    },
+                    binds,
                 )
             cursor.execute(
                 """
@@ -651,6 +774,164 @@ class OraclePipelineRepository:
             )
             connection.commit()
             return release_id
+
+    def release_for_enrichment(self, revision: RevisionRecord) -> str:
+        """Return an existing release for a read-only enrichment stage.
+
+        Search-concept extraction stores revision-scoped rows and does not
+        replace a release component. Creating a draft for a concept-only Job
+        therefore leaves the document in PROCESSING forever because no publish
+        stage exists to clear that draft. Prefer the serving release when it
+        represents the current revision, otherwise use an already-existing
+        draft for that revision. This method deliberately never mutates the
+        document or creates a release.
+        """
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT d.serving_release_id, serving.document_revision_id,
+                       d.draft_release_id, draft.document_revision_id
+                FROM sds_documents d
+                LEFT JOIN sds_index_releases serving
+                  ON serving.release_id=d.serving_release_id
+                LEFT JOIN sds_index_releases draft
+                  ON draft.release_id=d.draft_release_id
+                WHERE d.document_id=:document
+                """,
+                {"document": revision.document_id},
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("文書が見つかりません")
+            if row[0] and str(row[1]) == revision.revision_id:
+                return str(row[0])
+            if row[2] and str(row[3]) == revision.revision_id:
+                return str(row[2])
+        raise ValueError(
+            "AI検索候補抽出に利用できる索引Releaseがありません。"
+            "先に通常の索引処理を完了してください"
+        )
+
+    def repair_stranded_concept_only_drafts(self) -> list[str]:
+        """Restore documents stranded by the former concept-only Job path.
+
+        Only a succeeded retry Job containing CONCEPT steps alone is eligible.
+        The draft and serving release must refer to the current revision and
+        have exactly the same component/run pairs, and no Job for the object
+        may still be active. The draft is retained as SUPERSEDED for audit;
+        only the document pointer/status is restored.
+        """
+        repaired: list[str] = []
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT d.document_id, d.object_name, d.draft_release_id,
+                       d.serving_release_id
+                FROM sds_documents d
+                JOIN sds_index_releases draft
+                  ON draft.release_id=d.draft_release_id
+                JOIN sds_index_releases serving
+                  ON serving.release_id=d.serving_release_id
+                WHERE d.status='PROCESSING'
+                  AND draft.status='DRAFT'
+                  AND draft.document_revision_id=d.current_revision_id
+                  AND serving.document_revision_id=d.current_revision_id
+                  AND EXISTS (
+                        SELECT 1
+                        FROM sds_pipeline_jobs repaired_job
+                        WHERE repaired_job.status='SUCCEEDED'
+                          AND repaired_job.created_at>=draft.created_at
+                          AND JSON_VALUE(
+                                repaired_job.request_json, '$.retry_of_job_id'
+                                RETURNING VARCHAR2(64) NULL ON ERROR
+                              ) IS NOT NULL
+                          AND EXISTS (
+                                SELECT 1
+                                FROM sds_pipeline_job_steps own_step
+                                WHERE own_step.job_id=repaired_job.job_id
+                                  AND own_step.object_name=d.object_name
+                                  AND own_step.stage_kind='CONCEPT'
+                          )
+                          AND NOT EXISTS (
+                                SELECT 1
+                                FROM sds_pipeline_job_steps own_step
+                                WHERE own_step.job_id=repaired_job.job_id
+                                  AND own_step.object_name=d.object_name
+                                  AND own_step.stage_kind<>'CONCEPT'
+                          )
+                  )
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM sds_pipeline_job_steps active_step
+                        JOIN sds_pipeline_jobs active_job
+                          ON active_job.job_id=active_step.job_id
+                        WHERE active_step.object_name=d.object_name
+                          AND active_job.status IN ('QUEUED', 'RUNNING')
+                  )
+                FOR UPDATE OF d.status
+                """
+            )
+            candidates = list(cursor.fetchall())
+            for document_id, object_name, draft_id, serving_id in candidates:
+                cursor.execute(
+                    """
+                    SELECT component_key, stage_run_id
+                    FROM sds_index_release_components
+                    WHERE release_id=:release
+                    """,
+                    {"release": str(draft_id)},
+                )
+                draft_components = {
+                    str(component): str(run_id)
+                    for component, run_id in cursor.fetchall()
+                }
+                cursor.execute(
+                    """
+                    SELECT component_key, stage_run_id
+                    FROM sds_index_release_components
+                    WHERE release_id=:release
+                    """,
+                    {"release": str(serving_id)},
+                )
+                serving_components = {
+                    str(component): str(run_id)
+                    for component, run_id in cursor.fetchall()
+                }
+                if draft_components != serving_components:
+                    continue
+                cursor.execute(
+                    """
+                    UPDATE sds_documents
+                    SET draft_release_id=NULL, status='INDEXED',
+                        updated_at=SYSTIMESTAMP
+                    WHERE document_id=:document
+                      AND draft_release_id=:draft
+                      AND serving_release_id=:serving
+                      AND status='PROCESSING'
+                    """,
+                    {
+                        "document": str(document_id),
+                        "draft": str(draft_id),
+                        "serving": str(serving_id),
+                    },
+                )
+                if cursor.rowcount != 1:
+                    continue
+                cursor.execute(
+                    """
+                    UPDATE sds_index_releases
+                    SET status='SUPERSEDED'
+                    WHERE release_id=:draft AND status='DRAFT'
+                    """,
+                    {"draft": str(draft_id)},
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(
+                        "復旧対象のDraft Release状態が同時に変更されました"
+                    )
+                repaired.append(str(object_name))
+            connection.commit()
+        return repaired
 
     def create_job(
         self,
@@ -989,30 +1270,59 @@ class OraclePipelineRepository:
 
     def retry_job(self, job_id: str) -> str:
         source = self.get_job(job_id)
-        retry_components = {
-            (str(step["object_name"]), str(step["component_key"]))
-            for step in source["steps"]
-            if str(step["status"]) in {"FAILED", "BLOCKED"}
-        }
-        if not retry_components:
+        source_steps = list(source["steps"])
+        publish_recovery_objects = list(
+            dict.fromkeys(
+                str(step["object_name"])
+                for step in source_steps
+                if str(step["component_key"]) == "publish"
+                and str(step["status"]) in {"FAILED", "BLOCKED"}
+            )
+        )
+        recovery_plan: list[PlannedStep] = []
+        recovery_dependencies: dict[str, set[str]] = {}
+        if publish_recovery_objects:
+            recipes = self.list_recipes()
+            mineru = retrieval_service_settings.get_mineru()
+            ocr = retrieval_service_settings.get_ocr()
+            recovery_request = PipelineJobRequest(
+                object_names=publish_recovery_objects,
+                mode="FULL",
+                force=False,
+            )
+            recovery_plan, _, _ = plan_steps(
+                recovery_request,
+                recipes=recipes,
+                profile_slots=[
+                    item.slot_no for item in profile_repository.enabled_profiles()
+                ],
+                mineru_enabled=mineru.enabled and bool(mineru.base_url),
+                ocr_enabled=ocr.enabled,
+            )
+            recovery_dependencies = planned_dependencies(
+                recovery_plan,
+                recipes=recipes,
+            )
+        specs = retry_job_step_specs(
+            source_steps,
+            publish_recovery_plan=recovery_plan,
+            publish_recovery_dependencies=recovery_dependencies,
+        )
+        if not specs:
             raise ValueError("再試行できる失敗処理がありません")
         request = dict(source["request_json"])
-        request["force"] = True
-        specs = [
+        request.update(
             {
-                "object_name": str(step["object_name"]),
-                "kind": str(step["stage_kind"]),
-                "component_key": str(step["component_key"]),
-                "force": str(step["status"]) == "FAILED",
-                "depends_on": [
-                    dependency
-                    for dependency in step.get("depends_on", [])
-                    if (str(step["object_name"]), dependency) in retry_components
-                ],
+                "mode": "CUSTOM",
+                "force": False,
+                "retry_of_job_id": job_id,
+                "recovery_mode": (
+                    "CURRENT_RELEASE_CONTRACT"
+                    if publish_recovery_objects
+                    else "FAILED_STEPS"
+                ),
             }
-            for step in source["steps"]
-            if (str(step["object_name"]), str(step["component_key"])) in retry_components
-        ]
+        )
         new_job_id, _ = self.create_job(
             request_json=json.dumps(request, ensure_ascii=False),
             mode="CUSTOM",
@@ -1616,11 +1926,11 @@ class OraclePipelineRepository:
         # intermediate input, so render/normalize changes also invalidate
         # recipes that consume any VLM_TEXT artifact.
         downstream = {
-            "render": ("normalize", "ocr", "vlm:%"),
-            "native_parse": ("normalize", "vlm:%"),
-            "mineru_parse": ("normalize", "vlm:%"),
-            "ocr": ("normalize", "vlm:%"),
-            "normalize": ("vlm:%",),
+            "render": ("normalize", "ocr", "vlm:%", "concepts"),
+            "native_parse": ("normalize", "vlm:%", "concepts"),
+            "mineru_parse": ("normalize", "vlm:%", "concepts"),
+            "ocr": ("normalize", "vlm:%", "concepts"),
+            "normalize": ("vlm:%", "concepts"),
         }
         recipe_sources: tuple[str, ...] = {
             "render": ("PAGE_IMAGE", "VLM_TEXT"),
@@ -1636,6 +1946,7 @@ class OraclePipelineRepository:
         if component_key.startswith("vlm:"):
             recipe_sources = ("VLM_TEXT",)
             source_ref = component_key.split(":", 1)[1]
+            downstream[component_key] = ("concepts",)
         with self.connection() as connection, connection.cursor() as cursor:
             if job_id is not None:
                 cursor.execute(
@@ -2419,10 +2730,159 @@ class OraclePipelineRepository:
                 "stages": stages,
                 "stale_reasons": stale_reasons,
             }
+        latest_job = self.latest_job_summaries_by_object(
+            [result["object_name"]]
+        ).get(result["object_name"])
+        result["raw_document_status"] = result["document_status"]
+        result["document_status"] = effective_document_status(
+            result["raw_document_status"],
+            str(latest_job["status"]) if latest_job else None,
+        )
+        result["latest_job"] = latest_job
         result["page_images"] = self.page_image_versions(
             document_id, page_image_selector
         )
         return result
+
+    def latest_job_summaries_by_object(
+        self, object_names: Sequence[str]
+    ) -> dict[str, dict[str, Any]]:
+        if not object_names:
+            return {}
+        unique_names = list(dict.fromkeys(str(name) for name in object_names))
+        object_binds = {
+            f"latest_object_{index}": name
+            for index, name in enumerate(unique_names)
+        }
+        placeholders = ", ".join(f":{key}" for key in object_binds)
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH job_objects AS (
+                    SELECT DISTINCT job_id, object_name
+                    FROM sds_pipeline_job_steps
+                    WHERE object_name IN ({placeholders})
+                ), ranked_jobs AS (
+                    SELECT jo.object_name, j.job_id, j.status, j.job_mode,
+                           j.publish_mode, j.total_steps, j.completed_steps,
+                           j.failed_steps, j.error_summary, j.created_at,
+                           j.updated_at,
+                           COUNT(*) OVER (PARTITION BY j.job_id) affected_objects,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY jo.object_name
+                               ORDER BY j.created_at DESC, j.job_id DESC
+                           ) row_no
+                    FROM job_objects jo
+                    JOIN sds_pipeline_jobs j ON j.job_id=jo.job_id
+                )
+                SELECT object_name, job_id, status, job_mode, publish_mode,
+                       total_steps, completed_steps, failed_steps, error_summary,
+                       created_at, updated_at, affected_objects
+                FROM ranked_jobs WHERE row_no=1
+                """,
+                object_binds,
+            )
+            rows = cursor.fetchall()
+        return {
+            str(row[0]): {
+                "job_id": str(row[1]),
+                "status": str(row[2]),
+                "mode": str(row[3]),
+                "publish_mode": str(row[4]),
+                "total_steps": int(row[5] or 0),
+                "completed_steps": int(row[6] or 0),
+                "failed_steps": int(row[7] or 0),
+                "error_summary": str(row[8]) if row[8] else None,
+                "created_at": row[9],
+                "updated_at": row[10],
+                "affected_object_count": int(row[11] or 0),
+            }
+            for row in rows
+        }
+
+    def job_lineage_for_object(self, object_name: str) -> list[dict[str, Any]]:
+        """Return the current original Job and every retry/additional Job."""
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT j.job_id, j.status, j.job_mode, j.publish_mode,
+                       j.total_steps, j.completed_steps, j.failed_steps,
+                       j.error_summary, j.request_json, j.created_at,
+                       j.updated_at,
+                       (
+                           SELECT COUNT(DISTINCT all_step.object_name)
+                           FROM sds_pipeline_job_steps all_step
+                           WHERE all_step.job_id=j.job_id
+                       ) affected_objects
+                FROM sds_pipeline_jobs j
+                WHERE EXISTS (
+                    SELECT 1 FROM sds_pipeline_job_steps own_step
+                    WHERE own_step.job_id=j.job_id
+                      AND own_step.object_name=:object_name
+                )
+                ORDER BY j.created_at, j.job_id
+                """,
+                {"object_name": object_name},
+            )
+            rows = cursor.fetchall()
+        jobs: list[dict[str, Any]] = []
+        for row in rows:
+            request = _json_value(row[8], {})
+            jobs.append(
+                {
+                    "job_id": str(row[0]),
+                    "status": str(row[1]),
+                    "mode": str(row[2]),
+                    "publish_mode": str(row[3]),
+                    "total_steps": int(row[4] or 0),
+                    "completed_steps": int(row[5] or 0),
+                    "failed_steps": int(row[6] or 0),
+                    "error_summary": str(row[7]) if row[7] else None,
+                    "request_json": request,
+                    "retry_of_job_id": (
+                        str(request["retry_of_job_id"])
+                        if request.get("retry_of_job_id")
+                        else None
+                    ),
+                    "created_at": row[9],
+                    "updated_at": row[10],
+                    "affected_object_count": int(row[11] or 0),
+                }
+            )
+        if not jobs:
+            return []
+
+        by_id = {job["job_id"]: job for job in jobs}
+
+        def root_id(job: dict[str, Any]) -> str:
+            current = job
+            seen = {str(current["job_id"])}
+            while current.get("retry_of_job_id") in by_id:
+                parent_id = str(current["retry_of_job_id"])
+                if parent_id in seen:
+                    break
+                seen.add(parent_id)
+                current = by_id[parent_id]
+            return str(current["job_id"])
+
+        current_root_id = root_id(jobs[-1])
+        lineage = [job for job in jobs if root_id(job) == current_root_id]
+        lineage.sort(key=lambda item: (item["created_at"], item["job_id"]))
+        additional_number = 0
+        for job in lineage:
+            job["is_additional"] = job["job_id"] != current_root_id
+            if job["is_additional"]:
+                additional_number += 1
+                job["tab_label"] = f"追加Job {additional_number}"
+            else:
+                job["tab_label"] = "全体工程"
+        return lineage
+
+    def latest_job_for_object(self, object_name: str) -> dict[str, Any] | None:
+        summary = self.latest_job_summaries_by_object([object_name]).get(
+            object_name
+        )
+        return self.get_job(str(summary["job_id"])) if summary else None
 
     def statuses_by_object(
         self, object_names: Sequence[str], page_image_selector: str = "latest"
@@ -2515,6 +2975,7 @@ class OraclePipelineRepository:
                         "stage_status": stage_status,
                     }
 
+        latest_jobs = self.latest_job_summaries_by_object(unique_names)
         result: dict[str, dict[str, Any]] = {}
         for row in document_rows:
             serving_release_id = str(row[4]) if row[4] else None
@@ -2550,16 +3011,24 @@ class OraclePipelineRepository:
                 if str(row[2]) == "FAILED"
                 else "UNPUBLISHED"
             )
-            result[str(row[1])] = {
+            object_name = str(row[1])
+            latest_job = latest_jobs.get(object_name)
+            raw_document_status = str(row[2])
+            result[object_name] = {
                 "document_id": str(row[0]),
-                "object_name": str(row[1]),
-                "document_status": str(row[2]),
+                "object_name": object_name,
+                "raw_document_status": raw_document_status,
+                "document_status": effective_document_status(
+                    raw_document_status,
+                    str(latest_job["status"]) if latest_job else None,
+                ),
                 "current_revision_id": str(row[3]) if row[3] else None,
                 "serving_release_id": serving_release_id,
                 "draft_release_id": draft_release_id,
                 "publication_status": publication,
                 "stages": stages,
                 "stale_reasons": stale_reasons,
+                "latest_job": latest_job,
                 "page_images": {
                     "selector": page_image_selector,
                     "selected": selected,

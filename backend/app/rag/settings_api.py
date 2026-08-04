@@ -7,9 +7,10 @@ from io import BytesIO
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
+from typing import Literal
 
 from app.rag.clients import mineru_client, ocr_client, rerank_client, vlm_client
-from app.rag.index_pipeline import INDEX_OUTPUT_CONTRACT
+from app.rag.vlm_prompting import build_vlm_extraction_prompt
 from app.rag.models import (
     GlobalVlmSettings,
     MinerUSettings,
@@ -38,6 +39,9 @@ class PromptTestRequest(BaseModel):
     extraction_prompt: str | None = Field(default=None, max_length=40_000)
     image_base64: str | None = None
     page_text: str = Field(default="", max_length=20_000)
+    file_name: str = Field(default="test-image.png", min_length=1, max_length=1024)
+    page_number: int = Field(default=1, ge=1, le=100_000)
+    image_media_type: Literal["image/png", "image/jpeg", "image/webp"] = "image/png"
 
 
 class DocumentTypeUpdate(BaseModel):
@@ -192,18 +196,33 @@ async def test_profile(slot_no: int, request: PromptTestRequest) -> dict[str, ob
         image = base64.b64decode(request.image_base64, validate=True) if request.image_base64 else None
     except ValueError as error:
         raise HTTPException(status_code=422, detail="image_base64 is invalid") from error
-    prompt = (
-        f"管理者の抽出指示:\n{prompt_text}\n\n"
-        f"ページテキスト:\n{request.page_text}\n\n出典位置: page:1\n\n"
-        f"{INDEX_OUTPUT_CONTRACT}"
+    prompt = build_vlm_extraction_prompt(
+        instruction=prompt_text,
+        file_name=request.file_name,
+        storage_object_name="test-upload/preview",
+        page_number=request.page_number,
+        page_text=request.page_text,
     )
     try:
         output = VlmExtractionOutput.model_validate(
-            await vlm_client.generate_json(prompt=prompt, image=image)
+            await vlm_client.generate_json(
+                prompt=prompt, image=image, media_type=request.image_media_type
+            )
         )
     except Exception as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
-    return {"success": True, "result": output.model_dump(mode="json"), "search_text": output.search_text()}
+    search_text = output.search_text()
+    return {
+        "success": True,
+        "result": output.model_dump(mode="json"),
+        "search_text": search_text,
+        "empty_output": not bool(search_text),
+        "message": (
+            "VLMは正常応答しましたが、抽出結果は空です。対象外判定、元ファイル名・ページテキスト不足、または画像から根拠を確認できなかった可能性があります。"
+            if not search_text
+            else "抽出結果を生成しました。"
+        ),
+    }
 
 
 @router.post("/profiles/{slot_no}/validate")

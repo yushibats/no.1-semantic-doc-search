@@ -60,18 +60,54 @@ def _json_from_text(raw: str) -> Any:
         if lines and lines[-1].strip() == "```":
             lines.pop()
         text = "\n".join(lines).strip()
-    starts = [index for index in (text.find("{"), text.find("[")) if index >= 0]
-    if starts:
-        start = min(starts)
-        end = max(text.rfind("}"), text.rfind("]"))
-        if end >= start:
-            text = text[start : end + 1]
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as original_error:
+        # Some OpenAI-compatible endpoints append prose or a second JSON value.
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"[\{\[]", text):
+            try:
+                value, _ = decoder.raw_decode(text[match.start() :])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, (dict, list)):
+                return value
+        raise original_error
 
 
 def _openai_base_url(value: str) -> str:
     base = value.rstrip("/")
     return base if base.endswith("/v1") else f"{base}/v1"
+
+
+def _mineru_parse_fields() -> dict[str, str]:
+    backend = os.environ.get("MINERU_BACKEND", "pipeline").strip() or "pipeline"
+    fields = {
+        "lang_list": "ch",
+        "backend": backend,
+        "effort": "medium",
+        "parse_method": "auto",
+        "formula_enable": "true",
+        "table_enable": "true",
+        "return_md": "true",
+        "return_content_list": "true",
+        "return_images": "false",
+    }
+    if backend.endswith("-http-client"):
+        server_url = os.environ.get("MINERU_VLLM_API_HOST", "").strip().rstrip("/")
+        if server_url.endswith("/v1/models"):
+            server_url = server_url[: -len("/v1/models")]
+        elif server_url.endswith("/v1"):
+            server_url = server_url[: -len("/v1")]
+        if not server_url:
+            raise ValueError(
+                "MINERU_VLLM_API_HOST is required for a MinerU http-client backend"
+            )
+        fields["server_url"] = server_url
+        fields["image_analysis"] = os.environ.get(
+            "MINERU_IMAGE_ANALYSIS", "true"
+        ).strip().lower()
+    return fields
 
 
 class MinerUClient:
@@ -94,17 +130,7 @@ class MinerUClient:
     ) -> dict[str, Any]:
         if not settings.enabled:
             raise RuntimeError("MinerU is disabled")
-        fields = {
-            "lang_list": "ch",
-            "backend": "pipeline",
-            "effort": "medium",
-            "parse_method": "auto",
-            "formula_enable": "true",
-            "table_enable": "true",
-            "return_md": "true",
-            "return_content_list": "true",
-            "return_images": "false",
-        }
+        fields = _mineru_parse_fields()
         timeout = httpx.Timeout(settings.timeout_seconds, connect=10)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(

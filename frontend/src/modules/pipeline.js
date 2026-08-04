@@ -89,6 +89,7 @@ function ensureTray() {
     }
     if (action === 'cancel') await cancelJob(jobId);
     if (action === 'retry') await retryJob(jobId);
+    if (action === 'acknowledge') acknowledgeJob(jobId);
     if (action === 'refresh') pollJobs();
     if (action === 'details') {
       const details = tray.querySelector('[data-job-details="' + jobId + '"]');
@@ -113,12 +114,15 @@ function jobHtml(job) {
   const icon = job.status === 'RUNNING' ? 'fa-spinner fa-spin'
     : job.status === 'SUCCEEDED' ? 'fa-check-circle'
       : String(job.status).includes('FAILED') ? 'fa-exclamation-circle' : 'fa-clock';
+  const acknowledge = ['FAILED', 'PARTIAL_FAILED'].includes(job.status)
+    ? '<button type="button" data-pipeline-action="acknowledge" data-job-id="' + job.job_id + '" title="この端末の処理タスク一覧から外す">確認済み</button>'
+    : '';
   const actions = ['QUEUED', 'RUNNING'].includes(job.status)
     ? '<button type="button" data-pipeline-action="cancel" data-job-id="' + job.job_id + '">キャンセル</button>'
     : errors.length
-      ? '<button type="button" data-pipeline-action="retry" data-job-id="' + job.job_id + '">失敗項目を再試行</button>' +
-        '<button type="button" data-pipeline-action="details" data-job-id="' + job.job_id + '">エラー詳細</button>'
-      : '';
+      ? '<button type="button" data-pipeline-action="retry" data-job-id="' + job.job_id + '">失敗・不足工程を再試行</button>' +
+        '<button type="button" data-pipeline-action="details" data-job-id="' + job.job_id + '">エラー詳細</button>' + acknowledge
+      : acknowledge;
   const errorHtml = errors.map(step =>
     '<p><strong>' + escapeHtml(step.object_name) + '</strong><br>' +
     escapeHtml(stepLabel(step.component_key)) + ': ' + escapeHtml(step.error_summary) + '</p>'
@@ -492,11 +496,23 @@ async function cancelJob(jobId) {
 async function retryJob(jobId) {
   try {
     const result = await authApiCall('/ai/api/pipeline/jobs/' + encodeURIComponent(jobId) + '/retry', { method: 'POST' });
+    // The new Job supersedes the terminal failure in this browser's task list.
+    // Keeping both IDs would restore the already-addressed failure at every login.
+    jobs.delete(jobId);
+    persistJobs();
     rememberJob({ job_id: result.job_id, status: 'QUEUED' });
-    showToast('失敗した項目を再試行します', 'success');
+    showToast('不足工程を補完して失敗項目を再試行します', 'success');
   } catch (error) {
     showToast('再試行できませんでした: ' + error.message, 'error');
   }
+}
+
+function acknowledgeJob(jobId) {
+  if (!jobId || !jobs.has(jobId)) return;
+  jobs.delete(jobId);
+  persistJobs();
+  renderTray();
+  showToast('処理タスクを確認済みにしました', 'success');
 }
 
 export async function restorePipelineJobs() {
