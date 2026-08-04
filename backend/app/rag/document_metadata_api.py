@@ -5,7 +5,7 @@ import hashlib
 import os
 import re
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
@@ -264,6 +264,9 @@ async def list_documents(
     folder_id: str | None = None,
     include_descendants: bool = False,
     query: str | None = Query(default=None, max_length=1024),
+    sort: Literal[
+        "updated_desc", "created_desc", "updated_asc", "filename_asc"
+    ] = "updated_desc",
 ) -> DocumentLibraryResponse:
     try:
         result = await asyncio.to_thread(
@@ -273,6 +276,7 @@ async def list_documents(
             folder_id=folder_id,
             include_descendants=include_descendants,
             query=query,
+            sort=sort,
         )
         statuses = await asyncio.to_thread(
             pipeline_repository.statuses_by_object,

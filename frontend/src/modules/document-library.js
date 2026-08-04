@@ -18,6 +18,7 @@ const state = {
   documentSets: [],
   selectedFolderId: 'folder_root',
   page: 1,
+  sort: 'updated_desc',
   currentBatch: null,
   ingestItems: [],
   activeIngestBatches: [],
@@ -371,7 +372,8 @@ export async function refresh() {
   const params = new URLSearchParams({
     page: String(state.page),
     page_size: '20',
-    include_descendants: String(includeDescendants)
+    include_descendants: String(includeDescendants),
+    sort: state.sort
   });
   if (state.selectedFolderId) params.set('folder_id', state.selectedFolderId);
   if (query) params.set('query', query);
@@ -1240,6 +1242,30 @@ export function changePage(delta) {
   refresh();
 }
 
+const LIBRARY_SORT_VALUES = new Set([
+  'updated_desc',
+  'created_desc',
+  'updated_asc',
+  'filename_asc'
+]);
+
+function updateLibrarySortTabs() {
+  document.querySelectorAll('[data-library-sort]').forEach(button => {
+    const selected = button.dataset.librarySort === state.sort;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+  });
+}
+
+export async function setLibrarySort(sort) {
+  if (!LIBRARY_SORT_VALUES.has(sort) || state.sort === sort) return;
+  state.sort = sort;
+  state.page = 1;
+  state.selectedLibraryDocumentIds.clear();
+  updateLibrarySortTabs();
+  await refresh();
+}
+
 export async function createFolderPrompt() {
   if (!state.folders.length) await loadMasters();
   const name = window.prompt('新しいフォルダ名を入力してください');
@@ -1556,6 +1582,7 @@ window.documentLibraryModule = {
   bulkReprocessSelectedDocuments,
   selectFolder,
   changePage,
+  setLibrarySort,
   createFolderPrompt,
   renameFolder,
   deleteFolder,

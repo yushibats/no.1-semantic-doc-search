@@ -1175,8 +1175,17 @@ class DocumentMetadataRepository:
         folder_id: str | None = None,
         include_descendants: bool = False,
         query: str | None = None,
+        sort: str = "updated_desc",
     ) -> DocumentLibraryResponse:
         self.require_schema()
+        order_by = {
+            "updated_desc": "d.updated_at DESC NULLS LAST, d.document_id",
+            "created_desc": "d.uploaded_at DESC NULLS LAST, d.document_id",
+            "updated_asc": "d.updated_at ASC NULLS LAST, d.document_id",
+            "filename_asc": "LOWER(d.file_name) ASC, d.file_name ASC, d.document_id",
+        }.get(sort)
+        if order_by is None:
+            raise ValueError("未対応の文書並び順です")
         page = max(1, page)
         page_size = max(1, min(page_size, 100))
         clauses = ["d.is_current=1", "d.status<>'DRAFT'"]
@@ -1221,7 +1230,7 @@ class DocumentMetadataRepository:
                 LEFT JOIN sds_document_sets ds
                   ON ds.document_set_id=m.document_set_id
                 WHERE {where}
-                ORDER BY d.updated_at DESC, d.document_id
+                ORDER BY {order_by}
                 OFFSET {offset} ROWS FETCH NEXT {page_size} ROWS ONLY
                 """,
                 binds,
