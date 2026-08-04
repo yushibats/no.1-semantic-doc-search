@@ -27,22 +27,11 @@ from app.rag.models import ProfileConfig, VlmExtractionOutput
 from app.rag.oracle_repository import EvidenceRecord, VlmFacetRecord, rag_repository
 from app.rag.profile_repository import profile_repository
 from app.rag.service_settings import retrieval_service_settings
+from app.rag.vlm_prompting import build_vlm_extraction_prompt
 from app.services.oci_service import oci_service
 from app.services.parallel_processor import _convert_file_to_images_worker
 
 logger = logging.getLogger(__name__)
-
-INDEX_OUTPUT_CONTRACT = """出力形式:
-- 次の技術的な形に厳密に一致するJSONオブジェクトを1つだけ返す
-- 裏付けのない事実や不確かな事実は省略する
-- 他のキーは追加しない
-
-{
-  "summary": "ソースに基づく短い要約",
-  "keywords": ["検索に使える語"],
-  "facts": [{"text": "ソースに基づく事実", "source_locator": "page:N", "confidence": 0.0}]
-}"""
-
 
 @dataclass
 class SourceBlock:
@@ -423,17 +412,18 @@ def _page_evidence(evidence: list[EvidenceRecord]) -> list[EvidenceRecord]:
 
 
 async def _build_profile_facets(
-    *, profile: ProfileConfig, object_name: str,
+    *, profile: ProfileConfig, object_name: str, file_name: str | None = None,
     evidence: list[EvidenceRecord], page_images: dict[int, bytes],
     on_page=None,
 ) -> list[VlmFacetRecord]:
     facets: list[VlmFacetRecord] = []
     for item in _page_evidence(evidence):
-        prompt = (
-            f"管理者の抽出指示:\n{profile.extraction_prompt}\n\n"
-            f"文書コンテキスト: {json.dumps({'object_name': object_name, 'page_number': item.page_number}, ensure_ascii=False)}\n"
-            f"ページテキスト:\n{item.raw_text[:12000]}\n\n出典位置: {item.source_locator}\n\n"
-            f"{INDEX_OUTPUT_CONTRACT}"
+        prompt = build_vlm_extraction_prompt(
+            instruction=profile.extraction_prompt,
+            file_name=file_name or PurePosixPath(object_name).name,
+            storage_object_name=object_name,
+            page_number=int(item.page_number),
+            page_text=item.raw_text,
         )
         output = VlmExtractionOutput.model_validate(
             await vlm_client.generate_json(prompt=prompt, image=page_images.get(item.page_number))
@@ -650,7 +640,8 @@ class SharedIndexPipeline:
             profile_repository.set_apply_status(profile.slot_no, "PROCESSING")
             try:
                 facets = await _build_profile_facets(
-                    profile=profile, object_name=object_name, evidence=evidence, page_images=page_images,
+                    profile=profile, object_name=object_name, file_name=file_name,
+                    evidence=evidence, page_images=page_images,
                     on_page=_bump,
                 )
                 rag_repository.store_profile_facets(

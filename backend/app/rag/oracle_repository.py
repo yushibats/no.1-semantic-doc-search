@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator
 from uuid import uuid4
 
-from app.rag.models import ProfileConfig, VlmExtractionOutput
+from app.rag.classification_rules import normalize_comparable
+from app.rag.models import MetadataSearchFilters, ProfileConfig, VlmExtractionOutput
 from app.services.database_service import database_service
 
 TOKEN_PATTERN = re.compile(r"[0-9A-Za-z_.-]+|[ぁ-んァ-ン一-龯々ー]+")
@@ -181,6 +182,7 @@ class OracleRagRepository:
         current_version_only: bool,
         document_types: list[str],
         filename_filter: str | None,
+        metadata_filters: MetadataSearchFilters | None = None,
     ) -> tuple[str, dict[str, Any]]:
         access, binds = self._access_sql(user_hash)
         clauses = ["d.serving_release_id IS NOT NULL", access]
@@ -196,6 +198,158 @@ class OracleRagRepository:
         if filename_filter and filename_filter.strip():
             binds["filename_filter"] = filename_filter.strip()
             clauses.append("LOWER(d.file_name) LIKE '%' || LOWER(:filename_filter) || '%'")
+        filters = metadata_filters or MetadataSearchFilters()
+        if not filters.active():
+            return " AND ".join(clauses), binds
+
+        # Every condition below is correlated to ``d.document_id`` and is part
+        # of the candidate SQL itself.  It therefore runs before Oracle Text's
+        # ROWNUM limit and before vector FETCH APPROX, never as a result filter.
+        clauses.append(
+            "EXISTS (SELECT 1 FROM sds_document_metadata dm "
+            "WHERE dm.document_id=d.document_id"
+            + (
+                " AND dm.folder_id=:metadata_folder_id"
+                if filters.folder and not filters.folder.include_descendants
+                else ""
+            )
+            + (
+                " AND EXISTS (SELECT 1 FROM sds_folder_closure scope "
+                "WHERE scope.ancestor_folder_id=:metadata_folder_id "
+                "AND scope.descendant_folder_id=dm.folder_id)"
+                if filters.folder and filters.folder.include_descendants
+                else ""
+            )
+            + (
+                " AND dm.document_year>=:document_year_from"
+                if filters.document_year_from is not None
+                else ""
+            )
+            + (
+                " AND dm.document_year<=:document_year_to"
+                if filters.document_year_to is not None
+                else ""
+            )
+            + (
+                " AND dm.document_month IN ("
+                + ", ".join(
+                    f":document_month_{index}"
+                    for index, _ in enumerate(filters.document_months)
+                )
+                + ")"
+                if filters.document_months
+                else ""
+            )
+            + (
+                " AND dm.date_confirmed=1"
+                if filters.document_year_from is not None
+                or filters.document_year_to is not None
+                or filters.document_months
+                else ""
+            )
+            + " )"
+        )
+        if filters.folder:
+            binds["metadata_folder_id"] = filters.folder.folder_id
+        if filters.document_year_from is not None:
+            binds["document_year_from"] = filters.document_year_from
+        if filters.document_year_to is not None:
+            binds["document_year_to"] = filters.document_year_to
+        for index, value in enumerate(filters.document_months):
+            binds[f"document_month_{index}"] = value
+
+        for index, tag_id in enumerate(filters.tags.all_of):
+            key = f"tag_all_{index}"
+            binds[key] = tag_id
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sds_document_tags dt "
+                f"WHERE dt.document_id=d.document_id AND dt.tag_id=:{key} "
+                "AND dt.confirmed=1)"
+            )
+        if filters.tags.any_of:
+            keys: list[str] = []
+            for index, tag_id in enumerate(filters.tags.any_of):
+                key = f"tag_any_{index}"
+                keys.append(f":{key}")
+                binds[key] = tag_id
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sds_document_tags dt "
+                "WHERE dt.document_id=d.document_id AND dt.confirmed=1 "
+                f"AND dt.tag_id IN ({', '.join(keys)}))"
+            )
+        if filters.tags.none_of:
+            keys = []
+            for index, tag_id in enumerate(filters.tags.none_of):
+                key = f"tag_none_{index}"
+                keys.append(f":{key}")
+                binds[key] = tag_id
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM sds_document_tags dt "
+                "WHERE dt.document_id=d.document_id AND dt.confirmed=1 "
+                f"AND dt.tag_id IN ({', '.join(keys)}))"
+            )
+        if filters.customer and filters.customer.values:
+            customer_clauses: list[str] = []
+            for index, raw_value in enumerate(filters.customer.values):
+                key = f"customer_{index}"
+                binds[key] = normalize_comparable(raw_value)
+                if filters.customer.match == "contains":
+                    customer_clauses.append(
+                        f"dm_customer.customer_name_normalized LIKE '%' || :{key} || '%'"
+                    )
+                elif filters.customer.match == "search_key_exact":
+                    customer_clauses.append(
+                        f"(dm_customer.customer_name_search_key=:{key} OR "
+                        f"dm_customer.customer_name_normalized=:{key})"
+                    )
+                else:
+                    customer_clauses.append(
+                        f"dm_customer.customer_name_normalized=:{key}"
+                    )
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sds_document_metadata dm_customer "
+                "WHERE dm_customer.document_id=d.document_id "
+                "AND dm_customer.customer_confirmed=1 AND ("
+                + " OR ".join(customer_clauses)
+                + "))"
+            )
+        if filters.concept_ids and filters.concept_mode == "REQUIRE_ALL":
+            # Concept matching is evaluated at the logical document-set level.
+            # Unassigned documents form a one-document virtual set. This clause
+            # is part of every candidate SQL before Oracle Text/FETCH limits.
+            for index, concept_id in enumerate(filters.concept_ids):
+                key = f"required_concept_{index}"
+                binds[key] = concept_id
+                clauses.append(
+                    "EXISTS ("
+                    "SELECT 1 FROM sds_document_metadata target_m "
+                    "JOIN sds_document_metadata member_m ON ("
+                    "(target_m.document_set_id IS NOT NULL "
+                    "AND member_m.document_set_id=target_m.document_set_id) "
+                    "OR (target_m.document_set_id IS NULL "
+                    "AND member_m.document_id=target_m.document_id)) "
+                    "JOIN sds_documents member_d "
+                    "ON member_d.document_id=member_m.document_id "
+                    "AND member_d.is_current=1 "
+                    "JOIN sds_index_releases member_rel "
+                    "ON member_rel.release_id=member_d.serving_release_id "
+                    "AND member_rel.status='PUBLISHED' "
+                    "JOIN sds_document_concepts dc "
+                    "ON dc.document_id=member_d.document_id "
+                    "AND dc.revision_id=member_rel.document_revision_id "
+                    "JOIN sds_search_concepts c "
+                    "ON c.concept_id=dc.concept_id AND c.status='ACTIVE' "
+                    "WHERE target_m.document_id=d.document_id "
+                    f"AND dc.concept_id=:{key} "
+                    "AND EXISTS (SELECT 1 FROM sds_document_acl member_acl "
+                    "WHERE member_acl.document_id=member_d.document_id "
+                    "AND ((:user_hash IS NOT NULL "
+                    "AND member_acl.principal_type='public_authenticated') "
+                    "OR (:user_hash IS NOT NULL "
+                    "AND member_acl.principal_type IN ('user','service') "
+                    "AND member_acl.principal_hash=:user_hash)))"
+                    ")"
+                )
         return " AND ".join(clauses), binds
 
     @staticmethod
@@ -242,7 +396,8 @@ class OracleRagRepository:
 
     def keyword_search(self, *, query: str, top_k: int, user_hash: str | None,
                        current_version_only: bool, document_types: list[str],
-                       filename_filter: str | None = None) -> list[RetrievalHit]:
+                       filename_filter: str | None = None,
+                       metadata_filters: MetadataSearchFilters | None = None) -> list[RetrievalHit]:
         text_query = self._text_query(query)
         if not text_query:
             return []
@@ -251,6 +406,7 @@ class OracleRagRepository:
             current_version_only=current_version_only,
             document_types=document_types,
             filename_filter=filename_filter,
+            metadata_filters=metadata_filters,
         )
         binds.update(text_query=text_query, top_k=top_k)
         with self.connection() as connection, connection.cursor() as cursor:
@@ -288,9 +444,277 @@ class OracleRagRepository:
             )
             return [self._hit(row, channel="keyword:page_text") for row in self.rows(cursor)]
 
+    def concept_search(
+        self,
+        *,
+        concept_ids: list[str],
+        top_k: int,
+        user_hash: str | None,
+        current_version_only: bool,
+        document_types: list[str],
+        filename_filter: str | None = None,
+        metadata_filters: MetadataSearchFilters | None = None,
+    ) -> list[RetrievalHit]:
+        concept_ids = list(dict.fromkeys(value for value in concept_ids if value))
+        if not concept_ids:
+            return []
+        where, binds = self._document_where(
+            user_hash=user_hash,
+            current_version_only=current_version_only,
+            document_types=document_types,
+            filename_filter=filename_filter,
+            metadata_filters=metadata_filters,
+        )
+        placeholders: list[str] = []
+        for index, concept_id in enumerate(concept_ids):
+            key = f"selected_concept_{index}"
+            placeholders.append(f":{key}")
+            binds[key] = concept_id
+        binds["top_k"] = max(1, min(top_k, 1000))
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT 'concept:' || dc.revision_id || ':' || dc.concept_id
+                               evidence_id,
+                           d.document_id, 0 slot_no,
+                           rel.document_revision_id revision_id,
+                           NULL page_number, 'SEARCH_CONCEPT' unit_kind,
+                           'concept:' || dc.concept_id source_locator,
+                           NULL bbox_json, c.display_label raw_text,
+                           c.category_name || ': ' || c.display_label caption,
+                           NULL asset_object_name, d.file_name, d.object_name,
+                           d.bucket, dc.confidence score
+                    FROM sds_documents d
+                    JOIN sds_index_releases rel
+                      ON rel.release_id=d.serving_release_id
+                     AND rel.status='PUBLISHED'
+                    JOIN sds_document_concepts dc
+                      ON dc.document_id=d.document_id
+                     AND dc.revision_id=rel.document_revision_id
+                    JOIN sds_search_concepts c
+                      ON c.concept_id=dc.concept_id AND c.status='ACTIVE'
+                    WHERE {where}
+                      AND dc.concept_id IN ({', '.join(placeholders)})
+                    ORDER BY dc.confidence DESC, d.document_id, dc.concept_id
+                ) WHERE ROWNUM<=:top_k
+                """,
+                binds,
+            )
+            return [self._hit(row, channel="concept") for row in self.rows(cursor)]
+
+    def concept_labels(self, concept_ids: list[str]) -> dict[str, str]:
+        values = list(dict.fromkeys(value for value in concept_ids if value))
+        if not values:
+            return {}
+        binds = {f"concept_label_{index}": value for index, value in enumerate(values)}
+        placeholders = ", ".join(f":{key}" for key in binds)
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT concept_id, display_label
+                FROM sds_search_concepts
+                WHERE status='ACTIVE' AND concept_id IN ({placeholders})
+                """,
+                binds,
+            )
+            return {str(row[0]): str(row[1]) for row in cursor.fetchall()}
+
+    def search_document_context(
+        self,
+        document_ids: list[str],
+        *,
+        selected_concept_ids: list[str],
+        user_hash: str | None,
+    ) -> dict[str, dict[str, Any]]:
+        values = list(dict.fromkeys(value for value in document_ids if value))
+        if not values:
+            return {}
+        document_binds = {
+            f"context_document_{index}": value
+            for index, value in enumerate(values)
+        }
+        document_placeholders = ", ".join(
+            f":{key}" for key in document_binds
+        )
+        concept_values = list(
+            dict.fromkeys(value for value in selected_concept_ids if value)
+        )
+        concept_binds = {
+            f"context_concept_{index}": value
+            for index, value in enumerate(concept_values)
+        }
+        concept_predicate = ""
+        if concept_binds:
+            concept_predicate = (
+                "AND dc.concept_id IN ("
+                + ", ".join(f":{key}" for key in concept_binds)
+                + ")"
+            )
+        access, access_binds = self._access_sql(user_hash)
+        binds = {**document_binds, **concept_binds, **access_binds}
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT d.document_id, m.document_set_id, ds.label document_set_label,
+                       dc.concept_id,
+                       (
+                           SELECT MIN(a.object_name) KEEP (
+                               DENSE_RANK FIRST ORDER BY
+                                   a.page_number NULLS LAST, a.artifact_id
+                           )
+                           FROM sds_index_release_components c
+                           JOIN sds_artifacts a
+                             ON a.stage_run_id=c.stage_run_id
+                           WHERE c.release_id=d.serving_release_id
+                             AND c.component_key='render'
+                             AND a.artifact_kind='PAGE_IMAGE'
+                             AND a.object_name IS NOT NULL
+                       ) thumbnail_object_name,
+                       (
+                           SELECT MIN(a.page_number)
+                           FROM sds_index_release_components c
+                           JOIN sds_artifacts a
+                             ON a.stage_run_id=c.stage_run_id
+                           WHERE c.release_id=d.serving_release_id
+                             AND c.component_key='render'
+                             AND a.artifact_kind='PAGE_IMAGE'
+                             AND a.object_name IS NOT NULL
+                       ) thumbnail_page_number
+                FROM sds_documents d
+                JOIN sds_document_metadata m ON m.document_id=d.document_id
+                LEFT JOIN sds_document_sets ds
+                  ON ds.document_set_id=m.document_set_id
+                LEFT JOIN sds_document_metadata member_m ON (
+                     (m.document_set_id IS NOT NULL
+                      AND member_m.document_set_id=m.document_set_id)
+                  OR (m.document_set_id IS NULL
+                      AND member_m.document_id=m.document_id)
+                )
+                LEFT JOIN sds_documents member_d
+                  ON member_d.document_id=member_m.document_id
+                 AND member_d.is_current=1
+                LEFT JOIN sds_index_releases member_rel
+                  ON member_rel.release_id=member_d.serving_release_id
+                 AND member_rel.status='PUBLISHED'
+                LEFT JOIN sds_document_concepts dc
+                  ON dc.document_id=member_d.document_id
+                 AND dc.revision_id=member_rel.document_revision_id
+                 {concept_predicate}
+                 AND EXISTS (
+                     SELECT 1 FROM sds_document_acl member_acl
+                     WHERE member_acl.document_id=member_d.document_id
+                       AND ((:user_hash IS NOT NULL
+                             AND member_acl.principal_type='public_authenticated')
+                         OR (:user_hash IS NOT NULL
+                             AND member_acl.principal_type IN ('user','service')
+                             AND member_acl.principal_hash=:user_hash))
+                 )
+                WHERE d.document_id IN ({document_placeholders})
+                  AND {access}
+                """,
+                binds,
+            )
+            rows = self.rows(cursor)
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            document_id = str(row["document_id"])
+            context = result.setdefault(
+                document_id,
+                {
+                    "document_set_id": (
+                        str(row["document_set_id"])
+                        if row.get("document_set_id") else None
+                    ),
+                    "document_set_label": (
+                        str(row["document_set_label"])
+                        if row.get("document_set_label") else None
+                    ),
+                    "matched_concept_ids": [],
+                    "thumbnail_object_name": (
+                        str(row["thumbnail_object_name"])
+                        if row.get("thumbnail_object_name") else None
+                    ),
+                    "thumbnail_page_number": (
+                        int(row["thumbnail_page_number"])
+                        if row.get("thumbnail_page_number") is not None else None
+                    ),
+                },
+            )
+            if row.get("concept_id"):
+                context["matched_concept_ids"].append(str(row["concept_id"]))
+        return result
+
+    def companion_documents(
+        self,
+        document_set_ids: list[str],
+        *,
+        exclude_document_ids: list[str],
+        user_hash: str | None,
+        limit_per_set: int = 8,
+    ) -> dict[str, list[dict[str, Any]]]:
+        set_ids = list(dict.fromkeys(value for value in document_set_ids if value))
+        if not set_ids:
+            return {}
+        excluded = set(exclude_document_ids)
+        access, access_binds = self._access_sql(user_hash)
+        result: dict[str, list[dict[str, Any]]] = {}
+        with self.connection() as connection, connection.cursor() as cursor:
+            for document_set_id in set_ids:
+                cursor.execute(
+                    f"""
+                    SELECT d.document_id, d.file_name, d.object_name, d.bucket,
+                           ds.label document_set_label,
+                           (
+                               SELECT MIN(a.object_name) KEEP (
+                                   DENSE_RANK FIRST ORDER BY
+                                       a.page_number NULLS LAST, a.artifact_id
+                               )
+                               FROM sds_index_release_components c
+                               JOIN sds_artifacts a
+                                 ON a.stage_run_id=c.stage_run_id
+                               WHERE c.release_id=d.serving_release_id
+                                 AND c.component_key='render'
+                                 AND a.artifact_kind='PAGE_IMAGE'
+                                 AND a.object_name IS NOT NULL
+                           ) thumbnail_object_name,
+                           (
+                               SELECT MIN(a.page_number)
+                               FROM sds_index_release_components c
+                               JOIN sds_artifacts a
+                                 ON a.stage_run_id=c.stage_run_id
+                               WHERE c.release_id=d.serving_release_id
+                                 AND c.component_key='render'
+                                 AND a.artifact_kind='PAGE_IMAGE'
+                                 AND a.object_name IS NOT NULL
+                           ) thumbnail_page_number
+                    FROM sds_documents d
+                    JOIN sds_document_metadata m ON m.document_id=d.document_id
+                    JOIN sds_document_sets ds
+                      ON ds.document_set_id=m.document_set_id
+                    WHERE m.document_set_id=:document_set_id
+                      AND d.is_current=1
+                      AND d.serving_release_id IS NOT NULL
+                      AND d.status<>'DRAFT'
+                      AND {access}
+                    ORDER BY d.updated_at DESC, d.document_id
+                    """,
+                    {
+                        "document_set_id": document_set_id,
+                        **access_binds,
+                    },
+                )
+                result[document_set_id] = [
+                    row
+                    for row in self.rows(cursor)
+                    if str(row["document_id"]) not in excluded
+                ][: max(1, min(limit_per_set, 20))]
+        return result
+
     def vector_search(self, *, embedding: list[float], column: str, channel: str,
                       top_k: int, user_hash: str | None, current_version_only: bool,
-                      document_types: list[str], filename_filter: str | None = None) -> list[RetrievalHit]:
+                      document_types: list[str], filename_filter: str | None = None,
+                      metadata_filters: MetadataSearchFilters | None = None) -> list[RetrievalHit]:
         if column not in {"text_embedding", "visual_embedding"}:
             raise ValueError("invalid vector column")
         with self.connection() as connection, connection.cursor() as cursor:
@@ -319,6 +743,7 @@ class OracleRagRepository:
                     current_version_only=current_version_only,
                     document_types=document_types,
                     filename_filter=filename_filter,
+                    metadata_filters=metadata_filters,
                 )
             )
         return sorted(results, key=lambda item: item.score, reverse=True)[:top_k]
@@ -335,6 +760,7 @@ class OracleRagRepository:
         document_types: list[str],
         filename_filter: str | None = None,
         min_score: float = 0.0,
+        metadata_filters: MetadataSearchFilters | None = None,
     ) -> list[RetrievalHit]:
         top_k = max(1, min(top_k, 1000))
         score_filter = ""
@@ -349,6 +775,7 @@ class OracleRagRepository:
             current_version_only=current_version_only,
             document_types=document_types,
             filename_filter=filename_filter,
+            metadata_filters=metadata_filters,
         )
         binds.update(embedding=_vector(embedding), recipe_code=recipe_code)
         if score_filter:
@@ -395,7 +822,8 @@ class OracleRagRepository:
 
     def facet_keyword_search(self, *, profile: ProfileConfig, query: str, top_k: int,
                              user_hash: str | None, current_version_only: bool,
-                             document_types: list[str], filename_filter: str | None = None) -> list[RetrievalHit]:
+                             document_types: list[str], filename_filter: str | None = None,
+                             metadata_filters: MetadataSearchFilters | None = None) -> list[RetrievalHit]:
         text_query = self._text_query(query)
         if not text_query or not profile.current_revision_id:
             return []
@@ -404,6 +832,7 @@ class OracleRagRepository:
             current_version_only=current_version_only,
             document_types=document_types,
             filename_filter=filename_filter,
+            metadata_filters=metadata_filters,
         )
         binds.update(
             text_query=text_query,
@@ -443,7 +872,8 @@ class OracleRagRepository:
 
     def facet_vector_search(self, *, profile: ProfileConfig, embedding: list[float], top_k: int,
                             user_hash: str | None, current_version_only: bool,
-                            document_types: list[str], filename_filter: str | None = None) -> list[RetrievalHit]:
+                            document_types: list[str], filename_filter: str | None = None,
+                            metadata_filters: MetadataSearchFilters | None = None) -> list[RetrievalHit]:
         code = f"vlm_text_slot_{profile.slot_no}"
         return self.recipe_vector_search(
             recipe_code=code,
@@ -454,6 +884,7 @@ class OracleRagRepository:
             current_version_only=current_version_only,
             document_types=document_types,
             filename_filter=filename_filter,
+            metadata_filters=metadata_filters,
         )
 
     def enrich_hits(self, hits: list[RetrievalHit]) -> None:

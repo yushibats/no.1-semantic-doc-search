@@ -17,7 +17,13 @@
  */
 
 import { apiCall as authApiCall, fetchWithAuth as authFetchWithAuth } from './auth.js';
-import { showLoading as utilsShowLoading, hideLoading as utilsHideLoading, showToast as utilsShowToast, showImageModal as utilsShowImageModal } from './utils.js';
+import {
+  showLoading as utilsShowLoading,
+  hideLoading as utilsHideLoading,
+  showToast as utilsShowToast,
+  showImageModal as utilsShowImageModal,
+  showTextPreviewModal as utilsShowTextPreviewModal
+} from './utils.js';
 
 // 検索画像の状態管理
 let selectedSearchImage = null;
@@ -29,6 +35,15 @@ let currentSearchController = null;
 let searchCancelled = false;
 let searchProgressTimer = null;
 const searchProgress = { startedAt: 0, state: {}, steps: new Map() };
+let searchConcepts = [];
+let searchConceptSettings = { initial_display_limit: 8 };
+let searchConceptFilter = '';
+let searchConceptSuggestionIds = null;
+let searchConceptSuggestionTimer = null;
+let searchConceptSuggestionSerial = 0;
+const searchConceptSuggestionCache = new Map();
+const selectedSearchConceptIds = new Set();
+const expandedConceptCategories = new Set();
 const defaultRetrievalModes = [
   'visual_vector',
   'oracle_text',
@@ -37,6 +52,234 @@ const defaultRetrievalModes = [
   'vlm_vector'
 ];
 const vectorRetrievalModes = new Set(['text_vector', 'vlm_vector', 'visual_vector']);
+
+function flattenSearchFolders(nodes, depth = 0, result = []) {
+  for (const node of nodes || []) {
+    result.push({ ...node, uiDepth: depth });
+    flattenSearchFolders(node.children, depth + 1, result);
+  }
+  return result;
+}
+
+function renderMetadataSearchFilters(data) {
+  const panel = document.getElementById('metadataSearchFilters');
+  if (panel) panel.hidden = !data.document_library_ready;
+  const folder = document.getElementById('searchFolderId');
+  if (folder) {
+    const current = folder.value;
+    folder.innerHTML = '<option value="">すべてのフォルダ</option>' + flattenSearchFolders(data.folders)
+      .map(item => `<option value="${escapeHtml(item.folder_id)}">${'　'.repeat(item.uiDepth)}${escapeHtml(item.name)}</option>`).join('');
+    folder.value = current;
+  }
+  const customerList = document.getElementById('searchCustomerSuggestions');
+  if (customerList) customerList.innerHTML = (data.customer_suggestions || [])
+    .map(item => `<option value="${escapeHtml(item.value)}"></option>`).join('');
+  const tagRoot = document.getElementById('searchTagFilters');
+  if (tagRoot) {
+    const groupById = new Map((data.tag_groups || []).map(group => [group.group_id, group]));
+    tagRoot.innerHTML = (data.tags || []).filter(tag => tag.active).map(tag =>
+      `<label class="metadata-tag-option"><input type="checkbox" data-search-tag value="${escapeHtml(tag.tag_id)}"> ${escapeHtml(groupById.get(tag.group_id)?.name || '')}: ${escapeHtml(tag.name)}</label>`
+    ).join('') || '<span class="text-xs text-gray-500">タグは未設定です</span>';
+  }
+  const bounds = data.date_bounds || {};
+  const yearFrom = document.getElementById('searchYearFrom');
+  const yearTo = document.getElementById('searchYearTo');
+  if (yearFrom && bounds.min_year) yearFrom.placeholder = String(bounds.min_year);
+  if (yearTo && bounds.max_year) yearTo.placeholder = String(bounds.max_year);
+  searchConcepts = (data.search_concepts || []).filter(concept => concept.status === 'ACTIVE');
+  searchConceptSettings = data.search_concept_settings || searchConceptSettings;
+  searchConceptSuggestionIds = null;
+  searchConceptSuggestionCache.clear();
+  renderSearchConcepts();
+}
+
+const conceptFacetLabels = {
+  BEFORE: '現況の課題（Before）',
+  AFTER: '実現したいこと（After）',
+  OTHER: 'その他の特徴'
+};
+
+function selectedConceptPayload() {
+  return {
+    selected_concept_ids: [...selectedSearchConceptIds],
+    concept_mode: document.getElementById('searchConceptRequireAll')?.checked ? 'REQUIRE_ALL' : 'BOOST'
+  };
+}
+
+function renderSearchConcepts() {
+  const panel = document.getElementById('searchConceptPanel');
+  const root = document.getElementById('searchConceptFacets');
+  const selectedRoot = document.getElementById('selectedSearchConcepts');
+  if (!panel || !root || !selectedRoot) return;
+  panel.hidden = !searchConceptSettings.enabled || !searchConcepts.length;
+  if (panel.hidden) return;
+
+  const selected = searchConcepts.filter(item => selectedSearchConceptIds.has(item.concept_id));
+  const summaryCount = document.getElementById('searchConceptSummaryCount');
+  if (summaryCount) {
+    summaryCount.textContent = selected.length
+      ? selected.length + '件選択中'
+      : searchConcepts.length + '件から選択';
+  }
+  selectedRoot.hidden = !selected.length;
+  selectedRoot.innerHTML = selected.length
+    ? `<strong>選択中:</strong>${selected.map(item => `<button type="button" class="search-concept-chip selected" onclick="window.searchModule.toggleSearchConcept('${escapeHtml(item.concept_id)}')" aria-pressed="true">${escapeHtml(item.display_label)} <i class="fas fa-times"></i></button>`).join('')}`
+    : '';
+
+  const needle = searchConceptFilter.trim().toLocaleLowerCase('ja-JP');
+  const localFiltered = searchConcepts.filter(item => !needle
+    || `${item.display_label} ${item.category_name}`.toLocaleLowerCase('ja-JP').includes(needle));
+  const suggestionRank = new Map(
+    (searchConceptSuggestionIds || []).map((conceptId, index) => [conceptId, index])
+  );
+  const filtered = needle && Array.isArray(searchConceptSuggestionIds)
+    ? searchConcepts
+      .filter(item => suggestionRank.has(item.concept_id))
+      .sort((a, b) => suggestionRank.get(a.concept_id) - suggestionRank.get(b.concept_id))
+    : localFiltered;
+  const byFacet = new Map();
+  filtered.forEach(item => {
+    const facet = item.facet || 'OTHER';
+    const categories = byFacet.get(facet) || new Map();
+    const key = `${facet}:${item.category_code}`;
+    const category = categories.get(key) || { key, name: item.category_name, items: [] };
+    category.items.push(item);
+    categories.set(key, category);
+    byFacet.set(facet, categories);
+  });
+  const initialLimit = Number(searchConceptSettings.initial_display_limit) || 8;
+  root.innerHTML = ['BEFORE', 'AFTER', 'OTHER'].flatMap(facet => {
+    const categories = byFacet.get(facet);
+    if (!categories?.size) return [];
+    return [`<section class="search-concept-facet" data-facet="${facet}"><h4>${conceptFacetLabels[facet]}</h4>${[...categories.values()].map(category => {
+      category.items.sort((a, b) => {
+        if (suggestionRank.size) {
+          const rankA = suggestionRank.get(a.concept_id) ?? Number.MAX_SAFE_INTEGER;
+          const rankB = suggestionRank.get(b.concept_id) ?? Number.MAX_SAFE_INTEGER;
+          if (rankA !== rankB) return rankA - rankB;
+        }
+        return (b.support_set_count || 0) - (a.support_set_count || 0)
+          || a.display_label.localeCompare(b.display_label, 'ja');
+      });
+      const expanded = expandedConceptCategories.has(category.key) || Boolean(needle);
+      const visible = expanded ? category.items : category.items.slice(0, initialLimit);
+      return `<div class="search-concept-category"><h5>${escapeHtml(category.name)}</h5><div class="search-concept-chips">${visible.map(item => {
+        const isSelected = selectedSearchConceptIds.has(item.concept_id);
+        return `<button type="button" class="search-concept-chip${isSelected ? ' selected' : ''}" aria-pressed="${isSelected}" onclick="window.searchModule.toggleSearchConcept('${escapeHtml(item.concept_id)}')">${escapeHtml(item.display_label)}</button>`;
+      }).join('')}</div>${!expanded && category.items.length > initialLimit ? `<button type="button" class="search-concept-more" onclick="window.searchModule.expandSearchConceptCategory('${escapeHtml(category.key)}')">ほか${category.items.length - initialLimit}件を表示</button>` : ''}</div>`;
+    }).join('')}</section>`];
+  }).join('') || '<div class="search-concept-empty">一致する候補はありません</div>';
+}
+
+export function toggleSearchConcept(conceptId) {
+  if (selectedSearchConceptIds.has(conceptId)) selectedSearchConceptIds.delete(conceptId);
+  else selectedSearchConceptIds.add(conceptId);
+  renderSearchConcepts();
+}
+
+function setSearchConceptSuggestionStatus(message = '', state = '') {
+  const status = document.getElementById('searchConceptQueryStatus');
+  if (!status) return;
+  status.textContent = message;
+  status.hidden = !message;
+  status.dataset.state = state;
+}
+
+export function filterSearchConcepts(value = '') {
+  searchConceptFilter = value;
+  searchConceptSuggestionIds = null;
+  const normalized = value.trim();
+  const requestSerial = ++searchConceptSuggestionSerial;
+  if (searchConceptSuggestionTimer) {
+    clearTimeout(searchConceptSuggestionTimer);
+    searchConceptSuggestionTimer = null;
+  }
+
+  if (normalized.length < 2) {
+    setSearchConceptSuggestionStatus(
+      normalized ? '2文字以上入力すると、文章の意味から関連候補を探します' : ''
+    );
+    renderSearchConcepts();
+    return;
+  }
+
+  const cached = searchConceptSuggestionCache.get(normalized);
+  if (cached) {
+    searchConceptSuggestionIds = cached.concept_ids;
+    setSearchConceptSuggestionStatus(cached.message, cached.source);
+    renderSearchConcepts();
+    return;
+  }
+
+  setSearchConceptSuggestionStatus('入力内容に関連する検索条件を探しています...', 'LOADING');
+  renderSearchConcepts();
+  searchConceptSuggestionTimer = setTimeout(async () => {
+    try {
+      const result = await authApiCall('/ai/api/search/v2/concepts/suggest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: normalized, limit: 24 }),
+        timeout: 30000
+      });
+      if (requestSerial !== searchConceptSuggestionSerial) return;
+      const conceptIds = Array.isArray(result.concept_ids) ? result.concept_ids : [];
+      const cachedResult = {
+        concept_ids: conceptIds,
+        source: result.source || 'AI',
+        message: result.message || `${conceptIds.length}件の関連候補を表示しています`
+      };
+      if (searchConceptSuggestionCache.size >= 50) searchConceptSuggestionCache.clear();
+      searchConceptSuggestionCache.set(normalized, cachedResult);
+      searchConceptSuggestionIds = conceptIds;
+      setSearchConceptSuggestionStatus(cachedResult.message, cachedResult.source);
+      renderSearchConcepts();
+    } catch (error) {
+      if (requestSerial !== searchConceptSuggestionSerial) return;
+      searchConceptSuggestionIds = null;
+      setSearchConceptSuggestionStatus(
+        'AIによる絞り込みを利用できないため、文字の部分一致を表示しています',
+        'ERROR'
+      );
+      renderSearchConcepts();
+    }
+  }, 500);
+}
+
+export function expandSearchConceptCategory(categoryKey) {
+  expandedConceptCategories.add(categoryKey);
+  renderSearchConcepts();
+}
+
+export function clearSearchConcepts() {
+  selectedSearchConceptIds.clear();
+  renderSearchConcepts();
+}
+
+function collectMetadataFilters() {
+  const folderId = document.getElementById('searchFolderId')?.value || '';
+  const customer = document.getElementById('searchCustomerName')?.value.trim() || '';
+  const yearFrom = Number(document.getElementById('searchYearFrom')?.value) || null;
+  const yearTo = Number(document.getElementById('searchYearTo')?.value) || null;
+  const month = Number(document.getElementById('searchMonth')?.value) || null;
+  return {
+    folder: folderId ? {
+      folder_id: folderId,
+      include_descendants: Boolean(document.getElementById('searchIncludeDescendants')?.checked)
+    } : null,
+    tags: {
+      all_of: [...document.querySelectorAll('[data-search-tag]:checked')].map(input => input.value),
+      any_of: [],
+      none_of: []
+    },
+    customer: customer ? {
+      values: [customer],
+      match: document.getElementById('searchCustomerMatch')?.value || 'normalized_exact'
+    } : null,
+    document_year_from: yearFrom,
+    document_year_to: yearTo,
+    document_months: month ? [month] : []
+  };
+}
 
 const stepLabels = {
   initialization: '検索準備',
@@ -72,6 +315,8 @@ function setRetrievalModeError(message = '', { focus = false } = {}) {
     error.hidden = !message;
   }
   if (message && focus) {
+    const settings = document.getElementById('searchAdvancedSettings');
+    if (settings) settings.open = true;
     document.querySelector('input[name="retrievalMode"]:not(:disabled)')?.focus();
   }
 }
@@ -133,6 +378,7 @@ export async function loadDynamicSearchFilters() {
     v2RetrievalActive = Boolean(data.v2_retrieval_active);
     dynamicFieldDefinitions = data.fields || [];
     dynamicFiltersLoaded = true;
+    renderMetadataSearchFilters(data);
     const wrapper = document.getElementById('dynamicSearchFilters');
     const container = document.getElementById('dynamicSearchFilterFields');
     if (wrapper && container) {
@@ -486,7 +732,7 @@ function adaptV2Response(data, { includeImageSimilarity = false } = {}) {
     const value = Number(score);
     return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) * 100 : null;
   };
-  const results = source.map(document => {
+  const adaptDocument = document => {
     const seen = new Set();
     const matched_images = (document.evidence || []).flatMap(evidence => {
       if (!evidence.asset_url || seen.has(evidence.asset_url)) return [];
@@ -496,13 +742,21 @@ function adaptV2Response(data, { includeImageSimilarity = false } = {}) {
         bucket: document.bucket,
         object_name: evidence.asset_url,
         page_number: evidence.page_number,
+        score: evidence.score,
+        rerank_score: evidence.rerank_score,
+        image_similarity_score: evidence.image_similarity_score,
         match_percent: toPercent(evidence.rerank_score),
         image_similarity_percent: includeImageSimilarity
           ? toPercent(evidence.image_similarity_score)
           : null,
         url: objectUrl(document.bucket, evidence.asset_url),
-        retrieval_channels: evidence.retrieval_channels,
+        retrieval_channels: evidence.retrieval_channels || [],
         verification_status: evidence.verification_status,
+        profile_verifications: evidence.profile_verifications || {},
+        match_reasons: evidence.match_reasons || [],
+        visual_rank: evidence.visual_rank,
+        text_rerank_rank: evidence.text_rerank_rank,
+        profile_slots: evidence.profile_slots || [],
         caption: evidence.caption,
         text_excerpt: evidence.text_excerpt
       }];
@@ -518,13 +772,45 @@ function adaptV2Response(data, { includeImageSimilarity = false } = {}) {
         : null,
       matched_images,
       url: objectUrl(document.bucket, document.object_name),
-      profile_slots: document.profile_slots
+      profile_slots: document.profile_slots,
+      document_set_id: document.document_set_id,
+      document_set_label: document.document_set_label,
+      direct_match: document.direct_match !== false,
+      matched_concept_ids: document.matched_concept_ids || [],
+      thumbnail_object_name: document.thumbnail_object_name || null,
+      thumbnail_page_number: document.thumbnail_page_number ?? null
     };
+  };
+  const adaptedResults = source.map(adaptDocument);
+  const groups = (data.groups || []).map(group => ({
+    group_key: group.group_key,
+    document_set_id: group.document_set_id,
+    label: group.label,
+    score: group.score,
+    matched_concept_ids: group.matched_concept_ids || [],
+    direct_document_ids: (group.direct_matches || []).map(item => item.document_id),
+    related_documents: (group.related_documents || []).map(adaptDocument)
+  }));
+  const adaptedById = new Map(adaptedResults.map(item => [item.file_id, item]));
+  const groupedIds = new Set(groups.flatMap(group => group.direct_document_ids));
+  const results = groups.length
+    ? [
+        ...groups.flatMap(group => group.direct_document_ids.map(documentId => adaptedById.get(documentId)).filter(Boolean)),
+        ...adaptedResults.filter(item => !groupedIds.has(item.file_id))
+      ]
+    : adaptedResults;
+  const groupByDocumentId = new Map();
+  groups.forEach(group => group.direct_document_ids.forEach(documentId => groupByDocumentId.set(documentId, group)));
+  results.forEach(item => {
+    const group = groupByDocumentId.get(item.file_id);
+    item.group_key = group?.group_key || `document:${item.file_id}`;
   });
   return {
     success: data.success,
     query: data.query,
     results,
+    groups,
+    total_groups: data.total_groups || groups.length,
     result_order: includeImageSimilarity ? 'image_similarity' : 'search_rank',
     total_files: results.length,
     total_images: results.reduce((count, item) => count + item.matched_images.length, 0),
@@ -679,9 +965,13 @@ export async function performImageSearch() {
     const endpoint = '/ai/api/search/v2/image/events';
     formData.append('query', imageQuery);
     formData.append('field_filters', JSON.stringify(collectDynamicFilters()));
+    formData.append('metadata_filters', JSON.stringify(collectMetadataFilters()));
     formData.append('document_types', '[]');
     formData.append('retrieval_modes', JSON.stringify(retrievalModes));
     formData.append('verify', verify ? 'true' : 'false');
+    const conceptPayload = selectedConceptPayload();
+    formData.append('selected_concept_ids', JSON.stringify(conceptPayload.selected_concept_ids));
+    formData.append('concept_mode', conceptPayload.concept_mode);
 
     const data = usesEventStream ? await streamSearch(endpoint, {
       method: 'POST',
@@ -754,11 +1044,12 @@ export async function performSearch() {
   const topK = parseInt(document.getElementById('topK').value) || 10;
   const minScore = getMinScore();
   const verify = Boolean(document.getElementById('searchVlmVerify')?.checked);
+  const conceptPayload = selectedConceptPayload();
   let usesEventStream = false;
   searchCancelled = false;
   
-  if (!query) {
-    utilsShowToast('検索クエリを入力してください', 'warning');
+  if (!query && !conceptPayload.selected_concept_ids.length) {
+    utilsShowToast('自然言語を入力するか、検索タグを1つ以上選んでください', 'warning');
     return;
   }
   const retrievalModes = collectRetrievalModes();
@@ -772,7 +1063,7 @@ export async function performSearch() {
     setSearchButtonBusy(submitButton, true, '検索中...', usesEventStream);
     if (searchCancelled) throw new Error('検索をキャンセルしました');
 
-    const requestBody = { query, top_k: topK, min_score: minScore, filename_filter: filenameFilter || null, field_filters: collectDynamicFilters(), document_types: [], current_version_only: true, retrieval_modes: retrievalModes, verify };
+    const requestBody = { query, top_k: topK, min_score: minScore, filename_filter: filenameFilter || null, field_filters: collectDynamicFilters(), metadata_filters: collectMetadataFilters(), document_types: [], current_version_only: true, retrieval_modes: retrievalModes, verify, ...conceptPayload };
     const endpoint = '/ai/api/search/v2/events';
 
     const data = usesEventStream ? await streamSearch(endpoint, {
@@ -829,11 +1120,23 @@ export function displaySearchResults(data) {
   }
   
   resultsDiv.style.display = 'block';
-  summarySpan.textContent = `${data.total_files}ファイル (${data.total_images}画像, ${data.processing_time.toFixed(2)}秒)`;
+  const groupSummary = data.total_groups ? `${data.total_groups}案件・` : '';
+  summarySpan.textContent = `${groupSummary}${data.total_files}ファイルの直接一致 (${data.total_images}画像, ${data.processing_time.toFixed(2)}秒)`;
   
   // ファイル単位で表示
   listDiv.innerHTML = data.results.map((fileResult, fileIndex) => {
     const originalFilename = displayFilename(fileResult);
+    const group = data.groups?.find(item => item.group_key === fileResult.group_key);
+    const groupIndex = data.groups?.findIndex(item => item.group_key === fileResult.group_key) ?? -1;
+    const previous = data.results[fileIndex - 1];
+    const next = data.results[fileIndex + 1];
+    const isGroupStart = Boolean(group) && previous?.group_key !== fileResult.group_key;
+    const isGroupEnd = Boolean(group) && next?.group_key !== fileResult.group_key;
+    const groupHeader = isGroupStart ? `<section class="search-result-group">
+      <div class="search-result-group-header">
+        <div><i class="fas fa-layer-group"></i><strong>${escapeHtml(group.label)}</strong>${group.document_set_id ? '' : '<span>未グループ</span>'}</div>
+        <small>直接一致 ${group.direct_document_ids.length}件${group.related_documents.length ? `・関連資料 ${group.related_documents.length}件` : ''}</small>
+      </div>` : '';
     
     // ファイル情報カード
     const fileCardHtml = `
@@ -855,7 +1158,11 @@ export function displaySearchResults(data) {
                 関連度: ${fileResult.match_percent.toFixed(1)}%
               </span>` : ''}
               <span class="badge search-result-stat-badge">
-                ${fileResult.matched_images.length}ページ
+                ${fileResult.matched_images.length
+                  ? `${fileResult.matched_images.length}ページ`
+                  : fileResult.matched_concept_ids?.length
+                    ? '文書全体一致'
+                    : 'ページ画像なし'}
               </span>
               <button 
                 onclick="window.searchModule.downloadFile('${fileResult.bucket}', '${encodeURIComponent(fileResult.object_name)}')"
@@ -871,7 +1178,12 @@ export function displaySearchResults(data) {
         <!-- ページ画像グリッド -->
         <div class="card-body">
           <div class="search-result-body-title">
-            <i class="fas fa-images"></i> マッチしたページ画像（${data.result_order === 'image_similarity' ? '画像類似度が高い順' : '検索順位順'}）
+            <i class="fas fa-images"></i>
+            ${fileResult.matched_images.length
+              ? `マッチしたページ画像（${data.result_order === 'image_similarity' ? '画像類似度が高い順' : '検索順位順'}）`
+              : fileResult.thumbnail_object_name
+                ? '文書の代表画像（ページ単位の一致ではありません）'
+                : 'ページ単位の画像一致はありません'}
           </div>
           <div class="search-result-images-grid">
             ${fileResult.matched_images.map((img, imgIndex) => {
@@ -879,22 +1191,13 @@ export function displaySearchResults(data) {
               const imageUrl = img.url ? getAuthenticatedImageUrl(img.url) : getAuthenticatedImageUrl(img.bucket, img.object_name);
               
               return `
-                <button
-                  type="button"
-                  class="image-card search-result-image-card"
-                  style="
-                    border: 2px solid #e2e8f0; 
-                    border-radius: 8px; 
-                    overflow: hidden; 
-                    cursor: pointer; 
-                    transition: all 0.3s ease;
-                    background: white;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                  "
-                  onclick="window.searchModule.showSearchImageModal(${fileIndex}, ${imgIndex})"
-                  onmouseover="this.style.transform='translateY(-4px)'; this.style.boxShadow='0 8px 16px rgba(15, 40, 71, 0.3)'; this.style.borderColor='#1a365d';"
-                  onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 4px rgba(0,0,0,0.1)'; this.style.borderColor='#e2e8f0';"
-                >
+                <article class="image-card search-result-image-card">
+                  <button
+                    type="button"
+                    class="search-result-image-open"
+                    onclick="window.searchModule.showSearchImageModal(${fileIndex}, ${imgIndex})"
+                    aria-label="ページ ${img.page_number}を拡大"
+                  >
                   <!-- サムネイル画像 -->
                   <div class="search-result-image-aspect">
                     <img
@@ -929,11 +1232,17 @@ export function displaySearchResults(data) {
                       </span>` : ''}
                     </div>` : ''}
                   </div>
+                  </button>
 
                   <!-- 画像情報 -->
                   <div class="search-result-image-info">
-                    <div class="search-result-image-title">
-                      <i class="fas fa-file"></i> ページ ${img.page_number}
+                    <div class="search-result-image-heading">
+                      <div class="search-result-image-title">
+                        <i class="fas fa-file"></i> ページ ${img.page_number}
+                      </div>
+                      <button type="button" class="search-evidence-detail-button" onclick="window.searchModule.showSearchEvidenceDetails(${fileIndex}, ${imgIndex})">
+                        <i class="fas fa-circle-info"></i> 詳細
+                      </button>
                     </div>
                     ${img.image_similarity_percent != null ? `<div class="search-result-image-similarity">
                       画像類似度: ${img.image_similarity_percent.toFixed(1)}%
@@ -941,18 +1250,69 @@ export function displaySearchResults(data) {
                     ${img.match_percent != null ? `<div class="search-result-image-similarity">
                       関連度: ${img.match_percent.toFixed(1)}%
                     </div>` : ''}
-                    ${img.retrieval_channels?.length ? `<ul class="text-xs text-gray-500" style="margin:0;padding-left:1.2em;list-style:disc">${img.retrieval_channels.map(channel => `<li>${escapeHtml(channel)}</li>`).join('')}</ul>` : ''}
-                    ${img.verification_status && img.verification_status !== 'not_requested' ? `<div class="text-xs text-gray-500">VLM: ${escapeHtml(img.verification_status)}</div>` : ''}
                   </div>
-                </button>
+                </article>
               `;
             }).join('')}
+            ${!fileResult.matched_images.length && fileResult.thumbnail_object_name ? `
+              <button
+                type="button"
+                class="image-card search-result-image-card search-result-representative-card"
+                onclick="window.searchModule.showSearchRepresentativeImage(${fileIndex})"
+              >
+                <div class="search-result-image-aspect">
+                  <img
+                    src="${getAuthenticatedImageUrl(objectUrl(fileResult.bucket, fileResult.thumbnail_object_name))}"
+                    alt="${escapeHtml(originalFilename)}の代表画像"
+                    loading="lazy"
+                    decoding="async"
+                  >
+                  <span class="search-result-representative-badge">代表画像</span>
+                </div>
+                <div class="search-result-image-info">
+                  <div class="search-result-image-title">
+                    <i class="fas fa-file"></i>
+                    ${fileResult.thumbnail_page_number != null
+                      ? `ページ ${fileResult.thumbnail_page_number}`
+                      : '先頭ページ'}
+                  </div>
+                  <div class="search-result-image-similarity">AI検索候補による文書全体一致</div>
+                </div>
+              </button>
+            ` : ''}
           </div>
+          ${!fileResult.matched_images.length && !fileResult.thumbnail_object_name ? `
+            <div class="search-result-no-page-evidence">
+              <i class="fas fa-info-circle"></i>
+              この結果は文書全体の情報で一致しました。表示できるページ画像はありません。
+            </div>
+          ` : ''}
         </div>
       </div>
     `;
     
-    return fileCardHtml;
+    const relatedHtml = isGroupEnd && group.related_documents.length ? `<div class="search-related-documents">
+      <h4><i class="fas fa-paperclip"></i> 同じ案件の関連資料</h4>
+      ${group.related_documents.map((item, relatedIndex) => {
+        const thumbnailUrl = item.thumbnail_object_name
+          ? getAuthenticatedImageUrl(objectUrl(item.bucket, item.thumbnail_object_name))
+          : null;
+        const thumbnail = thumbnailUrl
+          ? `<button type="button" class="search-related-thumbnail" onclick="window.searchModule.showRelatedDocumentThumbnail(${groupIndex}, ${relatedIndex})" aria-label="${escapeHtml(displayFilename(item))}の代表画像を拡大">
+              <img src="${thumbnailUrl}" alt="" loading="lazy" decoding="async">
+            </button>`
+          : `<span class="search-related-thumbnail search-related-thumbnail-empty" aria-hidden="true"><i class="far fa-file"></i></span>`;
+        return `<div class="search-related-document">
+          <div class="search-related-document-main">${thumbnail}<span>${escapeHtml(displayFilename(item))}</span></div>
+          <div class="search-related-document-actions">
+            <button type="button" class="apex-button-secondary apex-button-xs" onclick="window.searchModule.showRelatedDocumentTexts(${groupIndex}, ${relatedIndex})"><i class="fas fa-file-lines"></i> 生成テキスト</button>
+            <button type="button" class="apex-button-secondary apex-button-xs" onclick="window.searchModule.downloadFile('${escapeHtml(item.bucket)}', '${encodeURIComponent(item.object_name)}')"><i class="fas fa-download"></i> ダウンロード</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>` : '';
+    const groupFooter = isGroupEnd ? '</section>' : '';
+    return groupHeader + fileCardHtml + relatedHtml + groupFooter;
   }).join('');
   
   // 検索結果データをグローバルに保存（画像モーダル用）
@@ -998,6 +1358,240 @@ export function showSearchImageModal(fileIndex, imageIndex) {
   
   // 共通のshowImageModal関数を呼び出す（画像リストとインデックスを渡す）
   utilsShowImageModal(imageUrls[imageIndex], imageTitles[imageIndex], imageUrls, imageIndex, imageTitles);
+}
+
+/**
+ * 文書全体一致の代表画像を拡大表示
+ * @param {number} fileIndex - ファイルのインデックス
+ */
+export function showSearchRepresentativeImage(fileIndex) {
+  const fileResult = window._searchResultsData?.results?.[fileIndex];
+  if (!fileResult?.thumbnail_object_name) {
+    utilsShowToast('代表画像が見つかりません', 'info');
+    return;
+  }
+  const imageUrl = getAuthenticatedImageUrl(
+    objectUrl(fileResult.bucket, fileResult.thumbnail_object_name)
+  );
+  const page = fileResult.thumbnail_page_number != null
+    ? `（ページ ${fileResult.thumbnail_page_number}）`
+    : '';
+  const title = `${displayFilename(fileResult)} — 代表画像${page}`;
+  utilsShowImageModal(imageUrl, title, [imageUrl], 0, [title]);
+}
+
+/**
+ * 同じ案件の関連資料の代表画像を拡大表示
+ * @param {number} groupIndex - 案件グループのインデックス
+ * @param {number} relatedIndex - 関連資料のインデックス
+ */
+export function showRelatedDocumentThumbnail(groupIndex, relatedIndex) {
+  const data = window._searchResultsData;
+  const group = data?.groups?.[groupIndex];
+  const selected = group?.related_documents?.[relatedIndex];
+  if (!selected?.thumbnail_object_name) {
+    utilsShowToast('代表画像が見つかりません', 'info');
+    return;
+  }
+
+  const thumbnails = group.related_documents.filter(item => item.thumbnail_object_name);
+  const selectedIndex = thumbnails.findIndex(item => item.file_id === selected.file_id);
+  const imageUrls = thumbnails.map(item =>
+    getAuthenticatedImageUrl(objectUrl(item.bucket, item.thumbnail_object_name))
+  );
+  const imageTitles = thumbnails.map(item => {
+    const page = item.thumbnail_page_number != null
+      ? `（ページ ${item.thumbnail_page_number}）`
+      : '';
+    return `${displayFilename(item)} — 代表画像${page}`;
+  });
+  const modalIndex = Math.max(0, selectedIndex);
+  utilsShowImageModal(
+    imageUrls[modalIndex],
+    imageTitles[modalIndex],
+    imageUrls,
+    modalIndex,
+    imageTitles
+  );
+}
+
+const pageTextArtifactOrder = ['PAGE_TEXT', 'NATIVE_TEXT', 'MINERU_TEXT', 'OCR_TEXT', 'VLM_TEXT'];
+
+function searchPageTextLabel(item) {
+  const component = String(item.component_key || '');
+  const suffix = component.includes(':') ? component.split(':').slice(1).join(':') : '';
+  const componentLabels = {
+    native: 'ネイティブ抽出',
+    mineru: 'MinerU解析',
+    ocr: 'OCR',
+    normalize: '正規化',
+    render: 'ページ画像生成'
+  };
+  const artifactLabels = {
+    PAGE_TEXT: 'ページテキスト',
+    NATIVE_TEXT: '抽出テキスト',
+    MINERU_TEXT: 'MinerUテキスト',
+    OCR_TEXT: 'OCRテキスト',
+    VLM_TEXT: 'VLMテキスト'
+  };
+  const componentLabel = component.startsWith('vlm:')
+    ? `VLMプロファイル ${suffix}`
+    : (componentLabels[component] || component || '生成結果');
+  return `${componentLabel}・${artifactLabels[item.artifact_kind] || item.artifact_kind}`;
+}
+
+function searchPageTextSections(items) {
+  return (items || []).slice().sort((left, right) => {
+    const leftIndex = pageTextArtifactOrder.indexOf(left.artifact_kind);
+    const rightIndex = pageTextArtifactOrder.indexOf(right.artifact_kind);
+    return (leftIndex < 0 ? 99 : leftIndex) - (rightIndex < 0 ? 99 : rightIndex);
+  }).map(item => {
+    let text = item.raw_text || '';
+    if (item.payload_json != null) {
+      text += `${text ? '\n\n' : ''}--- 構造化出力 (JSON) ---\n${JSON.stringify(item.payload_json, null, 2)}`;
+    }
+    return {
+      label: `${searchPageTextLabel(item)}${item.stage_status === 'STALE' ? '（要更新）' : ''}`,
+      text,
+      meta: [item.artifact_kind, item.created_at ? `生成日時: ${item.created_at}` : null]
+        .filter(Boolean).join('　')
+    };
+  });
+}
+
+function retrievalChannelLabel(channel) {
+  const value = String(channel || '');
+  if (value === 'keyword:page_text') return '正規化したページテキストに検索語が一致';
+  if (value.startsWith('keyword:vlm_text_slot_')) return `VLMプロファイル${value.split('_').pop()}の生成テキストに検索語が一致`;
+  if (value.includes('page_image_page_text')) return 'ページ画像とページテキストを合わせた意味類似検索で候補化';
+  if (value.includes('page_image')) return 'ページ画像の意味類似検索で候補化';
+  if (value.includes('vlm_text')) return 'VLM生成テキストの意味類似検索で候補化';
+  if (value.startsWith('vector:')) return 'ページテキストの意味類似検索で候補化';
+  if (value.startsWith('concept:')) return '選択したAI検索タグとの一致で候補化';
+  return '検索処理の候補抽出経路';
+}
+
+function deterministicEvidenceSection(image) {
+  const lines = [];
+  if (image.match_percent != null) {
+    lines.push(`関連度 ${image.match_percent.toFixed(1)}%`);
+    lines.push('関連度は、候補抽出後に検索文とページ内容を再順位付けしたスコアを0〜100%で表示しています。生成AIによる説明値ではありません。');
+  } else {
+    lines.push('再順位付けスコアがないため、関連度の百分率は表示していません。');
+  }
+  if (image.image_similarity_percent != null) {
+    lines.push(`画像類似度 ${image.image_similarity_percent.toFixed(1)}%（検索画像とページ画像のベクトル距離から算出）`);
+  }
+  if (image.visual_rank != null) lines.push(`画像検索内の順位: ${image.visual_rank}位`);
+  if (image.text_rerank_rank != null) lines.push(`テキスト再順位付け内の順位: ${image.text_rerank_rank}位`);
+  if (image.retrieval_channels?.length) {
+    lines.push('', '候補になった検索経路:');
+    image.retrieval_channels.forEach(channel => {
+      lines.push(`・${retrievalChannelLabel(channel)}  [${channel}]`);
+    });
+  }
+  if (image.match_reasons?.length) {
+    lines.push('', '検索処理が記録した一致理由:');
+    image.match_reasons.forEach(reason => lines.push(`・${reason}`));
+  }
+  if (image.verification_status && image.verification_status !== 'not_requested') {
+    lines.push('', `VLM精密確認: ${image.verification_status}`);
+  }
+  if (image.caption) lines.push('', '画像説明:', image.caption);
+  if (image.text_excerpt) lines.push('', '検索時のテキスト抜粋:', image.text_excerpt);
+  return {
+    id: 'relevance-details',
+    label: '関連度の詳細',
+    meta: '検索処理が保持している値をルールで説明しています',
+    text: lines.join('\n')
+  };
+}
+
+async function requestEvidenceAiExplanation(fileResult, image, query) {
+  const response = await authApiCall('/ai/api/search/v2/evidence/explain', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: query || '',
+      file_name: displayFilename(fileResult),
+      page_number: image.page_number,
+      relevance_percent: image.match_percent,
+      image_similarity_percent: image.image_similarity_percent,
+      retrieval_channels: image.retrieval_channels || [],
+      match_reasons: image.match_reasons || [],
+      text_excerpt: image.text_excerpt || '',
+      caption: image.caption || '',
+      visual_rank: image.visual_rank,
+      text_rerank_rank: image.text_rerank_rank
+    }),
+    timeout: 120000
+  });
+  return {
+    id: 'ai-explanation',
+    label: 'AIによる解説',
+    meta: 'ボタン操作時に生成した補足です。検索順位や関連度は変更しません。',
+    text: response.explanation
+  };
+}
+
+export async function showSearchEvidenceDetails(fileIndex, imageIndex) {
+  const data = window._searchResultsData;
+  const fileResult = data?.results?.[fileIndex];
+  const image = fileResult?.matched_images?.[imageIndex];
+  if (!fileResult || !image) {
+    utilsShowToast('検索結果の詳細が見つかりません', 'error');
+    return;
+  }
+  try {
+    utilsShowLoading('生成テキストと関連度の詳細を取得しています...');
+    let generatedSections = [];
+    try {
+      const pageTexts = await authApiCall(`/ai/api/documents/${encodeURIComponent(fileResult.file_id)}/page-texts?release=latest&page_number=${Number(image.page_number)}`);
+      generatedSections = searchPageTextSections(pageTexts.items);
+    } catch (textError) {
+      if (textError?.status !== 404) throw textError;
+    }
+    const sections = [deterministicEvidenceSection(image), ...generatedSections];
+    utilsShowTextPreviewModal(
+      `${displayFilename(fileResult)} — ページ ${Number(image.page_number)} の詳細`,
+      sections,
+      {
+        primaryActionLabel: 'AIで関連理由を解説',
+        onPrimaryAction: () => requestEvidenceAiExplanation(fileResult, image, data.query)
+      }
+    );
+  } catch (error) {
+    utilsShowToast(`詳細を取得できませんでした: ${error.message}`, 'error');
+  } finally {
+    utilsHideLoading();
+  }
+}
+
+export async function showRelatedDocumentTexts(groupIndex, relatedIndex) {
+  const selected = window._searchResultsData?.groups?.[groupIndex]?.related_documents?.[relatedIndex];
+  if (!selected) {
+    utilsShowToast('関連資料が見つかりません', 'error');
+    return;
+  }
+  const pageNumber = Number(selected.thumbnail_page_number || 1);
+  try {
+    utilsShowLoading('生成テキストを取得しています...');
+    const data = await authApiCall(`/ai/api/documents/${encodeURIComponent(selected.file_id)}/page-texts?release=latest&page_number=${pageNumber}`);
+    const sections = searchPageTextSections(data.items);
+    if (!sections.length) {
+      utilsShowToast('このページにはまだ生成テキストがありません', 'info');
+      return;
+    }
+    utilsShowTextPreviewModal(`${displayFilename(selected)} — ページ ${pageNumber} の生成テキスト`, sections);
+  } catch (error) {
+    if (error?.status === 404) {
+      utilsShowToast('このページにはまだ生成テキストがありません', 'info');
+      return;
+    }
+    utilsShowToast(`生成テキストを取得できませんでした: ${error.message}`, 'error');
+  } finally {
+    utilsHideLoading();
+  }
 }
 
 /**
@@ -1059,6 +1653,10 @@ window.searchModule = {
   performImageSearch,
   displaySearchResults,
   showSearchImageModal,
+  showSearchRepresentativeImage,
+  showRelatedDocumentThumbnail,
+  showSearchEvidenceDetails,
+  showRelatedDocumentTexts,
   downloadFile,
   clearSearchResults,
   switchSearchType,
@@ -1066,7 +1664,11 @@ window.searchModule = {
   clearSearchImage,
   cancelCurrentSearch,
   loadDynamicSearchFilters,
-  toggleFilterBetween
+  toggleFilterBetween,
+  toggleSearchConcept,
+  filterSearchConcepts,
+  expandSearchConceptCategory,
+  clearSearchConcepts
 };
 
 // デフォルトエクスポート
@@ -1075,6 +1677,10 @@ export default {
   performImageSearch,
   displaySearchResults,
   showSearchImageModal,
+  showSearchRepresentativeImage,
+  showRelatedDocumentThumbnail,
+  showSearchEvidenceDetails,
+  showRelatedDocumentTexts,
   downloadFile,
   clearSearchResults,
   switchSearchType,
@@ -1082,7 +1688,11 @@ export default {
   clearSearchImage,
   cancelCurrentSearch,
   loadDynamicSearchFilters,
-  toggleFilterBetween
+  toggleFilterBetween,
+  toggleSearchConcept,
+  filterSearchConcepts,
+  expandSearchConceptCategory,
+  clearSearchConcepts
 }
 
 /**

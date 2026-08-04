@@ -18,7 +18,7 @@
           <span class="text-xs font-normal opacity-80 leading-tight">管理コンソール</span>
         </div>
       </div>
-      
+
       <div class="ml-auto flex items-center gap-6 text-sm" id="userInfo" style="display: none;">
         <div class="flex items-center gap-3">
           <span class="opacity-90">ユーザー: <span id="userName"></span></span>
@@ -42,7 +42,7 @@
     </div>
 
     <!-- AI Assistant 浮動ボタン -->
-    <button 
+    <button
       id="copilotToggleBtn"
       class="copilot-float-button"
       onclick="toggleCopilot()"
@@ -62,25 +62,25 @@
           </div>
         </div>
         <div class="flex items-center gap-1">
-          <button 
-            type="button" 
-            class="p-1.5 rounded-full hover:bg-white/10 transition" 
+          <button
+            type="button"
+            class="p-1.5 rounded-full hover:bg-white/10 transition"
             onclick="startNewConversation()"
             title="新しい会話"
           >
             <i class="fas fa-plus w-4 h-4"></i>
           </button>
-          <button 
-            type="button" 
-            class="p-1.5 rounded-full hover:bg-white/10 transition" 
+          <button
+            type="button"
+            class="p-1.5 rounded-full hover:bg-white/10 transition"
             onclick="toggleCopilotExpand()"
             title="展開/縮小"
           >
             <i id="copilotExpandIcon" class="fas fa-chevron-left w-4 h-4"></i>
           </button>
-          <button 
-            type="button" 
-            class="p-1.5 rounded-full hover:bg-white/10 transition" 
+          <button
+            type="button"
+            class="p-1.5 rounded-full hover:bg-white/10 transition"
             onclick="toggleCopilot()"
             title="閉じる"
           >
@@ -88,18 +88,18 @@
           </button>
         </div>
       </div>
-      
+
       <div class="copilot-messages" id="copilotMessages">
         <div class="text-center text-gray-500 py-8">
           <p class="text-sm">何でもお聞きください！</p>
         </div>
       </div>
-      
+
       <div class="copilot-input-area">
         <form id="copilot-form" onsubmit="event.preventDefault(); sendCopilotMessage();">
-          <textarea 
-            id="copilotInput" 
-            class="copilot-input" 
+          <textarea
+            id="copilotInput"
+            class="copilot-input"
             placeholder="質問を入力または画像を貼り付け..."
             rows="2"
             onkeydown="handleCopilotKeydown(event)"
@@ -112,15 +112,15 @@
                 <i class="fas fa-image"></i> 画像
                 <input type="file" accept="image/*" multiple style="display:none" onchange="addCopilotImagesFromFiles(this.files); this.value='';" />
               </label>
-              <button 
+              <button
                 type="button"
                 onclick="document.getElementById('copilotInput').value=''; renderCopilotMessages();"
                 class="apex-button-secondary px-3 py-1.5 text-xs"
               >
                 <i class="fas fa-trash-alt"></i> クリア
               </button>
-              <button 
-                type="submit" 
+              <button
+                type="submit"
                 class="apex-button px-4 py-1.5 text-xs"
                 id="copilotSendBtn"
               >
@@ -139,9 +139,231 @@
       <div id="tab-search" class="tab-content" role="tabpanel" aria-labelledby="main-tab-search">
       <div class="apex-region" style="margin-bottom: 20px;">
         <div class="apex-region-header">
-          <span><i class="fas fa-search"></i> セマンティック検索</span>
+          <span><i class="fas fa-search"></i> 資料を検索</span>
         </div>
         <div style="padding: 24px;">
+          <details id="searchConceptPanel" class="search-concept-panel search-primary-concept-panel" hidden>
+            <summary id="searchConceptPanelTitle" class="search-concept-summary"><span><i class="fas fa-tags"></i> タグから検索</span><small id="searchConceptSummaryCount">候補を読み込んでいます...</small></summary>
+            <div class="search-concept-content">
+            <div class="search-concept-header">
+              <div>
+                <p>登録文書からAIが抽出したタグを選んで検索します。文章を入力しなくても、タグだけで検索できます。</p>
+              </div>
+              <label class="metadata-inline-check search-concept-require-all">
+                <input id="searchConceptRequireAll" type="checkbox"> 選択した条件をすべて含む案件だけ
+              </label>
+            </div>
+            <div class="search-concept-toolbar">
+              <label class="sr-only" for="searchConceptQuery">候補を絞り込む</label>
+              <input id="searchConceptQuery" class="form-input" placeholder="キーワードや文章から関連する検索条件を探す" oninput="window.searchModule.filterSearchConcepts(this.value)">
+              <button type="button" class="apex-button-secondary px-3 py-2" onclick="window.searchModule.clearSearchConcepts()"><i class="fas fa-eraser"></i> 選択解除</button>
+            </div>
+            <small id="searchConceptQueryStatus" class="search-concept-query-status" role="status" aria-live="polite" hidden></small>
+            <div id="selectedSearchConcepts" class="selected-search-concepts" hidden></div>
+            <div id="searchConceptFacets" class="search-concept-facets"></div>
+            </div>
+          </details>
+
+          <!-- 検索タイプタブ -->
+          <div id="searchTypeTabs" role="tablist" aria-label="検索方法" style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0;">
+            <button
+              id="searchTypeTextTab"
+              class="search-type-tab active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="textSearchPanel"
+              onclick="window.searchModule.switchSearchType('text')"
+              style="padding: 12px 24px; font-weight: 600; font-size: 14px; border: none; background: none; cursor: pointer; border-bottom: 3px solid #1a365d; color: #1a365d; transition: all 0.3s;"
+            >
+              <i class="fas fa-comment-dots"></i> 自然言語で検索
+            </button>
+            <button
+              id="searchTypeImageTab"
+              class="search-type-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="imageSearchPanel"
+              tabindex="-1"
+              onclick="window.searchModule.switchSearchType('image')"
+              style="padding: 12px 24px; font-weight: 600; font-size: 14px; border: none; background: none; cursor: pointer; border-bottom: 3px solid transparent; color: #64748b; transition: all 0.3s;"
+            >
+              <i class="fas fa-image"></i> 画像から検索
+            </button>
+          </div>
+
+          <!-- テキスト検索パネル -->
+          <div id="textSearchPanel" class="search-primary-query-panel" role="tabpanel" aria-labelledby="searchTypeTextTab" style="display: block;">
+            <div style="margin-bottom: 20px;">
+              <label class="form-label" for="searchQuery">探したい内容を文章で入力</label>
+              <textarea
+                id="searchQuery"
+                class="form-input"
+                placeholder="例: 開放的なLDK、アイランドキッチン"
+                rows="3"
+                onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); window.searchModule.performSearch(); }"
+              ></textarea>
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+              <button id="textSearchSubmitBtn" type="button" class="apex-button px-4 py-2" onclick="window.searchModule.performSearch()">
+                <i class="fas fa-search"></i> 自然言語で検索
+              </button>
+              <button class="apex-button-secondary px-4 py-2" onclick="window.searchModule.clearSearchResults()">
+                <i class="fas fa-eraser"></i> クリア
+              </button>
+            </div>
+          </div>
+
+          <!-- 画像検索パネル -->
+          <div id="imageSearchPanel" role="tabpanel" aria-labelledby="searchTypeImageTab" style="display: none;">
+            <div style="margin-bottom: 16px;">
+              <label class="form-label" for="imageSearchQuery">画像に追加する検索テキスト（任意）</label>
+              <input id="imageSearchQuery" class="form-input" placeholder="画像と組み合わせる条件を入力" />
+            </div>
+            <div style="margin-bottom: 20px;">
+              <label class="form-label" for="searchImageInput">検索画像</label>
+
+              <!-- ファイル選択エリア -->
+              <div
+                id="imageSearchDropZone"
+                role="button"
+                tabindex="0"
+                onclick="document.getElementById('searchImageInput').click()"
+                onkeydown="if(event.key==='Enter' || event.key===' ') { event.preventDefault(); document.getElementById('searchImageInput').click(); }"
+                style="
+                  border: 2px dashed #cbd5e1;
+                  border-radius: 8px;
+                  padding: 32px;
+                  text-align: center;
+                  cursor: pointer;
+                  background: #f8fafc;
+                  transition: all 0.3s;
+                  margin-bottom: 12px;
+                "
+                onmouseover="this.style.borderColor='#1a365d'; this.style.background='#f0f4ff';"
+                onmouseout="this.style.borderColor='#cbd5e1'; this.style.background='#f8fafc';"
+              >
+                <div id="imageSearchPreview" style="display: none;">
+                  <img id="searchImagePreviewImg" style="max-width: 100%; max-height: 300px; border-radius: 8px; margin-bottom: 12px;" />
+                  <div style="font-size: 14px; color: #64748b; margin-bottom: 8px;">
+                    <span id="searchImageFilename"></span>
+                  </div>
+                  <button
+                    class="apex-button-secondary"
+                    onclick="event.stopPropagation(); window.searchModule.clearSearchImage();"
+                    style="padding: 6px 16px; font-size: 13px;"
+                  >
+                    <i class="fas fa-trash-alt"></i> 画像をクリア
+                  </button>
+                </div>
+                <div id="imageSearchPlaceholder">
+                  <i class="fas fa-image" style="font-size: 48px; margin: 0 auto 12px; color: #94a3b8; display: block; text-align: center;"></i>
+                  <div style="font-size: 15px; font-weight: 600; color: #475569; margin-bottom: 6px;">
+                    画像ファイルを選択またはドロップ
+                  </div>
+                  <div style="font-size: 12px; color: #64748b;">
+                    PNG, JPG, JPEG, WebP (最大10MB)
+                  </div>
+                </div>
+              </div>
+
+              <!-- ペースト専用エリア -->
+              <div
+                id="imageSearchPasteZone"
+                tabindex="0"
+                style="
+                  border: 2px dashed #94a3b8;
+                  border-radius: 8px;
+                  padding: 20px;
+                  text-align: center;
+                  background: #f1f5f9;
+                  transition: all 0.3s;
+                  cursor: pointer;
+                  outline: none;
+                "
+              >
+                <div style="display: flex; align-items: center; justify-content: center; gap: 12px;">
+                  <i class="fas fa-clipboard" style="font-size: 32px; color: #64748b;"></i>
+                  <div style="text-align: center;">
+                    <div style="font-size: 14px; font-weight: 600; color: #475569; margin-bottom: 2px;">
+                      Ctrl+V で画像を貼り付け
+                    </div>
+                    <div style="font-size: 12px; color: #64748b;">
+                      このエリアをクリックしてフォーカス後、Ctrl+V を押してください
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <input
+                type="file"
+                id="searchImageInput"
+                accept="image/png,image/jpeg,image/jpg,image/webp"
+                style="display: none;"
+                onchange="window.searchModule.handleSearchImageSelect(event)"
+              />
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+              <button id="imageSearchSubmitBtn" type="button" class="apex-button px-4 py-2" onclick="window.searchModule.performImageSearch()">
+                <i class="fas fa-search"></i> 画像検索実行
+              </button>
+              <button class="apex-button-secondary px-4 py-2" onclick="window.searchModule.clearSearchResults()">
+                <i class="fas fa-eraser"></i> クリア
+              </button>
+            </div>
+          </div>
+
+          <div class="search-auxiliary-options">
+            <p class="search-auxiliary-label">絞り込み・詳細設定</p>
+          <details id="metadataSearchFilters" class="metadata-filter-panel search-secondary-filter-panel">
+            <summary><i class="fas fa-folder-tree"></i> フォルダ・カテゴリ・顧客・年月で絞り込む</summary>
+            <div class="metadata-filter-grid">
+              <div>
+                <label class="form-label" for="searchFolderId">検索フォルダ</label>
+                <select id="searchFolderId" class="form-input"><option value="">すべてのフォルダ</option></select>
+                <label class="metadata-inline-check"><input id="searchIncludeDescendants" type="checkbox" checked> 子孫フォルダを含む</label>
+              </div>
+              <div>
+                <label class="form-label" for="searchCustomerName">顧客名</label>
+                <input id="searchCustomerName" class="form-input" list="searchCustomerSuggestions" placeholder="例: 森様邸">
+                <datalist id="searchCustomerSuggestions"></datalist>
+                <select id="searchCustomerMatch" class="form-input" style="margin-top: 6px;">
+                  <option value="normalized_exact">正規化後に完全一致</option>
+                  <option value="contains">部分一致</option>
+                  <option value="search_key_exact">検索用表記に一致</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label">文書年</label>
+                <div class="metadata-year-range">
+                  <input id="searchYearFrom" type="number" min="1000" max="9999" class="form-input" placeholder="開始年">
+                  <span>〜</span>
+                  <input id="searchYearTo" type="number" min="1000" max="9999" class="form-input" placeholder="終了年">
+                </div>
+                <select id="searchMonth" class="form-input" style="margin-top: 6px;">
+                  <option value="">すべての月</option>
+                  <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
+                  <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
+                  <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
+                  <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label">カテゴリ（すべて満たす）</label>
+                <div id="searchTagFilters" class="metadata-tag-picker"><span class="text-xs text-gray-500">設定を読み込んでいます...</span></div>
+              </div>
+            </div>
+          </details>
+
+          <details id="searchAdvancedSettings" class="search-advanced-settings">
+            <summary>
+              <span><i class="fas fa-sliders-h"></i> 検索設定</span>
+              <small>取得件数・類似度・検索方式・VLM確認</small>
+            </summary>
+            <div class="search-advanced-settings-content">
           <!-- 共通フィルター（ファイル名・取得件数・最小ベクトル類似度） -->
           <div class="search-filter-grid">
             <div>
@@ -158,36 +380,6 @@
               <input type="text" id="filenameFilter" class="form-input" placeholder="例: AI" />
             </div>
           </div>
-
-          <!-- 検索タイプタブ -->
-          <div id="searchTypeTabs" role="tablist" aria-label="検索方法" style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0;">
-            <button 
-              id="searchTypeTextTab"
-              class="search-type-tab active"
-              type="button"
-              role="tab"
-              aria-selected="true"
-              aria-controls="textSearchPanel"
-              onclick="window.searchModule.switchSearchType('text')"
-              style="padding: 12px 24px; font-weight: 600; font-size: 14px; border: none; background: none; cursor: pointer; border-bottom: 3px solid #1a365d; color: #1a365d; transition: all 0.3s;"
-            >
-              <i class="fas fa-file-alt"></i> テキスト検索
-            </button>
-            <button 
-              id="searchTypeImageTab"
-              class="search-type-tab"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="imageSearchPanel"
-              tabindex="-1"
-              onclick="window.searchModule.switchSearchType('image')"
-              style="padding: 12px 24px; font-weight: 600; font-size: 14px; border: none; background: none; cursor: pointer; border-bottom: 3px solid transparent; color: #64748b; transition: all 0.3s;"
-            >
-              <i class="fas fa-image"></i> 画像検索
-            </button>
-          </div>
-
           <fieldset
             id="searchRetrievalModes"
             class="search-retrieval-modes"
@@ -249,128 +441,9 @@
             </label>
             <small>候補画像をVLMで再確認します。精度重視のときだけ有効にしてください。</small>
           </div>
+            </div>
+          </details>
 
-          <!-- テキスト検索パネル -->
-          <div id="textSearchPanel" role="tabpanel" aria-labelledby="searchTypeTextTab" style="display: block;">
-            <div style="margin-bottom: 20px;">
-              <label class="form-label" for="searchQuery">検索クエリ</label>
-              <textarea 
-                id="searchQuery" 
-                class="form-input" 
-                placeholder="例: セマンティック検索について"
-                rows="3"
-                onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); window.searchModule.performSearch(); }"
-              ></textarea>
-            </div>
-
-            <div style="display: flex; gap: 12px;">
-              <button id="textSearchSubmitBtn" type="button" class="apex-button px-4 py-2" onclick="window.searchModule.performSearch()">
-                <i class="fas fa-search"></i> 検索実行
-              </button>
-              <button class="apex-button-secondary px-4 py-2" onclick="window.searchModule.clearSearchResults()">
-                <i class="fas fa-eraser"></i> クリア
-              </button>
-            </div>
-          </div>
-
-          <!-- 画像検索パネル -->
-          <div id="imageSearchPanel" role="tabpanel" aria-labelledby="searchTypeImageTab" style="display: none;">
-            <div style="margin-bottom: 16px;">
-              <label class="form-label" for="imageSearchQuery">画像に追加する検索テキスト（任意）</label>
-              <input id="imageSearchQuery" class="form-input" placeholder="画像と組み合わせる条件を入力" />
-            </div>
-            <div style="margin-bottom: 20px;">
-              <label class="form-label" for="searchImageInput">検索画像</label>
-              
-              <!-- ファイル選択エリア -->
-              <div 
-                id="imageSearchDropZone"
-                role="button"
-                tabindex="0"
-                onclick="document.getElementById('searchImageInput').click()"
-                onkeydown="if(event.key==='Enter' || event.key===' ') { event.preventDefault(); document.getElementById('searchImageInput').click(); }"
-                style="
-                  border: 2px dashed #cbd5e1;
-                  border-radius: 8px;
-                  padding: 32px;
-                  text-align: center;
-                  cursor: pointer;
-                  background: #f8fafc;
-                  transition: all 0.3s;
-                  margin-bottom: 12px;
-                "
-                onmouseover="this.style.borderColor='#1a365d'; this.style.background='#f0f4ff';"
-                onmouseout="this.style.borderColor='#cbd5e1'; this.style.background='#f8fafc';"
-              >
-                <div id="imageSearchPreview" style="display: none;">
-                  <img id="searchImagePreviewImg" style="max-width: 100%; max-height: 300px; border-radius: 8px; margin-bottom: 12px;" />
-                  <div style="font-size: 14px; color: #64748b; margin-bottom: 8px;">
-                    <span id="searchImageFilename"></span>
-                  </div>
-                  <button 
-                    class="apex-button-secondary"
-                    onclick="event.stopPropagation(); window.searchModule.clearSearchImage();"
-                    style="padding: 6px 16px; font-size: 13px;"
-                  >
-                    <i class="fas fa-trash-alt"></i> 画像をクリア
-                  </button>
-                </div>
-                <div id="imageSearchPlaceholder">
-                  <i class="fas fa-image" style="font-size: 48px; margin: 0 auto 12px; color: #94a3b8; display: block; text-align: center;"></i>
-                  <div style="font-size: 15px; font-weight: 600; color: #475569; margin-bottom: 6px;">
-                    画像ファイルを選択またはドロップ
-                  </div>
-                  <div style="font-size: 12px; color: #64748b;">
-                    PNG, JPG, JPEG, WebP (最大10MB)
-                  </div>
-                </div>
-              </div>
-              
-              <!-- ペースト専用エリア -->
-              <div 
-                id="imageSearchPasteZone"
-                tabindex="0"
-                style="
-                  border: 2px dashed #94a3b8;
-                  border-radius: 8px;
-                  padding: 20px;
-                  text-align: center;
-                  background: #f1f5f9;
-                  transition: all 0.3s;
-                  cursor: pointer;
-                  outline: none;
-                "
-              >
-                <div style="display: flex; align-items: center; justify-content: center; gap: 12px;">
-                  <i class="fas fa-clipboard" style="font-size: 32px; color: #64748b;"></i>
-                  <div style="text-align: center;">
-                    <div style="font-size: 14px; font-weight: 600; color: #475569; margin-bottom: 2px;">
-                      Ctrl+V で画像を貼り付け
-                    </div>
-                    <div style="font-size: 12px; color: #64748b;">
-                      このエリアをクリックしてフォーカス後、Ctrl+V を押してください
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
-              <input 
-                type="file" 
-                id="searchImageInput" 
-                accept="image/png,image/jpeg,image/jpg,image/webp"
-                style="display: none;"
-                onchange="window.searchModule.handleSearchImageSelect(event)"
-              />
-            </div>
-
-            <div style="display: flex; gap: 12px;">
-              <button id="imageSearchSubmitBtn" type="button" class="apex-button px-4 py-2" onclick="window.searchModule.performImageSearch()">
-                <i class="fas fa-search"></i> 画像検索実行
-              </button>
-              <button class="apex-button-secondary px-4 py-2" onclick="window.searchModule.clearSearchResults()">
-                <i class="fas fa-eraser"></i> クリア
-              </button>
-            </div>
           </div>
         </div>
       </div>
@@ -411,8 +484,15 @@
           </div>
         </div>
         <div style="padding: 24px;">
+          <div class="document-upload-destination">
+            <div>
+              <label class="form-label" for="uploadTargetFolder">登録先フォルダ</label>
+              <select id="uploadTargetFolder" class="form-input"><option value="folder_unclassified">未分類</option></select>
+            </div>
+            <button type="button" class="apex-button-secondary px-3 py-2" onclick="window.documentLibraryModule.createFolderPrompt()"><i class="fas fa-folder-plus"></i> フォルダ作成</button>
+          </div>
           <div style="margin-bottom: 16px;">
-            <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-800 transition cursor-pointer" 
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-800 transition cursor-pointer"
                  onclick="document.getElementById('fileInputMultiple').click()"
                  ondragover="handleDragOver(event)"
                  ondragleave="handleDragLeave(event)"
@@ -424,7 +504,7 @@
               <input type="file" id="fileInputMultiple" class="hidden" accept=".pdf,.xlsx,.xls,.docx,.doc,.ppt,.pptx,.png,.jpg,.jpeg,.txt,.md" multiple onchange="handleMultipleFileSelect(event)">
             </div>
           </div>
-          
+
           <!-- 選択されたファイルリスト -->
           <div id="selectedFilesList" style="margin-bottom: 16px; display: none;">
             <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
@@ -435,7 +515,7 @@
               <div id="selectedFilesListContent" class="space-y-2"></div>
             </div>
           </div>
-          
+
           <button class="apex-button px-4 py-2" onclick="uploadMultipleDocuments()" id="uploadMultipleBtn" disabled>
             <i class="fas fa-cloud-upload-alt"></i> アップロード開始
           </button>
@@ -444,6 +524,8 @@
 
       <!-- アップロード進捗 -->
       <details id="uploadProgress" class="retrieval-global-section" hidden aria-live="polite" style="margin-bottom: 20px;"></details>
+
+      <div id="ingestReviewRoot" class="apex-region" style="display: none; margin-bottom: 20px;"></div>
 
       <!-- 文書リスト -->
       <div class="apex-region">
@@ -467,7 +549,23 @@
           <!-- 処理進捗表示 (削除・ベクトル化) - 一覧の下に表示 -->
           <details id="processProgress" class="retrieval-global-section" hidden aria-live="polite" style="margin: 16px 0 24px;"></details>
 
-          <div id="documentsList"></div>          
+          <div class="document-library-layout">
+            <aside class="document-folder-panel">
+              <div class="document-folder-panel-header">
+                <strong>フォルダ</strong>
+                <button type="button" class="apex-button-secondary apex-button-xs" onclick="window.documentLibraryModule.createFolderPrompt()"><i class="fas fa-plus"></i></button>
+              </div>
+              <label class="metadata-inline-check"><input id="libraryIncludeDescendants" type="checkbox" checked onchange="window.documentLibraryModule.refresh()"> 子孫を含む</label>
+              <div id="documentFolderTree" class="document-folder-tree"></div>
+            </aside>
+            <section class="document-library-main">
+              <div class="document-library-toolbar">
+                <input id="libraryQuery" class="form-input" placeholder="ファイル名・顧客名で絞り込み" onkeydown="if(event.key==='Enter') window.documentLibraryModule.refresh()">
+                <button type="button" class="apex-button-secondary px-3 py-2" onclick="window.documentLibraryModule.refresh()"><i class="fas fa-search"></i> 絞り込み</button>
+              </div>
+              <div id="documentsList"></div>
+            </section>
+          </div>
         </div>
         </div>
       </div>
@@ -480,11 +578,12 @@
             <div style="padding: 24px; color: #64748b;">設定を読み込んでいます...</div>
           </div>
         </div>
+        <div id="metadataSettingsRoot" class="retrieval-settings-root" style="margin-top: 20px;"></div>
       </div>
 
       <!-- OCI設定タブ -->
       <div id="tab-settings" class="tab-content" role="tabpanel" aria-labelledby="admin-tab-settings" style="display: none;">
-      
+
       <!-- OCI APIキー設定 -->
       <div class="apex-region bg-gray-50/50" style="margin-bottom: 20px;">
         <div class="apex-region-header">
@@ -501,52 +600,52 @@
             <h4 class="text-sm font-semibold text-gray-800 mb-4 pb-2 border-b border-gray-100">
               <i class="fas fa-key"></i> APIキー認証情報
             </h4>
-            
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">User OCID*</label>
-                <input 
-                  type="text" 
-                  id="userOcid" 
+                <input
+                  type="text"
+                  id="userOcid"
                   class="w-full font-mono text-sm px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-800 focus:border-blue-800"
-                  placeholder="ocid1.user.oc1..aaaa..." 
+                  placeholder="ocid1.user.oc1..aaaa..."
                 />
               </div>
-              
+
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Tenancy OCID*</label>
-                <input 
-                  type="text" 
-                  id="tenancyOcid" 
+                <input
+                  type="text"
+                  id="tenancyOcid"
                   class="w-full font-mono text-sm px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-800 focus:border-blue-800"
-                  placeholder="ocid1.tenancy.oc1..aaaa..." 
+                  placeholder="ocid1.tenancy.oc1..aaaa..."
                 />
               </div>
-              
+
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Fingerprint*</label>
-                <input 
-                  type="text" 
-                  id="fingerprint" 
+                <input
+                  type="text"
+                  id="fingerprint"
                   class="w-full font-mono text-sm px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-800 focus:border-blue-800"
-                  placeholder="aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99" 
+                  placeholder="aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
                 />
               </div>
-              
+
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Region*</label>
-                <select 
-                  id="region" 
+                <select
+                  id="region"
                   class="w-full font-mono text-sm px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-800 focus:border-blue-800"
                 >
                   <option value="ap-osaka-1">ap-osaka-1</option>
                   <option value="us-chicago-1">us-chicago-1</option>
                 </select>
               </div>
-              
+
               <div class="md:col-span-2">
                 <label class="block text-sm font-medium text-gray-700 mb-2">Private Key Content*</label>
-                <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-800 transition cursor-pointer" 
+                <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-800 transition cursor-pointer"
                      onclick="document.getElementById('privateKeyFileInput').click()"
                      ondragover="handleDragOver(event)"
                      ondragleave="handleDragLeave(event)"
@@ -560,17 +659,17 @@
               </div>
             </div>
           </div>
-          
+
           <div class="flex items-center gap-3">
-            <button 
-              onclick="saveOciSettings()" 
+            <button
+              onclick="saveOciSettings()"
               class="apex-button px-6 py-2 bg-blue-800 text-white hover:bg-blue-900 disabled:opacity-50 transition rounded-md shadow-sm font-medium"
             >
               <i class="fas fa-save"></i> APIキーを保存
             </button>
-            
-            <button 
-              onclick="testOciConnection()" 
+
+            <button
+              onclick="testOciConnection()"
               class="apex-button-secondary px-6 py-2 bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50 transition rounded-md shadow-sm font-medium"
             >
               <i class="fas fa-flask"></i> 接続テスト
@@ -578,7 +677,7 @@
           </div>
         </div>
       </div>
-      
+
       <!-- Object Storage設定 -->
       <div class="apex-region">
         <div class="apex-region-header">
@@ -611,7 +710,7 @@
               </div>
             </div>
           </div>
-          
+
           <div style="display: flex; gap: 12px;">
             <button class="apex-button-secondary px-4 py-2" onclick="testObjectStorageConnection()">
               <i class="fas fa-flask"></i> 接続テスト
@@ -667,7 +766,7 @@
 
       <!-- DB管理タブ -->
       <div id="tab-database" class="tab-content" role="tabpanel" aria-labelledby="admin-tab-database" style="display: none;">
-      
+
       <!-- Autonomous AI Database 起動/停止 -->
       <div class="apex-region" style="margin-bottom: 20px;">
         <div class="apex-region-header">
@@ -685,7 +784,7 @@
           </div>
         </div>
         <div style="padding: 24px;">
-          
+
           <div style="display: flex; gap: 12px; margin-bottom: 20px;">
             <button class="apex-button px-4 py-2" onclick="startAdb()">
               <i class="fas fa-play"></i> 起動
@@ -694,12 +793,12 @@
               <i class="fas fa-stop"></i> 停止
             </button>
           </div>
-          
+
           <div style="margin-bottom: 20px;">
             <label class="form-label">OCID</label>
             <div id="adbOcid" class="form-input" style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px 12px; border-radius: 6px; color: #475569; font-size: 12px; word-break: break-all;">-</div>
           </div>
-          
+
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
             <div>
               <label class="form-label">表示名</label>
@@ -710,7 +809,7 @@
               <div id="adbLifecycleStateDetail" class="form-input" style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px 12px; border-radius: 6px; color: #475569;">-</div>
             </div>
           </div>
-          
+
           <div id="adbOperationResult" style="margin-top: 20px; display: none;">
             <div class="apex-region-header" style="font-size: 14px; padding: 8px 12px;">
               操作結果
@@ -722,7 +821,7 @@
           </div>
         </div>
       </div>
-      
+
       <!-- データベース接続設定 -->
       <div class="apex-region" style="margin-bottom: 20px;">
         <div class="apex-region-header">
@@ -803,7 +902,7 @@
           </div>
         </div>
         <div style="padding: 24px;">
-          
+
           <div id="dbInfoContent">
             <div style="text-align: center; padding: 40px; color: #64748b;">
               <div style="font-size: 48px; margin-bottom: 16px;"><i class="fas fa-database" style="color: #94a3b8;"></i></div>
@@ -831,7 +930,7 @@
           </div>
         </div>
         <div style="padding: 24px;">
-          
+
           <div id="dbStorageContent">
             <div style="text-align: center; padding: 40px; color: #64748b;">
               <div style="font-size: 48px; margin-bottom: 16px;"><i class="fas fa-hdd" style="color: #94a3b8;"></i></div>
@@ -887,7 +986,7 @@
           </div>
         </div>
         <div style="padding: 24px;">
-          
+
           <div id="dbTablesContent">
             <div style="text-align: center; padding: 40px; color: #64748b;">
               <div style="font-size: 48px; margin-bottom: 16px;"><i class="fas fa-table" style="color: #94a3b8;"></i></div>
@@ -1020,13 +1119,13 @@
   <script type="module" src="/src/state.js"></script>
   <script type="module" src="/src/i18n.js"></script>
   <script type="module" src="/src/dom-utils.js"></script>
-  
+
   <!-- 機能モジュール -->
   <script type="module" src="/src/modules/utils.js"></script>
   <script type="module" src="/src/modules/auth.js"></script>
   <script type="module" src="/src/modules/search.js"></script>
   <script type="module" src="/src/modules/oci.js"></script>
-  
+
   <!-- UIコンポーネントとメインアプリ -->
   <script type="module" src="/components.js"></script>
   <script type="module" src="/app.js"></script>

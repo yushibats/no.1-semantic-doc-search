@@ -54,6 +54,17 @@ def stage_config_payload(kind: str, component: str) -> dict[str, Any]:
             "config_hash": profile.config_hash,
             "model": oci_service.get_enterprise_ai_settings().model,
         }
+    if kind == "CONCEPT":
+        from app.rag.document_metadata_repository import (
+            document_metadata_repository,
+        )
+
+        settings = document_metadata_repository.get_concept_settings()
+        return {
+            "executor": "search-concepts-v1",
+            "settings": settings.model_dump(mode="json"),
+            "model": oci_service.get_enterprise_ai_settings().model,
+        }
     if kind == "EMBED":
         # Imported lazily to keep repository/config modules acyclic at import time.
         from app.rag.pipeline_repository import pipeline_repository
@@ -71,4 +82,3 @@ def stage_config_payload(kind: str, component: str) -> dict[str, Any]:
 
 def stage_config_hash(kind: str, component: str) -> str:
     return stable_hash_value(stage_config_payload(kind, component))
-

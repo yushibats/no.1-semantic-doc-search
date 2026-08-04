@@ -860,7 +860,19 @@ def provision_system_tables(*, recreate: bool = False) -> dict[str, object]:
         return {**before, "recreated": False, "created_tables": []}
     if before["status"] != "missing" and not recreate:
         raise ValueError("SDS schema is partial or outdated; migration is required")
+    feature_drop: dict[str, object] = {
+        "dropped_tables": [],
+        "destructive": False,
+    }
     if recreate:
+        # Feature tables reference the base schema.  Drop them immediately
+        # before the confirmed base rebuild so they are recreated with all
+        # foreign keys intact instead of surviving CASCADE with constraints lost.
+        from app.rag.document_metadata_schema import (
+            drop_document_library_schema_for_recreate,
+        )
+
+        feature_drop = drop_document_library_schema_for_recreate()
         names = tuple(dict.fromkeys((*system_table_names(), *LEGACY_TABLES)))
         with database_service.pool_manager.acquire_connection() as connection:
             with connection.cursor() as cursor:
@@ -888,6 +900,7 @@ def provision_system_tables(*, recreate: bool = False) -> dict[str, object]:
         **after,
         "recreated": recreate,
         "created_tables": list(system_table_names()),
+        "document_library_recreate": feature_drop,
     }
 
 

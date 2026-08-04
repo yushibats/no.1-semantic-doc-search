@@ -6,6 +6,9 @@ import { createServer } from 'vite';
 
 let authModule;
 let dbModule;
+let documentLibraryModule;
+let metadataSettingsModule;
+let pipelineModule;
 let retrievalSettingsModule;
 let searchModule;
 let stateModule;
@@ -21,7 +24,8 @@ before(async () => {
     document: dom.window.document,
     localStorage: dom.window.localStorage,
     FileReader: dom.window.FileReader,
-    FormData: dom.window.FormData
+    FormData: dom.window.FormData,
+    CSS: dom.window.CSS || { escape: value => String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&') }
   });
   vite = await createServer({
     root: process.cwd(),
@@ -31,10 +35,695 @@ before(async () => {
   });
   authModule = await vite.ssrLoadModule('/src/modules/auth.js');
   dbModule = await vite.ssrLoadModule('/src/modules/db.js');
+  documentLibraryModule = await vite.ssrLoadModule('/src/modules/document-library.js');
+  metadataSettingsModule = await vite.ssrLoadModule('/src/modules/metadata-settings.js');
+  pipelineModule = await vite.ssrLoadModule('/src/modules/pipeline.js');
   retrievalSettingsModule = await vite.ssrLoadModule('/src/modules/retrieval-settings.js');
   searchModule = await vite.ssrLoadModule('/src/modules/search.js');
   stateModule = await vite.ssrLoadModule('/src/state.js');
   utilsModule = await vite.ssrLoadModule('/src/modules/utils.js');
+});
+
+test('文書一覧の索引状態はJob失敗を処理中ではなく失敗として表示する', () => {
+  assert.equal(documentLibraryModule.pipelineLabel({
+    status: 'PROCESSING',
+    processing: { document_status: 'FAILED' }
+  }), '失敗');
+  assert.equal(documentLibraryModule.pipelineLabel({
+    status: 'INDEXED',
+    processing: { document_status: 'UPDATE_FAILED' }
+  }), '更新失敗');
+});
+
+test('処理詳細はOCR・MinerU・VLM・埋め込みを利用者向け工程名にする', () => {
+  assert.equal(documentLibraryModule.processingStepLabel({ kind: 'MINERU_PARSE' }), 'MinerU解析');
+  assert.equal(documentLibraryModule.processingStepLabel({ kind: 'OCR' }), 'OCR');
+  assert.equal(documentLibraryModule.processingStepLabel({ kind: 'VLM', component_key: 'vlm:2' }), 'VLM抽出（プロファイル 2）');
+  assert.equal(documentLibraryModule.processingStepLabel({ kind: 'EMBED', component_key: 'embedding:image' }), '埋め込み（image）');
+  assert.equal(documentLibraryModule.processingStepLabel({ kind: 'CONCEPT', component_key: 'concepts' }), 'AI検索候補抽出');
+});
+
+test('検索画面はタグ・自然言語を主操作にして詳細設定を折りたたむ', async () => {
+  const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
+  const page = new JSDOM(html);
+  const document = page.window.document;
+  const settings = document.getElementById('searchAdvancedSettings');
+  const metadata = document.getElementById('metadataSearchFilters');
+  const concepts = document.getElementById('searchConceptPanel');
+
+  assert.equal(settings.tagName, 'DETAILS');
+  assert.equal(settings.open, false);
+  assert.match(settings.querySelector('summary').textContent, /検索設定/);
+  for (const id of ['topK', 'minScore', 'filenameFilter', 'searchRetrievalModes', 'searchVlmVerify']) {
+    assert.ok(settings.querySelector('#' + id), id + ' must be inside search settings');
+  }
+
+  assert.equal(concepts.tagName, 'DETAILS');
+  assert.equal(concepts.open, false);
+  assert.match(concepts.querySelector('summary').textContent, /タグから検索/);
+  assert.ok(document.getElementById('searchConceptRequireAll'));
+  assert.match(concepts.textContent, /文章を入力しなくても、タグだけで検索できます/);
+  assert.match(styles, /\.selected-search-concepts\[hidden\][\s\S]*\.search-concept-query-status\[hidden\]\s*\{\s*display:\s*none;/);
+
+  assert.match(document.getElementById('searchTypeTextTab').textContent, /自然言語で検索/);
+  assert.match(document.querySelector('label[for="searchQuery"]').textContent, /文章で入力/);
+  assert.match(metadata.querySelector('summary').textContent, /フォルダ・カテゴリ・顧客・年月/);
+  assert.match(metadata.textContent, /カテゴリ（すべて満たす）/);
+  assert.doesNotMatch(metadata.querySelector('summary').textContent, /タグ/);
+
+  const auxiliary = document.querySelector('.search-auxiliary-options');
+  const textPanel = document.getElementById('textSearchPanel');
+  assert.ok(auxiliary);
+  assert.match(auxiliary.querySelector('.search-auxiliary-label').textContent, /絞り込み・詳細設定/);
+  assert.equal(document.getElementById('searchQuery').placeholder, '例: 開放的なLDK、アイランドキッチン');
+  assert.equal(metadata.closest('.search-auxiliary-options'), auxiliary);
+  assert.equal(settings.closest('.search-auxiliary-options'), auxiliary);
+  assert.ok(concepts.classList.contains('search-primary-concept-panel'));
+  assert.ok(textPanel.classList.contains('search-primary-query-panel'));
+  assert.ok(concepts.compareDocumentPosition(auxiliary) & page.window.Node.DOCUMENT_POSITION_FOLLOWING);
+  assert.ok(textPanel.compareDocumentPosition(auxiliary) & page.window.Node.DOCUMENT_POSITION_FOLLOWING);
+});
+
+test('入力文からAIが返した既存検索条件だけに候補を絞り込む', async () => {
+  document.body.innerHTML = `
+    <details id="searchConceptPanel">
+      <small id="searchConceptSummaryCount"></small>
+      <small id="searchConceptQueryStatus" hidden></small>
+      <div id="selectedSearchConcepts"></div>
+      <div id="searchConceptFacets"></div>
+    </details>
+  `;
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    const body = String(url).endsWith('/search/v2/filters')
+      ? {
+          v2_retrieval_active: true,
+          document_library_ready: true,
+          fields: [],
+          folders: [],
+          tag_groups: [],
+          tags: [],
+          customer_suggestions: [],
+          date_bounds: {},
+          search_concept_settings: { enabled: true, initial_display_limit: 8 },
+          search_concepts: [
+            {
+              concept_id: 'isolated-kitchen',
+              display_label: '独立した厨房',
+              facet: 'BEFORE',
+              category_code: 'kitchen',
+              category_name: 'キッチン・LDK',
+              status: 'ACTIVE',
+              support_set_count: 1
+            },
+            {
+              concept_id: 'south-european',
+              display_label: '南欧風',
+              facet: 'OTHER',
+              category_code: 'design',
+              category_name: 'デザイン',
+              status: 'ACTIVE',
+              support_set_count: 1
+            },
+            {
+              concept_id: 'family-time',
+              display_label: '家族の団らん',
+              facet: 'AFTER',
+              category_code: 'lifestyle',
+              category_name: '暮らし',
+              status: 'ACTIVE',
+              support_set_count: 2
+            },
+            {
+              concept_id: 'storage',
+              display_label: '玄関収納増設',
+              facet: 'AFTER',
+              category_code: 'storage',
+              category_name: '収納',
+              status: 'ACTIVE',
+              support_set_count: 1
+            }
+          ],
+          retrieval_modes: []
+        }
+      : {
+          concept_ids: ['family-time'],
+          source: 'AI',
+          message: '1件の関連候補を抽出しました'
+        };
+    return { ok: true, status: 200, json: async () => body };
+  };
+
+  await searchModule.loadDynamicSearchFilters();
+  const facetRoot = document.getElementById('searchConceptFacets');
+  assert.ok(facetRoot.querySelector('[data-facet="BEFORE"]'));
+  assert.ok(facetRoot.querySelector('[data-facet="AFTER"]'));
+  assert.ok(facetRoot.querySelector('[data-facet="OTHER"]'));
+  searchModule.filterSearchConcepts('家族が一緒にくつろげるリビング');
+  await new Promise(resolve => setTimeout(resolve, 650));
+
+  const suggestionRequest = requests.find(item => item.url.endsWith('/search/v2/concepts/suggest'));
+  assert.deepEqual(suggestionRequest.body, {
+    query: '家族が一緒にくつろげるリビング',
+    limit: 24
+  });
+  assert.match(document.getElementById('searchConceptFacets').textContent, /家族の団らん/);
+  assert.doesNotMatch(document.getElementById('searchConceptFacets').textContent, /玄関収納増設/);
+  assert.match(document.getElementById('searchConceptQueryStatus').textContent, /1件/);
+});
+
+
+test("要確認候補は折りたたみ・全幅表示され、一括承認でも画面を再描画しない", async () => {
+  document.body.innerHTML = "<div id=\"metadataSettingsRoot\"></div>";
+  const pendingConcepts = ["concept-1", "concept-2", "concept-3"].map((conceptId, index) => ({
+    concept_id: conceptId,
+    facet: index === 0 ? "BEFORE" : "AFTER",
+    category_code: "category",
+    category_name: "カテゴリ",
+    display_label: `候補${index + 1}`,
+    normalized_label: `候補${index + 1}`,
+    status: "PENDING",
+    support_document_count: index + 1,
+    support_set_count: 1
+  }));
+  const patchRequests = [];
+  window.UIComponents = { showToast() {} };
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+    let body = [];
+    if (value.includes("/settings/search-concepts") && (options.method || "GET") === "GET") {
+      body = { enabled: true, auto_publish: false, prompt_text: "test" };
+    } else if (value.includes("/search-concepts?status=PENDING")) {
+      body = pendingConcepts;
+    }
+    if (options.method === "PATCH") {
+      patchRequests.push({ url: value, body: JSON.parse(options.body) });
+    }
+    return { ok: true, status: 200, json: async () => body };
+  };
+
+  await metadataSettingsModule.loadMetadataSettings();
+  const root = document.getElementById("metadataSettingsRoot");
+  const review = document.getElementById("pendingConceptReview");
+  assert.equal(review.open, false);
+  assert.ok(review.querySelector(".metadata-settings-single-table"));
+
+  review.open = true;
+  metadataSettingsModule.togglePendingConceptSelection("concept-1", true);
+  metadataSettingsModule.togglePendingConceptSelection("concept-2", true);
+  await metadataSettingsModule.setSelectedConceptStatus("ACTIVE");
+
+  assert.equal(document.getElementById("metadataSettingsRoot"), root);
+  assert.equal(review.open, true);
+  assert.equal(document.querySelectorAll("[data-pending-concept]").length, 1);
+  assert.deepEqual(patchRequests.slice(0, 2), [
+    {
+      url: "/ai/api/document-library/settings/search-concepts/concept-1",
+      body: { status: "ACTIVE" }
+    },
+    {
+      url: "/ai/api/document-library/settings/search-concepts/concept-2",
+      body: { status: "ACTIVE" }
+    }
+  ]);
+
+  await metadataSettingsModule.setConceptStatus("concept-3", "HIDDEN");
+  assert.equal(document.getElementById("metadataSettingsRoot"), root);
+  assert.equal(document.querySelectorAll("[data-pending-concept]").length, 0);
+  assert.match(document.getElementById("pendingConceptSummaryText").textContent, /要確認候補はありません/);
+});
+
+test('処理詳細ダイアログは失敗工程・原因・対象外工程を区別して表示する', async () => {
+  document.body.innerHTML = '';
+  const dialogPrototype = Object.getPrototypeOf(document.createElement('dialog'));
+  const originalShowModal = dialogPrototype.showModal;
+  const originalClose = dialogPrototype.close;
+  const openedDialogs = [];
+  dialogPrototype.showModal = function showModalForTest() {
+    this.setAttribute('open', '');
+    openedDialogs.push(this.id);
+  };
+  dialogPrototype.close = function closeForTest() {
+    this.removeAttribute('open');
+    this.dispatchEvent(new window.Event('close'));
+  };
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      document_status: 'FAILED',
+      job: {
+        job_id: 'job-1',
+        status: 'PARTIAL_FAILED',
+        affected_object_count: 1,
+        updated_at: '2026-08-03T00:00:00Z',
+        steps: [
+          { kind: 'RENDER', component_key: 'render', status: 'SUCCEEDED', attempt_count: 1 },
+          { kind: 'MINERU_PARSE', component_key: 'mineru', status: 'FAILED', attempt_count: 1, error_summary: 'GPU APIへ接続できません' },
+          { kind: 'NORMALIZE', component_key: 'normalize', status: 'BLOCKED', attempt_count: 0 }
+        ]
+      }
+    })
+  });
+
+  await documentLibraryModule.showProcessingDetails('doc-1', 'sample.pdf');
+
+  const dialogText = document.getElementById('documentProcessingDialog').textContent;
+  assert.match(dialogText, /MinerU解析で失敗しました/);
+  assert.match(dialogText, /GPU APIへ接続できません/);
+  assert.match(dialogText, /OCR/);
+  assert.match(dialogText, /VLM抽出/);
+  assert.match(dialogText, /対象外/);
+  const retryButton = document.getElementById('documentProcessingRetry');
+  assert.equal(retryButton.hidden, false);
+  assert.match(retryButton.textContent, /GPU関連工程から再試行/);
+
+  let retryRequest;
+  window.UIComponents = {
+    showToast() {}
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    if (options.method === 'POST') {
+      retryRequest = { url, method: options.method };
+      return { ok: true, status: 202, json: async () => ({ success: true, job_id: 'job-2' }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        document_status: 'PROCESSING',
+        job: {
+          job_id: 'job-2',
+          status: 'QUEUED',
+          affected_object_count: 1,
+          steps: [
+            { kind: 'MINERU_PARSE', component_key: 'mineru', status: 'QUEUED', attempt_count: 0 },
+            { kind: 'NORMALIZE', component_key: 'normalize', status: 'QUEUED', attempt_count: 0 }
+          ]
+        }
+      })
+    };
+  };
+
+  const retryPromise = documentLibraryModule.retryProcessingJob();
+  await Promise.resolve();
+  const retryConfirmDialog = document.getElementById('processingRetryConfirmDialog');
+  assert.equal(retryConfirmDialog.tagName, 'DIALOG');
+  assert.equal(retryConfirmDialog.open, true);
+  assert.equal(document.getElementById('documentProcessingDialog').open, true);
+  assert.deepEqual(openedDialogs, ['documentProcessingDialog', 'processingRetryConfirmDialog']);
+  retryConfirmDialog.querySelector('[data-retry-confirm]').click();
+  await retryPromise;
+
+  assert.equal(retryRequest.method, 'POST');
+  assert.match(String(retryRequest.url), /\/ai\/api\/pipeline\/jobs\/job-1\/retry$/);
+  assert.match(document.getElementById('documentProcessingDialog').textContent, /待っています/);
+  documentLibraryModule.closeProcessingDetails();
+  if (originalShowModal) dialogPrototype.showModal = originalShowModal;
+  else delete dialogPrototype.showModal;
+  if (originalClose) dialogPrototype.close = originalClose;
+  else delete dialogPrototype.close;
+  window.UIComponents = undefined;
+});
+
+test('処理詳細は全体工程と追加Jobをタブで切り替える', async () => {
+  document.body.innerHTML = '';
+  const originalSteps = [
+    { kind: 'RENDER', component_key: 'render', status: 'SUCCEEDED', attempt_count: 1 },
+    { kind: 'VLM', component_key: 'vlm:1', status: 'SUCCEEDED', attempt_count: 1 },
+    { kind: 'EMBED', component_key: 'embedding:image', status: 'SUCCEEDED', attempt_count: 1 },
+    { kind: 'PUBLISH', component_key: 'publish', status: 'SUCCEEDED', attempt_count: 1 },
+    { kind: 'CONCEPT', component_key: 'concepts', status: 'FAILED', attempt_count: 1, error_summary: '一時エラー' }
+  ];
+  const additionalSteps = [
+    { kind: 'CONCEPT', component_key: 'concepts', status: 'SUCCEEDED', attempt_count: 1 }
+  ];
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      document_status: 'INDEXED',
+      overall_job_id: 'job-original',
+      job: {
+        job_id: 'job-retry',
+        status: 'SUCCEEDED',
+        is_additional: true,
+        tab_label: '追加Job 1',
+        affected_object_count: 1,
+        steps: additionalSteps
+      },
+      job_history: [
+        {
+          job_id: 'job-original',
+          status: 'PARTIAL_FAILED',
+          is_additional: false,
+          tab_label: '全体工程',
+          affected_object_count: 1,
+          steps: originalSteps
+        },
+        {
+          job_id: 'job-retry',
+          status: 'SUCCEEDED',
+          is_additional: true,
+          tab_label: '追加Job 1',
+          affected_object_count: 1,
+          steps: additionalSteps
+        }
+      ]
+    })
+  });
+
+  await documentLibraryModule.showProcessingDetails('doc-history', 'plan.pdf');
+
+  const dialog = document.getElementById('documentProcessingDialog');
+  assert.equal(dialog.querySelectorAll('.document-processing-tabs button').length, 2);
+  assert.match(dialog.querySelector('.document-processing-tabs button.active').textContent, /追加Job 1/);
+  assert.match(dialog.textContent, /追加Jobが完了しました/);
+  assert.match(dialog.textContent, /追加Jobで実行した工程だけ/);
+  assert.doesNotMatch(dialog.querySelector('#documentProcessingBody').textContent, /VLM抽出/);
+
+  documentLibraryModule.selectProcessingJob('job-original');
+
+  assert.match(dialog.querySelector('.document-processing-tabs button.active').textContent, /全体工程/);
+  assert.match(dialog.textContent, /最初に計画された一連の工程/);
+  assert.match(dialog.textContent, /VLM抽出（プロファイル 1）/);
+  assert.match(dialog.textContent, /索引公開/);
+  assert.equal(document.getElementById('documentProcessingRetry').hidden, true);
+  documentLibraryModule.closeProcessingDetails();
+});
+
+
+test('現在の文書一覧でDraftのページ画像とページ別生成テキストを表示する', async () => {
+  document.body.innerHTML = `
+    <div id="documentFolderTree"></div>
+    <span id="documentsStatusBadge"></span>
+    <span id="documentsFileCountBadge"></span>
+    <span id="documentsPageImageCountBadge"></span>
+    <div id="documentsList"></div>
+    <input id="libraryIncludeDescendants" type="checkbox" checked>
+    <input id="libraryQuery" value="">
+  `;
+  window.UIComponents = { showToast() {} };
+  localStorage.setItem('loginToken', 'token');
+
+  globalThis.fetch = async url => {
+    const value = String(url);
+    if (value.includes('/document-library/folders')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ([{
+          folder_id: 'folder_root',
+          name: 'ルート',
+          is_system: true,
+          document_count: 1,
+          descendant_document_count: 1,
+          children: [{
+            folder_id: 'folder-remodel',
+            name: 'リフォーム',
+            is_system: false,
+            document_count: 1,
+            descendant_document_count: 1,
+            children: []
+          }]
+        }])
+      };
+    }
+    if (value.includes('/settings/tag-groups') || value.includes('/settings/tags')) {
+      return { ok: true, status: 200, json: async () => [] };
+    }
+    if (value.includes('/document-library/document-sets')) {
+      return { ok: true, status: 200, json: async () => [] };
+    }
+    if (value.includes('/document-library/documents?')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [{
+            document_id: 'doc-pages',
+            object_name: 'documents/doc-pages/source.pdf',
+            file_name: 'source.pdf',
+            bucket: 'bucket',
+            file_size: 1024,
+            status: 'FAILED',
+            metadata: {
+              folder_id: 'folder-remodel',
+              folder_name: 'リフォーム',
+              customer_name_raw: '',
+              document_year: null,
+              document_month: null,
+              tags: [],
+              row_version: 1
+            },
+            processing: { document_status: 'FAILED' }
+          }],
+          total: 1,
+          page: 1,
+          total_pages: 1
+        })
+      };
+    }
+    if (value.includes('/document-library/ingest/active-batches')) {
+      return { ok: true, status: 200, json: async () => [] };
+    }
+    if (value.includes('/documents/doc-pages/page-images')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          document_id: 'doc-pages',
+          object_name: 'documents/doc-pages/source.pdf',
+          revision_id: 'revision-draft',
+          release_id: 'release-draft',
+          release_status: 'DRAFT',
+          stage_status: 'SUCCEEDED',
+          total: 1,
+          items: [{
+            artifact_id: 'artifact-1',
+            page_number: 1,
+            media_type: 'image/png',
+            size: 2048,
+            content_sha256: 'hash',
+            created_at: '2026-08-03T00:00:00Z',
+            stage_status: 'SUCCEEDED'
+          }],
+          pagination: {
+            current_page: 1,
+            page_size: 50,
+            total: 1,
+            total_pages: 1,
+            has_next: false,
+            has_prev: false
+          }
+        })
+      };
+    }
+    if (value.includes('/documents/doc-pages/page-texts')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          document_id: 'doc-pages',
+          selector: 'latest',
+          release_id: 'release-draft',
+          release_status: 'DRAFT',
+          page_number: 1,
+          items: [
+            {
+              component_key: 'native',
+              artifact_kind: 'NATIVE_TEXT',
+              page_number: 1,
+              raw_text: 'ネイティブ抽出結果',
+              payload_json: null,
+              created_at: '2026-08-03T00:00:00Z',
+              stage_status: 'SUCCEEDED'
+            },
+            {
+              component_key: 'vlm:1',
+              artifact_kind: 'VLM_TEXT',
+              page_number: 1,
+              raw_text: 'VLM生成結果',
+              payload_json: { kind: 'plan' },
+              created_at: '2026-08-03T00:00:00Z',
+              stage_status: 'SUCCEEDED'
+            }
+          ]
+        })
+      };
+    }
+    throw new Error(`unexpected request: ${value}`);
+  };
+
+  await documentLibraryModule.loadDocumentLibrary();
+  assert.match(document.getElementById('documentsList').textContent, /ページを表示/);
+  const documentLine = document.querySelector('.document-library-document-line');
+  assert.ok(documentLine);
+  const documentMeta = documentLine.querySelector('.document-library-document-meta');
+  assert.ok(documentMeta);
+  assert.equal(documentLine.querySelector('strong')?.nextElementSibling, documentMeta);
+  assert.equal(documentMeta.querySelector('.metadata-chip-list')?.parentElement, documentMeta);
+  assert.equal(documentMeta.querySelector('.document-pages-toggle')?.parentElement, documentMeta);
+
+  await documentLibraryModule.toggleDocumentPages('doc-pages');
+  const panel = document.getElementById('document-pages-panel-doc-pages');
+  assert.match(panel.textContent, /Draft/);
+  assert.match(panel.textContent, /ページ 1/);
+  assert.match(panel.textContent, /生成テキスト/);
+  assert.equal(panel.querySelectorAll('.document-page-card').length, 1);
+  assert.match(panel.querySelector('img').src, /release-draft/);
+
+  await documentLibraryModule.previewDocumentPageTexts('doc-pages', 1);
+  const modal = document.getElementById('textPreviewModalOverlay');
+  assert.match(modal.textContent, /ネイティブ抽出/);
+  assert.match(modal.textContent, /ネイティブ抽出結果/);
+  assert.match(modal.textContent, /VLMプロファイル 1/);
+  modal.remove();
+  window.UIComponents = undefined;
+});
+
+test('未完了アップロードを通知し解析済み項目を再利用して残りだけ再開する', async () => {
+  document.body.innerHTML = `
+    <div id="documentFolderTree"></div>
+    <div id="ingestReviewRoot" style="display:none"></div>
+    <span id="documentsStatusBadge"></span>
+    <span id="documentsFileCountBadge"></span>
+    <span id="documentsPageImageCountBadge"></span>
+    <div id="documentsList"></div>
+    <input id="libraryIncludeDescendants" type="checkbox" checked>
+    <input id="libraryQuery" value="">
+  `;
+  window.UIComponents = { showToast() {} };
+  localStorage.setItem('loginToken', 'token');
+  let classifyRequests = 0;
+  let resolveClassification;
+  const item = (id, complete) => ({
+    item_id: id,
+    batch_id: 'batch-active',
+    document_id: `document-${id}`,
+    original_filename: `${id}.jpg`,
+    object_name: `documents/${id}/source.jpg`,
+    media_type: 'image/jpeg',
+    file_size: 100,
+    state: complete ? 'REVIEW_REQUIRED' : 'RULE_CLASSIFIED',
+    folder_id: 'folder-new',
+    rule_result: null,
+    llm_result: complete ? { preview: {} } : null,
+    review: complete ? { customer_name_raw: '保持する顧客名' } : {},
+    candidates: [],
+    error_summary: null,
+    row_version: 1
+  });
+  const items = [item('done-1', true), item('done-2', true), item('pending-1', false)];
+
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+    if (value.includes('/document-library/folders')) {
+      return { ok: true, status: 200, json: async () => ([{
+        folder_id: 'folder_root', name: 'ルート', is_system: true,
+        document_count: 0, descendant_document_count: 0,
+        children: [{ folder_id: 'folder-new', name: '新築', is_system: false, document_count: 0, descendant_document_count: 0, children: [] }]
+      }]) };
+    }
+    if (value.includes('/settings/tag-groups') || value.includes('/settings/tags')) {
+      return { ok: true, status: 200, json: async () => [] };
+    }
+    if (value.includes('/document-library/document-sets')) {
+      return { ok: true, status: 200, json: async () => [] };
+    }
+    if (value.includes('/document-library/documents?')) {
+      return { ok: true, status: 200, json: async () => ({ items: [], total: 0, page: 1, total_pages: 1 }) };
+    }
+    if (value.includes('/ingest/active-batches')) {
+      return { ok: true, status: 200, json: async () => ([{
+        batch_id: 'batch-active', status: 'REVIEW_REQUIRED',
+        target_folder_id: 'folder-new', target_folder_name: '新築',
+        total_items: 3, analysis_completed_items: 2, analysis_pending_items: 1,
+        registered_items: 0, discardable: true, updated_at: '2026-08-03T00:07:00Z'
+      }]) };
+    }
+    if (value.endsWith('/ingest/batches/batch-active')) {
+      return { ok: true, status: 200, json: async () => ({
+        batch: { batch_id: 'batch-active', status: 'REVIEW_REQUIRED', target_folder_id: 'folder-new', total_items: 3 },
+        items
+      }) };
+    }
+    if (value.includes('/ingest/items/pending-1/classify') && options.method === 'POST') {
+      classifyRequests += 1;
+      return new Promise(resolve => {
+        resolveClassification = () => resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ ...items[2], state: 'REVIEW_REQUIRED', llm_result: { preview: {} } })
+        });
+      });
+    }
+    if (value.includes('/customer-name-normalize?')) {
+      return { ok: true, status: 200, json: async () => ({ similarity_warning: false, similar_names: [] }) };
+    }
+    if (value.includes('/ingest/items/') && options.method === 'PATCH') {
+      return { ok: false, status: 409, json: async () => ({ detail: '取込項目が他の操作で更新されました' }) };
+    }
+    throw new Error(`unexpected request: ${value}`);
+  };
+
+  await documentLibraryModule.loadDocumentLibrary();
+  assert.match(document.getElementById('ingestReviewRoot').textContent, /未完了のアップロードがあります/);
+  assert.match(document.getElementById('ingestReviewRoot').textContent, /先行解析 2\/3/);
+
+  const resumePromise = documentLibraryModule.resumeActiveIngestBatch('batch-active');
+  while (!resolveClassification) await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(classifyRequests, 1);
+  assert.equal(document.getElementById('confirmIngestButton').disabled, true);
+  assert.match(document.getElementById('confirmIngestButton').textContent, /解析完了後/);
+  resolveClassification();
+  await resumePromise;
+
+  assert.equal(classifyRequests, 1);
+  assert.equal(document.getElementById('confirmIngestButton').disabled, false);
+  assert.equal(document.querySelector('[data-ingest-item="done-1"] [data-review-customer]').value, '保持する顧客名');
+
+  await documentLibraryModule.confirmCurrentBatch();
+  assert.match(document.getElementById('ingestReviewError').textContent, /取込項目が他の操作で更新されました/);
+  window.UIComponents = undefined;
+});
+
+test('取込項目の解析完了判定はLLM結果または完了後状態を使用する', () => {
+  assert.equal(documentLibraryModule.ingestItemAnalysisComplete({ state: 'RULE_CLASSIFIED', llm_result: null }), false);
+  assert.equal(documentLibraryModule.ingestItemAnalysisComplete({ state: 'REVIEW_REQUIRED', llm_result: null }), true);
+  assert.equal(documentLibraryModule.ingestItemAnalysisComplete({ state: 'RULE_CLASSIFIED', llm_result: {} }), true);
+});
+
+test('アップロード確認表で顧客名と年月を上下の行から個別にコピーする', () => {
+  const row = (id, customer, year, month) => `<tr data-ingest-item="${id}">
+    <td><div class="ingest-review-value"><input data-review-customer value="${customer}"><button type="button">顧客コピー</button></div></td>
+    <td><div class="ingest-review-value"><input data-review-year value="${year}"><input data-review-month value="${month}"><button type="button">年月コピー</button></div></td>
+  </tr>`;
+  document.body.innerHTML = `<table><tbody>
+    ${row('first', '顧客A', '2024', '1')}
+    ${row('middle', '', '2023', '6')}
+    ${row('last', '顧客C', '2025', '12')}
+  </tbody></table>`;
+
+  const middle = document.querySelector('[data-ingest-item="middle"]');
+  const customerButton = middle.querySelectorAll('button')[0];
+  const dateButton = middle.querySelectorAll('button')[1];
+
+  documentLibraryModule.copyAdjacentReviewValue(customerButton, 'customer', -1);
+  assert.equal(middle.querySelector('[data-review-customer]').value, '顧客A');
+  assert.equal(middle.querySelector('[data-review-year]').value, '2023');
+  assert.equal(middle.querySelector('[data-review-month]').value, '6');
+
+  documentLibraryModule.copyAdjacentReviewValue(dateButton, 'date', 1);
+  assert.equal(middle.querySelector('[data-review-customer]').value, '顧客A');
+  assert.equal(middle.querySelector('[data-review-year]').value, '2025');
+  assert.equal(middle.querySelector('[data-review-month]').value, '12');
+
+  const firstCustomer = document.querySelector('[data-ingest-item="first"] [data-review-customer]');
+  documentLibraryModule.copyAdjacentReviewValue(document.querySelector('[data-ingest-item="first"] button'), 'customer', -1);
+  assert.equal(firstCustomer.value, '顧客A');
 });
 
 after(async () => {
@@ -137,14 +826,16 @@ test('検索方式の利用可否と無効理由をフィルターAPIから反�
 
 test('検索方式が未選択なら送信せずインラインエラーを表示する', async () => {
   document.body.innerHTML = `
-    <fieldset id="searchRetrievalModes">
-      <input type="checkbox" name="retrievalMode" value="oracle_text">
-      <input type="checkbox" name="retrievalMode" value="text_vector">
-      <input type="checkbox" name="retrievalMode" value="vlm_text">
-      <input type="checkbox" name="retrievalMode" value="vlm_vector">
-      <input type="checkbox" name="retrievalMode" value="visual_vector">
-    </fieldset>
-    <p id="searchRetrievalModesError" role="alert" hidden></p>
+    <details id="searchAdvancedSettings">
+      <fieldset id="searchRetrievalModes">
+        <input type="checkbox" name="retrievalMode" value="oracle_text">
+        <input type="checkbox" name="retrievalMode" value="text_vector">
+        <input type="checkbox" name="retrievalMode" value="vlm_text">
+        <input type="checkbox" name="retrievalMode" value="vlm_vector">
+        <input type="checkbox" name="retrievalMode" value="visual_vector">
+      </fieldset>
+      <p id="searchRetrievalModesError" role="alert" hidden></p>
+    </details>
     <textarea id="searchQuery">照明</textarea>
     <input id="filenameFilter" value=""><input id="topK" value="10"><input id="minScore" value="0.35">
     <button id="textSearchSubmitBtn"><span>検索実行</span></button>
@@ -159,6 +850,7 @@ test('検索方式が未選択なら送信せずインラインエラーを表�
   assert.equal(document.getElementById('searchRetrievalModes').getAttribute('aria-invalid'), 'true');
   assert.equal(document.getElementById('searchRetrievalModesError').hidden, false);
   assert.match(document.getElementById('searchRetrievalModesError').textContent, /1つ以上/);
+  assert.equal(document.getElementById('searchAdvancedSettings').open, true);
 });
 
 test('検索方式の選択はタブ切替とクリア後も維持する', () => {
@@ -452,7 +1144,72 @@ test('検索結果はアップロード用プレフィクスを隠して元フ�
   assert.equal(document.querySelector('.search-result-filename').textContent.trim(), '設備・内装商品カタログ2026年1月版.pdf');
   assert.equal(document.querySelector('.search-result-path'), null);
   assert.doesNotMatch(document.getElementById('searchResultsList').textContent, /20260709_215027_e18cabda_/);
-  assert.match(document.getElementById('searchResultsList').textContent, /検索順位順/);
+  assert.match(document.getElementById('searchResultsList').textContent, /ページ単位の画像一致はありません/);
+});
+
+test('同じ案件の関連資料は小型サムネイルを表示しクリックで拡大できる', async () => {
+  document.body.innerHTML = `
+    <div id="searchResults" style="display:none"><span id="searchResultsSummary"></span><div id="searchResultsList"></div></div>
+  `;
+
+  searchModule.displaySearchResults({
+    results: [{
+      file_id: 'direct-1', bucket: 'bucket', object_name: 'direct.pdf',
+      original_filename: 'direct.pdf', match_percent: 80, matched_images: [],
+      group_key: 'set:set-1'
+    }],
+    groups: [{
+      group_key: 'set:set-1', document_set_id: 'set-1', label: '案件A',
+      direct_document_ids: ['direct-1'],
+      related_documents: [{
+        file_id: 'related-1', bucket: 'bucket', object_name: 'related.pdf',
+        original_filename: '関連資料.pdf', matched_images: [],
+        thumbnail_object_name: 'documents/related/page_001.png',
+        thumbnail_page_number: 1
+      }]
+    }],
+    total_groups: 1, total_files: 1, total_images: 0, processing_time: 0.1
+  });
+
+  const thumbnail = document.querySelector('.search-related-thumbnail');
+  assert.ok(thumbnail);
+  assert.match(thumbnail.querySelector('img').getAttribute('src'), /documents\/related\/page_001\.png/);
+  searchModule.showRelatedDocumentThumbnail(0, 0);
+  assert.match(document.getElementById('imageModalImg').getAttribute('src'), /documents\/related\/page_001\.png/);
+  assert.match(document.getElementById('imageModalImg').getAttribute('alt'), /関連資料\.pdf/);
+  document.getElementById('imageModalOverlay')?.remove();
+
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.search-related-thumbnail \{[^}]*height: 30px/);
+});
+
+test('AI検索候補による文書全体一致は空のページ枠ではなく代表画像を表示する', () => {
+  document.body.innerHTML = `
+    <div id="searchResults" style="display:none"><span id="searchResultsSummary"></span><div id="searchResultsList"></div></div>
+  `;
+
+  searchModule.displaySearchResults({
+    results: [{
+      file_id: 'concept-document', bucket: 'bucket', object_name: 'proposal.pdf',
+      original_filename: '提案資料.pdf', match_percent: 84.2, matched_images: [],
+      matched_concept_ids: ['concept-kitchen'],
+      thumbnail_object_name: 'documents/proposal/page_001.png',
+      thumbnail_page_number: 1
+    }],
+    total_files: 1, total_images: 0, processing_time: 0.1
+  });
+
+  const card = document.querySelector('.search-result-card');
+  assert.match(card.textContent, /文書全体一致/);
+  assert.match(card.textContent, /文書の代表画像/);
+  assert.doesNotMatch(card.textContent, /マッチしたページ画像/);
+  const representative = card.querySelector('.search-result-representative-card img');
+  assert.match(representative.getAttribute('src'), /documents\/proposal\/page_001\.png/);
+
+  searchModule.showSearchRepresentativeImage(0);
+  assert.match(document.getElementById('imageModalImg').getAttribute('src'), /documents\/proposal\/page_001\.png/);
+  assert.match(document.getElementById('imageModalImg').getAttribute('alt'), /提案資料\.pdf/);
+  document.getElementById('imageModalOverlay')?.remove();
 });
 
 test('検索結果がない場合は最小ベクトル類似度を下げるよう案内する', async () => {
@@ -657,7 +1414,7 @@ test('検索とアップロードの進捗は入力カードと結果カード�
   const processProgress = html.match(/<details id="processProgress"[^>]+>/)?.[0] || '';
   const documentsHeader = html.indexOf('登録済み文書');
 
-  assert.ok(searchHeader < verify && verify < textPanel);
+  assert.ok(searchHeader < textPanel && textPanel < verify);
   assert.ok(textPanel < searchProgress && searchProgress < searchResults);
   assert.doesNotMatch(progressMarkup, /cancelCurrentSearch|キャンセル/);
   assert.match(progressMarkup, /class="search-agent-progress retrieval-global-section"[\s\S]*<summary>/);
@@ -833,12 +1590,20 @@ test('VLMプロファイルは抽出プロンプト以外の検索設定を持�
   assert.match(profilePanel, /border-2 border-dashed border-gray-300/);
   assert.match(profilePanel, /handleDropForInput\(event, 'profile-test-image'\)/);
   assert.match(profilePanel, /profile-test-image-name/);
+  assert.match(profilePanel, /profile-test-file-name/);
+  assert.match(profilePanel, /profile-test-page-text/);
+  assert.match(profilePanel, /元ファイル名/);
+  assert.match(profilePanel, /ページテキスト（任意）/);
   assert.ok(profilePanel.indexOf('profile-enabled') < profilePanel.indexOf('profile-prompt'));
-  assert.doesNotMatch(profilePanel, /profile-name|profile-test-text|ページテキスト|VLM抽出プロファイル|最終反映/);
+  assert.doesNotMatch(profilePanel, /profile-name|profile-test-text|VLM抽出プロファイル|最終反映/);
   assert.doesNotMatch(profileTabs, /<small>|使用中|停止中/);
   assert.match(source, /if \(action === 'test-profile'.*utilsShowToast\('テスト用の画像を選択してください', 'warning'\);\s*return;/s);
   assert.ok(source.indexOf("utilsShowToast('テスト用の画像を選択してください'") < source.indexOf('utilsShowLoading(', source.indexOf('function bindEvents')));
-  assert.doesNotMatch(profilePanel, /MinerU|OCR|oracle_text|text_vector|visual_vector|profile-weight|対象範囲|フィールド定義|関係定義|同義語/);
+  assert.match(source, /image_media_type: image\.type/);
+  assert.match(source, /file_name: document\.getElementById\('profile-test-file-name'\)/);
+  assert.match(source, /page_text: document\.getElementById\('profile-test-page-text'\)/);
+  assert.match(source, /result\.empty_output/);
+  assert.doesNotMatch(profilePanel, /mineru-enabled|ocr-enabled|ocr-dots|oracle_text|text_vector|visual_vector|profile-weight|対象範囲|フィールド定義|関係定義|同義語/);
 });
 
 test('検索ルート重みは相対倍率として表示する', async () => {
@@ -1050,6 +1815,46 @@ test('パイプラインタスクは永続IDを復元し、キャンセルと失
   assert.match(auth, /window\.pipelineModule\?\.restore/);
 });
 
+test('失敗タスクを確認済みにすると保存一覧から削除して次回復元しない', async () => {
+  document.body.innerHTML = '';
+  localStorage.setItem('loginToken', 'token');
+  localStorage.setItem('sdsPipelineJobIds', JSON.stringify(['job-failed']));
+  window.UIComponents = { showToast() {} };
+  let fetchCount = 0;
+  globalThis.fetch = async url => {
+    fetchCount += 1;
+    assert.match(String(url), /\/pipeline\/jobs\/job-failed$/);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        job_id: 'job-failed',
+        status: 'FAILED',
+        total_steps: 1,
+        completed_steps: 0,
+        failed_steps: 1,
+        steps: [{
+          object_name: 'photo.jpg',
+          component_key: 'publish',
+          error_summary: '未実行: mineru_parse'
+        }]
+      })
+    };
+  };
+
+  await pipelineModule.restorePipelineJobs();
+  const acknowledge = [...document.querySelectorAll('[data-pipeline-action="acknowledge"]')][0];
+  assert.ok(acknowledge);
+  acknowledge.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(localStorage.getItem('sdsPipelineJobIds'), '[]');
+  assert.equal(document.getElementById('pipelineJobTray').hidden, true);
+  await pipelineModule.restorePipelineJobs();
+  assert.equal(fetchCount, 1);
+  window.UIComponents = undefined;
+});
+
 test('生成する両方のNginx API設定はSSEレスポンスをバッファしない', async () => {
   const source = await readFile(new URL('../../init_script.sh', import.meta.url), 'utf8');
   const apiLocations = [
@@ -1061,4 +1866,85 @@ test('生成する両方のNginx API設定はSSEレスポンスをバッファ�
     assert.match(location, /proxy_buffering off;/);
     assert.match(location, /proxy_cache off;/);
   }
+});
+
+test('登録済み文書は表示中の選択・一括移動・完全削除・FULL再処理を提供する', async () => {
+  const source = await readFile(new URL('../src/modules/document-library.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
+
+  assert.match(source, /id="librarySelectAll"/);
+  assert.match(source, /data-library-document-checkbox/);
+  assert.match(source, /bulkMoveSelectedDocuments/);
+  assert.match(source, /bulkDeleteSelectedDocuments/);
+  assert.match(source, /bulkReprocessSelectedDocuments/);
+  assert.match(source, /mode:\s*'FULL'/);
+  assert.match(source, /force:\s*true/);
+  assert.match(source, /現在有効な設定で初回登録時と同じ索引処理/);
+  assert.match(styles, /\.document-library-bulk-toolbar/);
+  assert.match(styles, /tr\.is-selected/);
+});
+
+test('検索ページ詳細は技術経路をメインから隠し、生成テキストと関連度内訳をポップアップ表示する', async () => {
+  document.body.innerHTML = `
+    <div id="searchResults" style="display:none"><span id="searchResultsSummary"></span><div id="searchResultsList"></div></div>
+  `;
+  const result = {
+    success: true,
+    query: '開放的なLDK',
+    total_files: 1,
+    total_images: 1,
+    total_groups: 1,
+    processing_time: 0.2,
+    result_order: 'search_rank',
+    groups: [{
+      group_key: 'set:1',
+      label: '案件A',
+      document_set_id: 'set-1',
+      direct_document_ids: ['doc-1'],
+      related_documents: [{
+        file_id: 'doc-2', bucket: 'bucket', object_name: 'documents/2/source.pdf',
+        original_filename: '関連.pdf', thumbnail_page_number: 1
+      }]
+    }],
+    results: [{
+      file_id: 'doc-1', bucket: 'bucket', object_name: 'documents/1/source.pdf',
+      original_filename: '提案.pdf', group_key: 'set:1', match_percent: 91,
+      matched_concept_ids: [], matched_images: [{
+        embed_id: 'evidence-1', bucket: 'bucket', object_name: 'page.png', page_number: 3,
+        url: '/ai/api/object/bucket/page.png', match_percent: 88,
+        image_similarity_percent: null, retrieval_channels: ['keyword:page_text'],
+        match_reasons: ['検索語がページ本文に一致'], verification_status: 'not_requested',
+        text_excerpt: '開放的なLDK', caption: ''
+      }]
+    }]
+  };
+
+  searchModule.displaySearchResults(result);
+  const list = document.getElementById('searchResultsList');
+  assert.ok(list.querySelector('.search-evidence-detail-button'));
+  assert.ok(list.querySelector('.search-related-document-actions'));
+  assert.match(list.textContent, /関連度: 88\.0%/);
+  assert.doesNotMatch(list.textContent, /keyword:page_text/);
+
+  globalThis.fetch = async url => {
+    assert.match(String(url), /\/documents\/doc-1\/page-texts/);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        items: [{
+          component_key: 'vlm:1', artifact_kind: 'VLM_TEXT', raw_text: '明るいLDK',
+          payload_json: { keywords: ['開放的なLDK'] }, stage_status: 'CURRENT'
+        }]
+      })
+    };
+  };
+  await searchModule.showSearchEvidenceDetails(0, 0);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const modal = document.getElementById('textPreviewModalOverlay');
+  assert.ok(modal);
+  assert.match(modal.textContent, /関連度の詳細/);
+  assert.match(modal.textContent, /VLMプロファイル 1/);
+  assert.match(modal.querySelector('#textPreviewBody').textContent, /keyword:page_text/);
+  modal.remove();
 });

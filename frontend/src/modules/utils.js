@@ -388,6 +388,7 @@ export function showImageModal(
  */
 export function showTextPreviewModal(title, sections = [], options = {}) {
   const focusReturnTarget = document.activeElement;
+  const modalSections = sections.slice();
   document.getElementById('textPreviewModalOverlay')?.remove();
   document.getElementById('imageModalOverlay')?.remove();
 
@@ -407,13 +408,17 @@ export function showTextPreviewModal(title, sections = [], options = {}) {
       <button type="button" id="textPreviewCloseBtn" class="image-modal-close" aria-label="プレビューを閉じる">×</button>
       <div class="text-preview-header">${escape(title)}</div>
       <div class="text-preview-tabs" role="tablist" aria-label="生成テキストの種類">
-        ${sections.map((section, index) => `
+        ${modalSections.map((section, index) => `
           <button type="button" role="tab" data-text-tab="${index}"
             aria-selected="${index === 0}">${escape(section.label)}</button>
         `).join('')}
       </div>
       <div class="text-preview-meta" id="textPreviewMeta"></div>
       <pre class="text-preview-body" id="textPreviewBody" tabindex="0"></pre>
+      ${options.onPrimaryAction ? `<div class="text-preview-actions">
+        <button type="button" id="textPreviewPrimaryAction" class="apex-button-secondary apex-button-xs"><i class="fas fa-wand-magic-sparkles"></i> ${escape(options.primaryActionLabel || 'AIで解説')}</button>
+        <span id="textPreviewActionError" role="alert"></span>
+      </div>` : ''}
       ${options.onPrev ? '<button type="button" id="textPreviewPrevBtn" class="text-preview-nav text-preview-nav-prev" aria-label="前のページ">&lt;</button>' : ''}
       ${options.onNext ? '<button type="button" id="textPreviewNextBtn" class="text-preview-nav text-preview-nav-next" aria-label="次のページ">&gt;</button>' : ''}
     </div>
@@ -440,7 +445,7 @@ export function showTextPreviewModal(title, sections = [], options = {}) {
     }
   };
   const selectTab = index => {
-    const section = sections[index];
+    const section = modalSections[index];
     if (!section) return;
     modal.querySelectorAll('[data-text-tab]').forEach(button => {
       button.setAttribute('aria-selected', String(Number(button.dataset.textTab) === index));
@@ -449,6 +454,25 @@ export function showTextPreviewModal(title, sections = [], options = {}) {
     if (meta) meta.textContent = section.meta || '';
     const body = modal.querySelector('#textPreviewBody');
     if (body) body.textContent = section.text || '（テキストなし）';
+  };
+  const upsertSection = section => {
+    let index = section.id
+      ? modalSections.findIndex(item => item.id === section.id)
+      : -1;
+    if (index < 0) {
+      index = modalSections.length;
+      modalSections.push(section);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('role', 'tab');
+      button.dataset.textTab = String(index);
+      button.textContent = section.label || '追加情報';
+      button.onclick = () => selectTab(index);
+      modal.querySelector('.text-preview-tabs')?.appendChild(button);
+    } else {
+      modalSections[index] = section;
+    }
+    selectTab(index);
   };
 
   setTimeout(() => {
@@ -463,6 +487,28 @@ export function showTextPreviewModal(title, sections = [], options = {}) {
     modal.querySelectorAll('[data-text-tab]').forEach(button => {
       button.addEventListener('click', () => selectTab(Number(button.dataset.textTab)));
     });
+    const primaryAction = modal.querySelector('#textPreviewPrimaryAction');
+    if (primaryAction && options.onPrimaryAction) {
+      primaryAction.onclick = async event => {
+        event.stopPropagation();
+        const error = modal.querySelector('#textPreviewActionError');
+        if (error) error.textContent = '';
+        primaryAction.disabled = true;
+        const original = primaryAction.innerHTML;
+        primaryAction.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 生成中...';
+        try {
+          const section = await options.onPrimaryAction();
+          if (section) upsertSection(section);
+        } catch (actionError) {
+          if (error) {
+            error.textContent = actionError?.message || '処理に失敗しました';
+          }
+        } finally {
+          primaryAction.disabled = false;
+          primaryAction.innerHTML = original;
+        }
+      };
+    }
     [['#textPreviewPrevBtn', options.onPrev], ['#textPreviewNextBtn', options.onNext]].forEach(([selector, handler]) => {
       const button = modal.querySelector(selector);
       if (button && handler) {

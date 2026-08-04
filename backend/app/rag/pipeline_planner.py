@@ -22,6 +22,7 @@ BASE_ORDER = {
     "vlm": 60,
     "embedding": 70,
     "publish": 80,
+    "concepts": 90,
 }
 
 
@@ -39,6 +40,7 @@ def _kind(component: str) -> str:
         "ocr": "OCR",
         "normalize": "NORMALIZE",
         "vlm": "VLM",
+        "concepts": "CONCEPT",
         "embedding": "EMBED",
         "publish": "PUBLISH",
     }[family]
@@ -82,6 +84,16 @@ def _direct_dependencies(
         if not recipe:
             raise ValueError(f"Embeddingレシピが見つかりません: {component}")
         return _recipe_dependencies(recipe)
+    if component == "concepts":
+        return {
+            "publish",
+            "normalize",
+            *(
+                value
+                for value in required_for_publish
+                if value.startswith("vlm:")
+            ),
+        }
     if component == "publish":
         return set(required_for_publish)
     return set()
@@ -136,6 +148,7 @@ def affected_downstream(
                 )
                 if render_affected or dependency_affected:
                     affected.add(f"embedding:{recipe.code}")
+            affected.add("concepts")
         if component.startswith("vlm:"):
             slot = component.split(":", 1)[1]
             affected.update(
@@ -146,6 +159,7 @@ def affected_downstream(
                     for item in recipe.inputs
                 )
             )
+            affected.add("concepts")
     return affected - selected
 
 
@@ -160,6 +174,7 @@ def plan_steps(
     profile_slots: list[int],
     mineru_enabled: bool,
     ocr_enabled: bool,
+    concept_enabled: bool = False,
 ) -> tuple[list[PlannedStep], set[str], set[str]]:
     recipe_map = {item.code: item for item in recipes}
     slots = {str(slot) for slot in profile_slots}
@@ -191,6 +206,8 @@ def plan_steps(
             requested.add("mineru_parse")
         if ocr_enabled:
             requested.add("ocr")
+        if concept_enabled:
+            requested.add("concepts")
         requested.add("publish")
     else:
         requested = selector_components(request.steps)
@@ -255,7 +272,9 @@ def planned_dependencies(
                 {"native_parse", "mineru_parse", "ocr"}
             )
         elif component == "publish":
-            dependencies = components - {"publish"}
+            # Search concepts are an enrichment. Failure must not block the
+            # ordinary text/vector release from becoming searchable.
+            dependencies = components - {"publish", "concepts"}
         else:
             dependencies = _direct_dependencies(
                 component,

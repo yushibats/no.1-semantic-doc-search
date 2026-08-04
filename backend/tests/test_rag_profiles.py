@@ -54,6 +54,13 @@ from app.rag.oracle_repository import (
 from app.rag.oracle_schema import schema_digest, schema_sql, schema_statements, system_table_names
 from app.rag.profile_validation import profile_hash, validate_profile
 from app.rag.profile_repository import OracleProfileRepository
+from app.rag.profile_prompts import (
+    CONSTRUCTION_PHOTO_PROFILE_PROMPT,
+    PRESENTATION_DESIGN_PROFILE_PROMPT,
+    PROPOSAL_PLAN_PROFILE_PROMPT,
+    SEARCH_CONCEPT_EXTRACTION_PROMPT,
+)
+from app.rag.vlm_prompting import build_vlm_extraction_prompt
 from app.rag.search_pipeline import (
     QueryPlan,
     RankedHit,
@@ -252,6 +259,19 @@ def test_search_request_retrieval_modes_are_optional_but_not_empty() -> None:
         SearchV2Request(query="lighting", retrieval_modes=["unknown"])
 
 
+def test_search_request_accepts_concept_only_and_deduplicates_concepts() -> None:
+    request = SearchV2Request(
+        selected_concept_ids=["concept-a", "concept-a", "concept-b"],
+        concept_mode="REQUIRE_ALL",
+    )
+    assert request.query == ""
+    assert request.selected_concept_ids == ["concept-a", "concept-b"]
+    assert request.concept_mode == "REQUIRE_ALL"
+
+    with pytest.raises(ValidationError, match="検索文または検索コンセプト"):
+        SearchV2Request()
+
+
 def test_multipart_retrieval_modes_require_a_non_empty_known_array() -> None:
     assert search_api._parse_retrieval_modes(None) is None
     assert search_api._parse_retrieval_modes(
@@ -261,6 +281,46 @@ def test_multipart_retrieval_modes_require_a_non_empty_known_array() -> None:
         search_api._parse_retrieval_modes("[]")
     with pytest.raises(ValueError, match="unsupported"):
         search_api._parse_retrieval_modes('["unknown"]')
+
+
+def test_multipart_concept_ids_are_deduplicated_and_bounded() -> None:
+    assert search_api._parse_concept_ids('["a", "a", "b"]') == ["a", "b"]
+    with pytest.raises(ValueError, match="at most 30"):
+        search_api._parse_concept_ids(json.dumps([str(index) for index in range(31)]))
+    with pytest.raises(ValueError, match="array"):
+        search_api._parse_concept_ids('{}')
+
+
+def test_search_concept_suggestions_rank_sentences_and_reject_unknown_ids() -> None:
+    concepts = [
+        {
+            "concept_id": "family-time",
+            "display_label": "家族の団らん",
+            "normalized_label": "家族の団らん",
+            "category_name": "暮らし・過ごし方",
+            "support_set_count": 3,
+            "support_document_count": 4,
+        },
+        {
+            "concept_id": "entrance-storage",
+            "display_label": "玄関収納増設",
+            "normalized_label": "玄関収納増設",
+            "category_name": "収納",
+            "support_set_count": 2,
+            "support_document_count": 2,
+        },
+    ]
+
+    assert "family-time" in search_api._lexical_concept_suggestion_ids(
+        "家族で団らんできる明るいリビング",
+        concepts,
+        limit=10,
+    )
+    assert search_api._validated_ai_concept_ids(
+        {"concept_ids": ["unknown", "family-time", "family-time", "entrance-storage"]},
+        allowed_ids={"family-time", "entrance-storage"},
+        limit=2,
+    ) == ["family-time", "entrance-storage"]
 
 
 def test_retrieval_mode_options_reflect_weights_profiles_and_recipes() -> None:
@@ -737,6 +797,8 @@ def run_search_pipeline_for_verify(
             return_value=RerankSettings(enabled=False, candidate_count=1, top_n=1),
         ),
         patch("app.rag.search_pipeline.rag_repository.keyword_search", return_value=[retrieval_hit()]),
+        patch("app.rag.search_pipeline.rag_repository.search_document_context", return_value={}),
+        patch("app.rag.search_pipeline.rag_repository.companion_documents", return_value={}),
         patch("app.rag.search_pipeline.rag_repository.record_search_audit"),
         patch("app.rag.search_pipeline._verify_candidates", new=AsyncMock()) as verify_candidates,
         patch(
@@ -1086,6 +1148,34 @@ def test_profile_has_exactly_the_vlm_extraction_fields() -> None:
         ProfileConfig(slot_no=4, name="Profile", extraction_prompt="Extract facts")
 
 
+def test_recommended_prompts_extract_supported_lifestyle_search_phrases() -> None:
+    assert "単独の一般名詞" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "VLMのkeywordsは候補語彙" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "家族の団らん" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "シアタールームのある家" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "少なくとも二つの具体的" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "テレビがあるだけ" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "キッチン収納不足" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "庭とつながる暮らし" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "デザイン・テイスト" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "category_code=DESIGN" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    assert "南欧風のキッチン" in SEARCH_CONCEPT_EXTRACTION_PROMPT
+    for prompt in (
+        CONSTRUCTION_PHOTO_PROFILE_PROMPT,
+        PROPOSAL_PLAN_PROFILE_PROMPT,
+        PRESENTATION_DESIGN_PROFILE_PROMPT,
+    ):
+        assert "生活イメージ候補" in prompt
+        assert "家族の団らん" in prompt
+        assert "シアタールームのある家" in prompt
+    assert "デザインテイスト候補" in CONSTRUCTION_PHOTO_PROFILE_PROMPT
+    assert "南欧風" in CONSTRUCTION_PHOTO_PROFILE_PROMPT
+    assert "複数画像ページの確認手順" in PRESENTATION_DESIGN_PROFILE_PROMPT
+    assert "左上から右へ、上から下" in PRESENTATION_DESIGN_PROFILE_PROMPT
+    assert "デザインテイスト候補" in PRESENTATION_DESIGN_PROFILE_PROMPT
+    assert "南欧風のLDK" in PRESENTATION_DESIGN_PROFILE_PROMPT
+
+
 def test_default_profile_prompts_are_generic_japanese_by_slot() -> None:
     prompts = [profile.extraction_prompt for profile in initial_profiles()]
     assert prompts == [
@@ -1149,6 +1239,114 @@ def test_fixed_vlm_output_serializes_to_search_text() -> None:
     )
     assert output.keywords == ["alpha", "beta"]
     assert output.search_text() == "summary\nalpha beta\nfact"
+
+
+def test_room_area_estimate_is_recalculated_from_dimension_evidence() -> None:
+    output = VlmExtractionOutput.model_validate(
+        {
+            "summary": "1階平面図",
+            "keywords": ["LDK"],
+            "facts": [],
+            "room_area_estimates": [
+                {
+                    "room_name": "LDK",
+                    "rectangles": [
+                        {"width_mm": 5200, "depth_mm": 4800, "operation": "ADD"},
+                        {"width_mm": 1000, "depth_mm": 800, "operation": "SUBTRACT"},
+                    ],
+                    "source_locator": "page:2",
+                    "evidence": "LDKの内側に対応する寸法線を確認",
+                    "confidence": 0.91,
+                    "area_m2": 999,
+                    "tatami_equivalent": 999,
+                    "conversion_m2_per_tatami": 2.0,
+                }
+            ],
+        }
+    )
+
+    estimate = output.room_area_estimates[0]
+    assert estimate.area_m2 == 24.16
+    assert estimate.tatami_equivalent == 14.9
+    assert estimate.conversion_m2_per_tatami == 1.62
+    assert "約14.9帖" in output.search_text()
+    assert "概算" in output.search_text()
+
+
+def test_unreliable_or_invalid_room_estimate_does_not_fail_the_page() -> None:
+    output = VlmExtractionOutput.model_validate(
+        {
+            "summary": "図面の要約は保持する",
+            "keywords": ["平面図"],
+            "facts": [],
+            "room_area_estimates": [
+                {
+                    "room_name": "LDK",
+                    "rectangles": [{"width_mm": 5000, "depth_mm": 4000}],
+                    "source_locator": "page:1",
+                    "evidence": "寸法の対応が曖昧",
+                    "confidence": 0.7,
+                },
+                {
+                    "room_name": "洋室",
+                    "rectangles": [
+                        {"width_mm": 1000, "depth_mm": 1000, "operation": "SUBTRACT"}
+                    ],
+                    "source_locator": "page:1",
+                    "evidence": "負の面積になる不正候補",
+                    "confidence": 0.95,
+                },
+            ],
+        }
+    )
+
+    assert output.summary == "図面の要約は保持する"
+    assert output.room_area_estimates == []
+
+
+def test_vlm_prompt_uses_original_name_and_marks_storage_key_as_technical() -> None:
+    prompt = build_vlm_extraction_prompt(
+        instruction="図面を抽出する",
+        file_name="20250314_外川様邸_ご提案書.pdf",
+        storage_object_name="documents/opaque-id/source.pdf",
+        page_number=6,
+        page_text="PLAN-A 内観パース",
+    )
+
+    assert '"original_file_name": "20250314_外川様邸_ご提案書.pdf"' in prompt
+    assert '"storage_object_name": "documents/opaque-id/source.pdf"' in prompt
+    assert "名前や分類の判定根拠にしない" in prompt
+    assert "PLAN-A 内観パース" in prompt
+    assert "room_area_estimates" in prompt
+
+
+def test_specialized_profiles_cover_samples_and_guard_room_calculation() -> None:
+    for phrase in (
+        "壁面スポットライト",
+        "掃き出し窓",
+        "リビングから駐車場が見える",
+        "濃色の縦切替",
+    ):
+        assert phrase in CONSTRUCTION_PHOTO_PROFILE_PROMPT
+    for phrase in (
+        "家事楽ピット",
+        "スケルトン階段",
+        "太陽光パネル",
+        "1帖=1.62㎡",
+        "建物全体寸法",
+        "ピクセル推定",
+    ):
+        assert phrase in PROPOSAL_PLAN_PROFILE_PROMPT
+    assert "room_area_estimatesは常に空配列" in CONSTRUCTION_PHOTO_PROFILE_PROMPT
+    for phrase in (
+        "内観CG",
+        "同じ部屋の別視点",
+        "家族が集まるLDK",
+        "装飾タイル",
+        "ページ横断",
+    ):
+        assert phrase in PRESENTATION_DESIGN_PROFILE_PROMPT
+    assert "room_area_estimatesは常に空配列" in PRESENTATION_DESIGN_PROFILE_PROMPT
 
 
 def test_schema_uses_release_artifact_and_recipe_vector_model() -> None:
@@ -1489,6 +1687,14 @@ def test_image_search_sorts_before_candidate_document_and_page_limits() -> None:
                 "app.rag.search_pipeline.rag_repository.recipe_vector_search",
                 side_effect=vector_search,
             ),
+            patch(
+                "app.rag.search_pipeline.rag_repository.search_document_context",
+                return_value={},
+            ),
+            patch(
+                "app.rag.search_pipeline.rag_repository.companion_documents",
+                return_value={},
+            ),
             patch("app.rag.search_pipeline.rag_repository.record_search_audit"),
         ):
             return asyncio.run(
@@ -1751,3 +1957,23 @@ def test_rerank_request_omits_optional_document_limits() -> None:
     assert set(captured) == {
         "input", "documents", "serving_mode", "compartment_id", "top_n", "is_echo"
     }
+
+
+def test_search_evidence_ai_explanation_is_on_demand_and_does_not_rank() -> None:
+    payload = search_api.SearchEvidenceExplanationRequest(
+        query="開放的なLDK",
+        file_name="plan.pdf",
+        page_number=2,
+        relevance_percent=73.5,
+        retrieval_channels=["keyword:page_text", "vector:vlm_text_slot_1"],
+        text_excerpt="LDKと対面キッチンが一体につながる",
+    )
+    generate = AsyncMock(return_value={"explanation": "入力されたページ本文が検索語と一致しました。"})
+    with patch("app.rag.search_api.vlm_client.generate_json", new=generate):
+        result = asyncio.run(search_api.explain_search_evidence(payload))
+
+    assert result.explanation.startswith("入力された")
+    generate.assert_awaited_once()
+    prompt = generate.await_args.kwargs["prompt"]
+    assert "関連度の数値を生成AIが計算したように説明してはいけません" in prompt
+    assert "keyword:page_text" in prompt

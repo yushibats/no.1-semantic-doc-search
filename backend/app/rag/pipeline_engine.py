@@ -17,7 +17,6 @@ from openai import APIConnectionError, APIStatusError
 
 from app.rag.clients import embedding_client, mineru_client, vlm_client
 from app.rag.index_pipeline import (
-    INDEX_OUTPUT_CONTRACT,
     PageExtraction,
     SourceBlock,
     _chunks,
@@ -27,6 +26,9 @@ from app.rag.index_pipeline import (
     _native_pages,
     _run_ocr,
 )
+from app.rag.vlm_prompting import build_vlm_extraction_prompt
+from app.rag.document_metadata_models import ConceptExtractionOutput
+from app.rag.document_metadata_repository import document_metadata_repository
 from app.rag.models import ProfileConfig, VlmExtractionOutput
 from app.rag.pipeline_models import EmbeddingRecipe
 from app.rag.pipeline_config import normalize_source_components, stage_config_hash
@@ -47,6 +49,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PIPELINE_MAX_CONCURRENT_FILES = 3
 
+SEARCH_CONCEPT_TAXONOMY_INSTRUCTION = (
+    "カテゴリは次から選んでください: "
+    "KITCHEN(キッチン・LDK), LIVING(リビング・居室), "
+    "STORAGE(収納), WATER(水回り), CIRCULATION(動線・間取り), "
+    "PERFORMANCE(性能), EXTERIOR(外観・外構), "
+    "DESIGN(デザイン・テイスト), LIFESTYLE(暮らし・過ごし方), "
+    "OTHER(その他)。"
+)
+
 
 def pipeline_max_concurrent_files() -> int:
     """全Jobを合算したファイル処理の同時実行上限を返す。"""
@@ -66,6 +77,18 @@ class ObjectContext:
     content: bytes
     revision: RevisionRecord
     release_id: str
+
+
+def concept_only_job_objects(job: dict[str, Any]) -> set[str]:
+    """Return objects whose Job contains read-only concept enrichment only."""
+    kinds_by_object: dict[str, set[str]] = defaultdict(set)
+    for step in job.get("steps", []):
+        kinds_by_object[str(step["object_name"])].add(str(step["stage_kind"]))
+    return {
+        object_name
+        for object_name, kinds in kinds_by_object.items()
+        if kinds == {"CONCEPT"}
+    }
 
 
 class PipelineEngine:
@@ -136,6 +159,14 @@ class PipelineEngine:
             dependencies = normalize_source_components()
         elif kind == "VLM":
             dependencies = ["render", "normalize"]
+        elif kind == "CONCEPT":
+            dependencies = [
+                "normalize",
+                *(
+                    f"vlm:{profile.slot_no}"
+                    for profile in profile_repository.enabled_profiles()
+                ),
+            ]
         elif kind == "EMBED":
             recipe = self.repository.get_recipe(component.split(":", 1)[1])
             dependencies = self._recipe_components(recipe)
@@ -177,6 +208,8 @@ class PipelineEngine:
         generation: int,
         object_name: str,
         cache: dict[str, ObjectContext],
+        *,
+        read_only_enrichment: bool = False,
     ) -> ObjectContext:
         if object_name in cache:
             return cache[object_name]
@@ -193,17 +226,25 @@ class PipelineEngine:
             owner=owner,
             generation=generation,
         )
-        release_id = await asyncio.to_thread(
-            self.repository.ensure_draft_release,
-            revision,
-            job_id,
-            owner=owner,
-            generation=generation,
-        )
+        if read_only_enrichment:
+            release_id = await asyncio.to_thread(
+                self.repository.release_for_enrichment,
+                revision,
+            )
+        else:
+            release_id = await asyncio.to_thread(
+                self.repository.ensure_draft_release,
+                revision,
+                job_id,
+                owner=owner,
+                generation=generation,
+            )
         cache[object_name] = ObjectContext(content, revision, release_id)
         return cache[object_name]
 
     async def process_job(self, job_id: str, owner: str, generation: int) -> str:
+        initial_job = await asyncio.to_thread(self.repository.get_job, job_id)
+        read_only_enrichment_objects = concept_only_job_objects(initial_job)
         contexts: dict[str, ObjectContext] = {}
         lease_lost = asyncio.Event()
         active_steps: dict[asyncio.Task[None], str] = {}
@@ -278,6 +319,7 @@ class PipelineEngine:
                                 owner=owner,
                                 generation=generation,
                                 lease_lost=lease_lost,
+                                read_only_enrichment_objects=read_only_enrichment_objects,
                             ),
                             name=f"pipeline-step:{job_id}:{step_id}",
                         )
@@ -346,6 +388,7 @@ class PipelineEngine:
         owner: str,
         generation: int,
         lease_lost: asyncio.Event,
+        read_only_enrichment_objects: set[str],
     ) -> None:
         """開始済み段階を実行し、終了経路にかかわらず共有スロットを返す。"""
         try:
@@ -356,6 +399,7 @@ class PipelineEngine:
                 owner=owner,
                 generation=generation,
                 lease_lost=lease_lost,
+                read_only_enrichment_objects=read_only_enrichment_objects,
             )
         finally:
             self._file_slots.release()
@@ -391,6 +435,7 @@ class PipelineEngine:
         owner: str,
         generation: int,
         lease_lost: asyncio.Event,
+        read_only_enrichment_objects: set[str],
     ) -> None:
         step_id = str(step["step_id"])
         try:
@@ -403,6 +448,9 @@ class PipelineEngine:
                 generation,
                 str(step["object_name"]),
                 contexts,
+                read_only_enrichment=(
+                    str(step["object_name"]) in read_only_enrichment_objects
+                ),
             )
             await asyncio.to_thread(
                 self.repository.attach_step_context,
@@ -542,6 +590,10 @@ class PipelineEngine:
         if not bool(step.get("force_run")):
             cached = await asyncio.to_thread(self.repository.cached_stage_run, cache_key)
             if cached:
+                if kind == "CONCEPT":
+                    # Concept assignments are revision-scoped DB rows, not release
+                    # components. They remain valid for this immutable revision.
+                    return cached, True
                 await asyncio.to_thread(
                     self.repository.replace_component,
                     context.release_id,
@@ -603,6 +655,10 @@ class PipelineEngine:
                 metadata=metadata,
                 output_hash=output_hash,
             )
+            if kind == "CONCEPT":
+                # Do not attach enrichment to the release: publish may proceed
+                # independently even when concept extraction fails or is slow.
+                return run_id, False
             await asyncio.to_thread(
                 self.repository.replace_component,
                 context.release_id,
@@ -650,6 +706,8 @@ class PipelineEngine:
             return await self._normalize(run_id, context)
         if kind == "VLM":
             return await self._vlm(run_id, context, int(component.split(":", 1)[1]))
+        if kind == "CONCEPT":
+            return await self._concepts(run_id, context)
         if kind == "EMBED":
             return await self._embed(run_id, context, component.split(":", 1)[1])
         raise ValueError(f"未対応の処理段階です: {kind}")
@@ -946,12 +1004,12 @@ class PipelineEngine:
                     if image_artifact
                     else None
                 )
-                prompt = (
-                    f"管理者の抽出指示:\n{profile.extraction_prompt}\n\n"
-                    f"文書コンテキスト: "
-                    f"{json.dumps({'object_name': context.revision.object_name, 'page_number': page_number}, ensure_ascii=False)}\n"
-                    f"ページテキスト:\n{str(page['raw_text'])[:12000]}\n\n"
-                    f"出典位置: page:{page_number}\n\n{INDEX_OUTPUT_CONTRACT}"
+                prompt = build_vlm_extraction_prompt(
+                    instruction=profile.extraction_prompt,
+                    file_name=context.revision.file_name,
+                    storage_object_name=context.revision.object_name,
+                    page_number=page_number,
+                    page_text=str(page["raw_text"]),
                 )
                 output = VlmExtractionOutput.model_validate(
                     await vlm_client.generate_json(prompt=prompt, image=image)
@@ -972,6 +1030,10 @@ class PipelineEngine:
                 metadata={
                     "profile_slot": slot_no,
                     "profile_revision_id": profile.current_revision_id,
+                    "original_file_name": context.revision.file_name,
+                    "page_text_length": len(str(page["raw_text"])),
+                    "has_image": image_artifact is not None,
+                    "empty_output": not bool(search_text),
                 },
                 lineage=lineage,
             )
@@ -985,9 +1047,213 @@ class PipelineEngine:
             context.revision.revision_id,
             artifacts,
         )
+        empty_page_count = sum(not bool(item.raw_text) for item in artifacts)
         return len(artifacts), len(artifacts) / max(1, len(pages)), {
             "profile_slot": slot_no,
             "profile_revision_id": profile.current_revision_id,
+            "empty_page_count": empty_page_count,
+            "nonempty_page_count": len(artifacts) - empty_page_count,
+        }
+
+    async def _concepts(
+        self, run_id: str, context: ObjectContext
+    ) -> tuple[int, float, dict[str, Any]]:
+        settings = await asyncio.to_thread(
+            document_metadata_repository.get_concept_settings
+        )
+        if not settings.enabled:
+            return 0, 1.0, {"skipped": "disabled"}
+
+        pages = self.repository.component_artifacts(
+            context.release_id, "normalize", "PAGE_TEXT"
+        )
+        vlm_pages: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for profile in profile_repository.enabled_profiles():
+            for artifact in self.repository.component_artifacts(
+                context.release_id, f"vlm:{profile.slot_no}", "VLM_TEXT"
+            ):
+                if artifact.get("page_number") is not None:
+                    vlm_pages[int(artifact["page_number"])].append(artifact)
+
+        has_page_text = any(str(item.get("raw_text") or "").strip() for item in pages)
+        has_vlm_text = any(
+            str(item.get("raw_text") or "").strip()
+            for values in vlm_pages.values()
+            for item in values
+        )
+        if not has_page_text and not has_vlm_text:
+            return 0, 1.0, {
+                "skipped": "no normalized text or VLM output",
+                "source_kinds": [],
+            }
+
+        metadata = await asyncio.to_thread(
+            document_metadata_repository.get_document_metadata,
+            context.revision.document_id,
+        )
+        active = await asyncio.to_thread(
+            document_metadata_repository.list_search_concepts,
+            status="ACTIVE",
+            limit=200,
+        )
+        existing = [
+            {
+                "concept_id": item.concept_id,
+                "facet": item.facet,
+                "category_code": item.category_code,
+                "label": item.display_label,
+            }
+            for item in active
+        ]
+
+        page_records: list[dict[str, Any]] = []
+        remaining = settings.input_text_limit
+        for page in pages:
+            page_number = int(page.get("page_number") or 0)
+            normalized_text = str(page.get("raw_text") or "").strip()
+            source_kinds = list(
+                dict.fromkeys(
+                    str(value)
+                    for value in (page.get("metadata_json") or {}).get("sources", [])
+                )
+            )
+            vlm_outputs = [
+                {
+                    "profile_slot": (item.get("metadata_json") or {}).get(
+                        "profile_slot"
+                    ),
+                    "output": item.get("payload_json")
+                    or str(item.get("raw_text") or ""),
+                }
+                for item in vlm_pages.get(page_number, [])
+            ]
+            record = {
+                "page_number": page_number,
+                "normalized_text": normalized_text,
+                "normalized_text_sources": source_kinds,
+                "vlm_outputs": vlm_outputs,
+            }
+            encoded = json.dumps(record, ensure_ascii=False)
+            if len(encoded) > remaining:
+                if remaining < 500:
+                    break
+                record["normalized_text"] = normalized_text[: max(0, remaining - 500)]
+                record["truncated"] = True
+                page_records.append(record)
+                remaining = 0
+                break
+            page_records.append(record)
+            remaining -= len(encoded)
+
+        # VLM can exist for a page that Normalize did not return. Preserve it.
+        known_pages = {int(item["page_number"]) for item in page_records}
+        for page_number, values in sorted(vlm_pages.items()):
+            if page_number in known_pages or remaining < 500:
+                continue
+            record = {
+                "page_number": page_number,
+                "normalized_text": "",
+                "normalized_text_sources": [],
+                "vlm_outputs": [
+                    item.get("payload_json") or str(item.get("raw_text") or "")
+                    for item in values
+                ],
+            }
+            encoded = json.dumps(record, ensure_ascii=False)
+            if len(encoded) <= remaining:
+                page_records.append(record)
+                remaining -= len(encoded)
+
+        prompt = (
+            f"{settings.prompt_text}\n\n"
+            f"{SEARCH_CONCEPT_TAXONOMY_INSTRUCTION}\n"
+            "出力JSONは {\"concepts\":[{\"label\":\"短い語句\","
+            "\"facet\":\"BEFORE|AFTER|OTHER\",\"category_code\":\"KITCHEN\","
+            "\"category_name\":\"キッチン・LDK\",\"confidence\":0.0,"
+            "\"evidence\":[{\"page_number\":1,\"excerpt\":\"根拠\"}],"
+            "\"source_kinds\":[\"VLM_TEXT\",\"OCR_TEXT\"],"
+            "\"existing_concept_id\":null}]} の形にしてください。\n"
+            "既存候補と同義ならexisting_concept_idを指定してください。"
+            "生活イメージはcategory_code=LIFESTYLE、根拠のあるデザイン・"
+            "テイスト候補はcategory_code=DESIGNとし、根拠のない抽象語や、"
+            "顧客名・年月・一般的すぎる単語は検索コンセプトにしないでください。\n\n"
+            f"既存候補:\n{json.dumps(existing, ensure_ascii=False)}\n\n"
+            "文書:\n"
+            + json.dumps(
+                {
+                    "file_name": context.revision.file_name,
+                    "confirmed_metadata": {
+                        "folder": metadata.folder_name,
+                        "document_set": metadata.document_set_label,
+                        "customer": (
+                            metadata.customer_name_raw
+                            if metadata.customer_confirmed
+                            else None
+                        ),
+                        "year": (
+                            metadata.document_year if metadata.date_confirmed else None
+                        ),
+                        "month": (
+                            metadata.document_month if metadata.date_confirmed else None
+                        ),
+                        "tags": [
+                            item.name for item in metadata.tags if item.confirmed
+                        ],
+                    },
+                    "pages": page_records,
+                },
+                ensure_ascii=False,
+            )
+        )
+        output = ConceptExtractionOutput.model_validate(
+            await vlm_client.generate_json(prompt=prompt)
+        )
+        saved = await asyncio.to_thread(
+            document_metadata_repository.replace_document_concepts,
+            document_id=context.revision.document_id,
+            revision_id=context.revision.revision_id,
+            stage_run_id=run_id,
+            concepts=output.concepts,
+        )
+        source_kinds = sorted(
+            {
+                source
+                for item in output.concepts
+                for source in item.source_kinds
+            }
+        )
+        artifact = ArtifactRecord(
+            artifact_kind="CONCEPT_JSON",
+            source_locator="document",
+            raw_text="\n".join(
+                item.concept.display_label for item in saved
+            ),
+            search_text="\n".join(
+                item.concept.display_label for item in saved
+                if item.concept.status == "ACTIVE"
+            ),
+            payload=output.model_dump(mode="json"),
+            metadata={
+                "taxonomy_revision": settings.taxonomy_revision,
+                "source_kinds": source_kinds,
+                "input_pages": len(page_records),
+            },
+        )
+        await asyncio.to_thread(
+            self.repository.store_artifacts,
+            run_id,
+            context.revision.revision_id,
+            [artifact],
+        )
+        return len(saved), 1.0, {
+            "input_pages": len(page_records),
+            "source_kinds": source_kinds,
+            "active_count": sum(
+                item.concept.status == "ACTIVE" for item in saved
+            ),
+            "pending_count": sum(
+                item.concept.status == "PENDING" for item in saved
+            ),
         }
 
     async def _embed(

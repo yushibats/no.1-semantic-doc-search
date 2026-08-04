@@ -16,8 +16,10 @@ from app.rag.clients import embedding_client, rerank_client, vlm_client
 from app.rag.models import (
     RETRIEVAL_MODES,
     DocumentSearchResult,
+    DocumentSetSearchGroup,
     EvidenceResult,
     FieldFilter,
+    MetadataSearchFilters,
     RetrievalMode,
     RetrievalWeights,
     SearchV2Response,
@@ -493,6 +495,9 @@ class SearchPipeline:
         current_version_only: bool,
         user_hash: str | None,
         filename_filter: str | None = None,
+        metadata_filters: MetadataSearchFilters | None = None,
+        selected_concept_ids: list[str] | None = None,
+        concept_mode: str = "BOOST",
         image: bytes | None = None,
         image_media_type: str = "image/png",
         retrieval_modes: list[RetrievalMode] | None = None,
@@ -518,8 +523,28 @@ class SearchPipeline:
 
         if field_filters:
             raise ValueError("field_filters are not configured; use text or filename filters")
-        if image is None and not query.strip():
-            raise ValueError("検索クエリを入力してください")
+        metadata_filters = metadata_filters or MetadataSearchFilters()
+        selected_concept_ids = list(
+            dict.fromkeys(value for value in (selected_concept_ids or []) if value)
+        )
+        if image is None and not query.strip() and not selected_concept_ids:
+            raise ValueError("検索文または検索コンセプトを指定してください")
+        if concept_mode not in {"BOOST", "REQUIRE_ALL"}:
+            raise ValueError("検索コンセプトの一致モードが不正です")
+        concept_labels = await asyncio.to_thread(
+            rag_repository.concept_labels, selected_concept_ids
+        )
+        missing_concepts = [
+            value for value in selected_concept_ids if value not in concept_labels
+        ]
+        if missing_concepts:
+            raise ValueError("無効または未承認の検索コンセプトが含まれています")
+        metadata_filters = metadata_filters.model_copy(
+            update={
+                "concept_ids": selected_concept_ids,
+                "concept_mode": concept_mode,
+            }
+        )
         requested_modes = (
             set(RETRIEVAL_MODES) if retrieval_modes is None else set(retrieval_modes)
         )
@@ -541,14 +566,20 @@ class SearchPipeline:
         active_modes = requested_modes.intersection(configured_modes)
         if not query.strip():
             active_modes.difference_update(KEYWORD_RETRIEVAL_MODES)
-        if not active_modes:
+        if not active_modes and not selected_concept_ids:
             raise ValueError(
                 "選択した検索方式は現在の検索条件または管理者設定では利用できません"
             )
         await finish_step("initialization")
         await step("query_variants", "検索バリエーションを生成しています")
-        plan = await _query_plan(query)
-        query_variants = plan.variants or _dedupe_strings([query])
+        concept_query = " ".join(
+            concept_labels[value] for value in selected_concept_ids
+        )
+        effective_query = " ".join(
+            value for value in (query.strip(), concept_query) if value
+        )
+        plan = await _query_plan(effective_query)
+        query_variants = plan.variants or _dedupe_strings([effective_query])
         query_text = " ".join(query_variants)
         query_plan = {
             "variants": query_variants,
@@ -613,6 +644,24 @@ class SearchPipeline:
         def route_name(name: str, index: int, total: int) -> str:
             return name if total == 1 else f"{name}_{index}"
 
+        if selected_concept_ids:
+            tasks.append(
+                (
+                    "concept",
+                    1.25,
+                    asyncio.to_thread(
+                        rag_repository.concept_search,
+                        concept_ids=selected_concept_ids,
+                        top_k=branch_k,
+                        user_hash=user_hash,
+                        current_version_only=current_version_only,
+                        document_types=document_types,
+                        filename_filter=filename_filter,
+                        metadata_filters=metadata_filters,
+                    ),
+                )
+            )
+
         if query_variants and "oracle_text" in active_modes:
             weight = weights.oracle_text / len(query_variants)
             for index, variant in enumerate(query_variants, start=1):
@@ -628,6 +677,7 @@ class SearchPipeline:
                             current_version_only=current_version_only,
                             document_types=document_types,
                             filename_filter=filename_filter,
+                            metadata_filters=metadata_filters,
                         ),
                     )
                 )
@@ -671,6 +721,7 @@ class SearchPipeline:
                                 document_types=document_types,
                                 filename_filter=filename_filter,
                                 min_score=min_score,
+                                metadata_filters=metadata_filters,
                             ),
                         )
                     )
@@ -692,6 +743,7 @@ class SearchPipeline:
                                 current_version_only=current_version_only,
                                 document_types=document_types,
                                 filename_filter=filename_filter,
+                                metadata_filters=metadata_filters,
                             ),
                         )
                     )
@@ -729,6 +781,7 @@ class SearchPipeline:
             "document_types": document_types,
             "current_version_only": current_version_only,
             "filename_filter": filename_filter,
+            "metadata_filters": metadata_filters.model_dump(mode="json"),
         }
         if progress:
             await progress({
@@ -767,7 +820,9 @@ class SearchPipeline:
             : rerank_settings.candidate_count
         ]
         pre_rerank_count = len(candidates)
-        candidates = await _rerank_text(query, candidates, has_image=image is not None)
+        candidates = await _rerank_text(
+            effective_query, candidates, has_image=image is not None
+        )
         if (
             query.strip()
             and candidates
@@ -792,7 +847,7 @@ class SearchPipeline:
         judge_summary: dict[str, Any] = {"applied": False, "candidate_count": 0}
         if query.strip() and len(candidates) >= 2:
             await step("llm_judge", "LLMが最終候補を判定しています")
-            judge_index = await _llm_judge_best(query, candidates)
+            judge_index = await _llm_judge_best(effective_query, candidates)
             judge_summary["candidate_count"] = min(len(candidates), JUDGE_CANDIDATE_COUNT)
             if judge_index is not None:
                 chosen = candidates[judge_index]
@@ -814,7 +869,9 @@ class SearchPipeline:
 
         if verify:
             await step("verify", "VLMで候補を確認しています（時間がかかります）")
-            await _verify_candidates(query, candidates, image, image_media_type, progress)
+            await _verify_candidates(
+                effective_query, candidates, image, image_media_type, progress
+            )
             await finish_step("verify")
 
         await step("format_results", "検索結果を整形しています")
@@ -852,7 +909,9 @@ class SearchPipeline:
         else:
             ranked_documents = sorted(
                 documents.values(),
-                key=lambda values: _boosted_document_score(query, values),
+                    key=lambda values: _boosted_document_score(
+                        effective_query, values
+                    ),
                 reverse=True,
             )[:top_k]
         results: list[DocumentSearchResult] = []
@@ -914,9 +973,97 @@ class SearchPipeline:
                     evidence=evidence,
                 )
             )
+        result_context = await asyncio.to_thread(
+            rag_repository.search_document_context,
+            [item.document_id for item in results],
+            selected_concept_ids=selected_concept_ids,
+            user_hash=user_hash,
+        )
+        grouped: dict[str, DocumentSetSearchGroup] = {}
+        for result in results:
+            context = result_context.get(result.document_id, {})
+            result.document_set_id = context.get("document_set_id")
+            result.document_set_label = context.get("document_set_label")
+            result.matched_concept_ids = list(
+                dict.fromkeys(context.get("matched_concept_ids") or [])
+            )
+            result.thumbnail_object_name = context.get("thumbnail_object_name")
+            result.thumbnail_page_number = context.get("thumbnail_page_number")
+            group_key = (
+                f"set:{result.document_set_id}"
+                if result.document_set_id
+                else f"document:{result.document_id}"
+            )
+            group = grouped.get(group_key)
+            if group is None:
+                group = DocumentSetSearchGroup(
+                    group_key=group_key,
+                    document_set_id=result.document_set_id,
+                    label=(
+                        result.document_set_label
+                        or f"未割当: {result.file_name}"
+                    ),
+                    score=result.score,
+                )
+                grouped[group_key] = group
+            group.direct_matches.append(result)
+            group.score = max(group.score, result.score)
+            group.matched_concept_ids = list(
+                dict.fromkeys(
+                    [
+                        *group.matched_concept_ids,
+                        *result.matched_concept_ids,
+                    ]
+                )
+            )
+        groups = sorted(
+            grouped.values(),
+            key=lambda item: (
+                item.score + 0.03 * len(item.matched_concept_ids)
+            ),
+            reverse=True,
+        )[:top_k]
+        companion_map = await asyncio.to_thread(
+            rag_repository.companion_documents,
+            [
+                item.document_set_id
+                for item in groups
+                if item.document_set_id
+            ],
+            exclude_document_ids=[item.document_id for item in results],
+            user_hash=user_hash,
+            limit_per_set=8,
+        )
+        for group in groups:
+            if not group.document_set_id:
+                continue
+            group.related_documents = [
+                DocumentSearchResult(
+                    document_id=str(item["document_id"]),
+                    file_name=str(item["file_name"]),
+                    object_name=str(item["object_name"]),
+                    bucket=str(item["bucket"]),
+                    score=max(0.0, group.score * 0.75),
+                    profile_slots=[],
+                    evidence=[],
+                    document_set_id=group.document_set_id,
+                    document_set_label=group.label,
+                    direct_match=False,
+                    thumbnail_object_name=(
+                        str(item["thumbnail_object_name"])
+                        if item.get("thumbnail_object_name") else None
+                    ),
+                    thumbnail_page_number=(
+                        int(item["thumbnail_page_number"])
+                        if item.get("thumbnail_page_number") is not None else None
+                    ),
+                )
+                for item in companion_map.get(group.document_set_id, [])
+            ]
         format_summary = {
             "total_documents": len(results),
             "total_evidence": sum(len(result.evidence) for result in results),
+            "total_groups": len(groups),
         }
         if progress:
             await progress({
@@ -941,6 +1088,8 @@ class SearchPipeline:
             "judge_summary": judge_summary,
             "format_summary": format_summary,
             "vlm_verify_requested": verify,
+            "selected_concept_ids": selected_concept_ids,
+            "concept_mode": concept_mode,
         }
         if debug:
             diagnostics.update(
@@ -962,6 +1111,8 @@ class SearchPipeline:
             trace_id=trace_id,
             query=query,
             results=results,
+            groups=groups,
+            total_groups=len(groups),
             total_documents=len(results),
             total_evidence=sum(len(result.evidence) for result in results),
             processing_time=elapsed,

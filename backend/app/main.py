@@ -83,6 +83,11 @@ from app.utils.sse import heartbeats_until_done
 from app.rag.settings_api import router as retrieval_settings_router
 from app.rag.search_api import router as retrieval_search_router
 from app.rag.pipeline_api import router as pipeline_router
+from app.rag.document_metadata_api import router as document_metadata_router
+from app.rag.document_metadata_schema import (
+    apply_document_library_schema,
+    document_library_schema_status,
+)
 from app.rag.pipeline_dispatcher import pipeline_dispatcher
 from app.rag.pipeline_repository import pipeline_repository
 from app.rag.profile_repository import profile_repository
@@ -136,6 +141,7 @@ app = FastAPI(
 app.include_router(retrieval_settings_router)
 app.include_router(retrieval_search_router)
 app.include_router(pipeline_router)
+app.include_router(document_metadata_router)
 
 # CORS設定
 app.add_middleware(
@@ -2356,7 +2362,22 @@ async def get_database_tables(
 async def get_system_tables_status():
     """システム必須テーブルの初期化状態を取得"""
     try:
-        return {"success": True, **await asyncio.to_thread(system_table_status)}
+        base_status = await asyncio.to_thread(system_table_status)
+        feature_status = (
+            await asyncio.to_thread(document_library_schema_status)
+            if base_status.get("ready")
+            else {
+                "ready": False,
+                "feature": "document_library",
+                "blocked_by": "base_schema",
+            }
+        )
+        return {
+            "success": True,
+            **base_status,
+            "document_library_ready": bool(feature_status.get("ready")),
+            "document_library": feature_status,
+        }
     except RuntimeError as error:
         raise HTTPException(
             status_code=503, detail="データベース接続を設定してください"
@@ -2385,6 +2406,7 @@ async def initialize_system_tables(
             pipeline_dispatcher.wake()
         else:
             result = await asyncio.to_thread(provision_system_tables, recreate=False)
+        feature_result = await asyncio.to_thread(apply_document_library_schema)
         return {
             "success": True,
             "message": (
@@ -2393,6 +2415,8 @@ async def initialize_system_tables(
                 else "システムテーブルを初期化しました"
             ),
             **result,
+            "document_library_ready": bool(feature_result.get("ready")),
+            "document_library": feature_result,
         }
     except ValueError as error:
         raise HTTPException(

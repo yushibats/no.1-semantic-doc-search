@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from openai import APITimeoutError
 
+from app.rag import concept_prompt_migration
 from app.rag.models import ProfileConfig
 from app.rag.pipeline_dispatcher import PipelineDispatcher
 from app.rag.pipeline_engine import (
     ObjectContext,
     PipelineEngine,
+    concept_only_job_objects,
+    SEARCH_CONCEPT_TAXONOMY_INSTRUCTION,
     pipeline_max_concurrent_files,
 )
 from app.rag.pipeline_models import EmbeddingRecipe, EmbeddingRecipeInput
@@ -23,6 +28,9 @@ from app.rag.pipeline_repository import (
     RevisionRecord,
     release_validation_error_message,
 )
+from app.rag.profile_repository import profile_repository
+from app.rag.profile_prompts import SEARCH_CONCEPT_EXTRACTION_PROMPT
+from app.rag.service_settings import retrieval_service_settings
 from app.rag.pipeline_repository_types import embedding_input_fingerprint
 
 
@@ -31,6 +39,52 @@ async def _inline_to_thread(
 ) -> object:
     assert callable(function)
     return function(*args, **kwargs)
+
+
+def test_concept_prompt_migration_preserves_thresholds_and_bumps_taxonomy() -> None:
+    current = SimpleNamespace(prompt_text="old prompt", taxonomy_revision=7)
+    updated = SimpleNamespace(
+        model_dump=MagicMock(
+            return_value={
+                "prompt_text": SEARCH_CONCEPT_EXTRACTION_PROMPT,
+                "taxonomy_revision": 8,
+            }
+        )
+    )
+    connection_context = MagicMock()
+    connection = connection_context.__enter__.return_value
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.rowcount = 1
+
+    with (
+        patch.object(concept_prompt_migration.document_metadata_repository, "require_schema"),
+        patch.object(
+            concept_prompt_migration.document_metadata_repository,
+            "get_concept_settings",
+            side_effect=[current, updated],
+        ),
+        patch.object(
+            concept_prompt_migration.document_metadata_repository,
+            "connection",
+            return_value=connection_context,
+        ),
+    ):
+        result = concept_prompt_migration.apply_recommended_concept_prompt()
+
+    sql, binds = cursor.execute.call_args.args
+    assert "UPDATE sds_search_concept_settings" in sql
+    assert binds == {
+        "prompt": SEARCH_CONCEPT_EXTRACTION_PROMPT,
+        "revision": 8,
+    }
+    assert result["taxonomy_revision"] == 8
+    connection.commit.assert_called_once()
+
+
+def test_search_concept_taxonomy_has_a_lifestyle_category() -> None:
+    assert "LIFESTYLE(暮らし・過ごし方)" in SEARCH_CONCEPT_TAXONOMY_INSTRUCTION
+    assert "DESIGN(デザイン・テイスト)" in SEARCH_CONCEPT_TAXONOMY_INSTRUCTION
+    assert "KITCHEN(キッチン・LDK)" in SEARCH_CONCEPT_TAXONOMY_INSTRUCTION
 
 
 def _object_context(object_name: str) -> ObjectContext:
@@ -144,6 +198,146 @@ class _MultiJobRuntimeRepository(_RuntimeRepository):
             if str(step["object_name"]) not in excluded:
                 return steps.pop(index)
         return None
+
+
+def test_concept_only_job_objects_detects_read_only_retry_targets() -> None:
+    assert concept_only_job_objects(
+        {
+            "steps": [
+                {
+                    "object_name": "photo.jpg",
+                    "stage_kind": "CONCEPT",
+                },
+                {
+                    "object_name": "plan.pdf",
+                    "stage_kind": "CONCEPT",
+                },
+                {
+                    "object_name": "plan.pdf",
+                    "stage_kind": "PUBLISH",
+                },
+            ]
+        }
+    ) == {"photo.jpg"}
+
+
+@pytest.mark.asyncio
+async def test_concept_only_context_reuses_release_without_creating_draft() -> None:
+    repository = MagicMock()
+    revision = _object_context("photo.jpg").revision
+    repository.register_revision.return_value = revision
+    repository.release_for_enrichment.return_value = "serving-release"
+    engine = PipelineEngine(repository)
+
+    with (
+        patch("app.rag.pipeline_engine.oci_service.download_object", return_value=b"jpg"),
+        patch("app.rag.pipeline_engine.asyncio.to_thread", side_effect=_inline_to_thread),
+    ):
+        context = await engine._context(
+            "retry-job",
+            "worker-1",
+            1,
+            "photo.jpg",
+            {},
+            read_only_enrichment=True,
+        )
+
+    assert context.release_id == "serving-release"
+    repository.release_for_enrichment.assert_called_once_with(revision)
+    repository.ensure_draft_release.assert_not_called()
+
+
+def test_release_for_enrichment_prefers_current_serving_release() -> None:
+    repository = OraclePipelineRepository()
+    connection_context = MagicMock()
+    connection = connection_context.__enter__.return_value
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = (
+        "serving-1",
+        "revision-1",
+        "draft-stranded",
+        "revision-1",
+    )
+    revision = SimpleNamespace(document_id="doc-1", revision_id="revision-1")
+
+    with patch.object(repository, "connection", return_value=connection_context):
+        release_id = repository.release_for_enrichment(revision)
+
+    assert release_id == "serving-1"
+    sql, params = cursor.execute.call_args.args
+    assert "LEFT JOIN sds_index_releases serving" in sql
+    assert params == {"document": "doc-1"}
+
+
+def test_repair_stranded_concept_only_draft_restores_indexed_document() -> None:
+    repository = OraclePipelineRepository()
+    connection_context = MagicMock()
+    connection = connection_context.__enter__.return_value
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchall.side_effect = [
+        [("doc-1", "photo.jpg", "draft-1", "serving-1")],
+        [("render", "run-render"), ("embedding:image", "run-image")],
+        [("render", "run-render"), ("embedding:image", "run-image")],
+    ]
+    cursor.rowcount = 1
+
+    with patch.object(repository, "connection", return_value=connection_context):
+        repaired = repository.repair_stranded_concept_only_drafts()
+
+    assert repaired == ["photo.jpg"]
+    update_calls = [
+        call
+        for call in cursor.execute.call_args_list
+        if "UPDATE sds_" in str(call.args[0])
+    ]
+    assert "UPDATE sds_documents" in update_calls[0].args[0]
+    assert "UPDATE sds_index_releases" in update_calls[1].args[0]
+    connection.commit.assert_called_once_with()
+
+
+def test_job_lineage_separates_original_and_additional_jobs() -> None:
+    repository = OraclePipelineRepository()
+    connection_context = MagicMock()
+    connection = connection_context.__enter__.return_value
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchall.return_value = [
+        (
+            "job-original",
+            "PARTIAL_FAILED",
+            "FULL",
+            "AUTO",
+            10,
+            9,
+            1,
+            "concept failed",
+            json.dumps({"mode": "FULL"}),
+            "2026-08-03T00:00:00Z",
+            "2026-08-03T00:01:00Z",
+            1,
+        ),
+        (
+            "job-retry",
+            "SUCCEEDED",
+            "CUSTOM",
+            "AUTO",
+            1,
+            1,
+            0,
+            None,
+            json.dumps({"retry_of_job_id": "job-original"}),
+            "2026-08-03T00:02:00Z",
+            "2026-08-03T00:03:00Z",
+            1,
+        ),
+    ]
+
+    with patch.object(repository, "connection", return_value=connection_context):
+        lineage = repository.job_lineage_for_object("photo.jpg")
+
+    assert [job["tab_label"] for job in lineage] == ["全体工程", "追加Job 1"]
+    assert lineage[0]["is_additional"] is False
+    assert lineage[1]["is_additional"] is True
+    assert lineage[1]["retry_of_job_id"] == "job-original"
 
 
 def test_pipeline_global_concurrency_defaults_to_three(
@@ -892,6 +1086,76 @@ def test_release_validation_error_lists_missing_components() -> None:
     assert "未実行: vlm:1, embedding:vlm_text_slot_1" in message
 
 
+def test_retry_publish_rebuilds_current_release_contract() -> None:
+    repository = OraclePipelineRepository()
+    repository.get_job = MagicMock(  # type: ignore[method-assign]
+        return_value={
+            "job_id": "job-source",
+            "publish_mode": "AUTO",
+            "request_json": {"mode": "CUSTOM", "force": True},
+            "steps": [
+                {
+                    "object_name": "photo.jpg",
+                    "stage_kind": "RENDER",
+                    "component_key": "render",
+                    "status": "SUCCEEDED",
+                    "depends_on": [],
+                },
+                {
+                    "object_name": "photo.jpg",
+                    "stage_kind": "PUBLISH",
+                    "component_key": "publish",
+                    "status": "FAILED",
+                    "depends_on": [],
+                },
+            ],
+        }
+    )
+    repository.list_recipes = MagicMock(return_value=[])  # type: ignore[method-assign]
+    repository.create_job = MagicMock(  # type: ignore[method-assign]
+        return_value=("job-recovery", False)
+    )
+
+    with (
+        patch.object(profile_repository, "enabled_profiles", return_value=[]),
+        patch.object(
+            retrieval_service_settings,
+            "get_mineru",
+            return_value=SimpleNamespace(enabled=True, base_url="http://mineru"),
+        ),
+        patch.object(
+            retrieval_service_settings,
+            "get_ocr",
+            return_value=SimpleNamespace(enabled=False),
+        ),
+    ):
+        result = repository.retry_job("job-source")
+
+    assert result == "job-recovery"
+    call = repository.create_job.call_args.kwargs
+    specs = call["step_specs"]
+    components = [item["component_key"] for item in specs]
+    assert components == [
+        "render",
+        "native_parse",
+        "mineru_parse",
+        "normalize",
+        "publish",
+    ]
+    assert next(item for item in specs if item["component_key"] == "mineru_parse")[
+        "force"
+    ] is False
+    assert next(item for item in specs if item["component_key"] == "publish")[
+        "force"
+    ] is True
+    assert set(next(item for item in specs if item["component_key"] == "publish")[
+        "depends_on"
+    ]) == {"render", "native_parse", "mineru_parse", "normalize"}
+    request = json.loads(call["request_json"])
+    assert request["retry_of_job_id"] == "job-source"
+    assert request["recovery_mode"] == "CURRENT_RELEASE_CONTRACT"
+
+
 def test_requeue_step_preserves_job_counters_and_records_retry_event() -> None:
     repository = OraclePipelineRepository()
     connection_context = MagicMock()
@@ -1104,10 +1368,23 @@ async def test_empty_out_of_scope_vlm_output_is_stored_as_a_successful_artifact(
     artifacts = repository.store_artifacts.call_args.args[2]
     assert count == 1
     assert coverage == 1.0
-    assert metadata == {"profile_slot": 1, "profile_revision_id": "profile-v1"}
+    assert metadata == {
+        "profile_slot": 1,
+        "profile_revision_id": "profile-v1",
+        "empty_page_count": 1,
+        "nonempty_page_count": 0,
+    }
     assert len(artifacts) == 1
     assert artifacts[0].raw_text == ""
-    assert artifacts[0].payload == {"summary": "", "keywords": [], "facts": []}
+    assert artifacts[0].payload == {
+        "summary": "",
+        "keywords": [],
+        "facts": [],
+        "room_area_estimates": [],
+    }
+    assert artifacts[0].metadata["empty_output"] is True
+    assert artifacts[0].metadata["original_file_name"] == "floor-plan.pdf"
+    assert '"original_file_name": "floor-plan.pdf"' in generate.await_args.kwargs["prompt"]
     generate.assert_awaited_once()
 
 

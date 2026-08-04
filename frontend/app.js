@@ -19,6 +19,11 @@ import {
 import { loadRerankSettings, loadRetrievalSettings } from './src/modules/retrieval-settings.js';
 import { restorePipelineJobs } from './src/modules/pipeline.js';
 import { loadDynamicSearchFilters } from './src/modules/search.js';
+import {
+  loadDocumentLibrary,
+  startDraftIngest
+} from './src/modules/document-library.js';
+import { loadMetadataSettings } from './src/modules/metadata-settings.js';
 import { UPLOAD_CONFIG } from './src/config.js';
 // DB関連機能はdocument.jsモジュールに移動済み
 import { 
@@ -186,6 +191,9 @@ async function switchTab(tabName, event) {
   // 注: 文書管理タブの自動刷新は無効(🔄 更新ボタンで手動刷新)
   // adminタブの初期化はswitchAdminSubTabで処理
   // 注: settings/databaseタブは廃止され、adminサブタブに統合されたため、ここでは何もしない
+  if (tabName === 'documents') {
+    await loadDocumentLibrary();
+  }
 }
 
 /**
@@ -236,7 +244,7 @@ async function switchAdminSubTab(subTabName, event) {
     if (subTabName === 'retrieval') {
       console.log('Loading retrieval and indexing settings...');
       utilsShowLoading('検索・索引設定を読み込み中...');
-      await loadRetrievalSettings();
+      await Promise.all([loadRetrievalSettings(), loadMetadataSettings()]);
       utilsHideLoading();
     } else if (subTabName === 'settings') {
       console.log('Loading OCI settings...');
@@ -480,48 +488,19 @@ async function uploadMultipleDocuments() {
     return;
   }
   
+  const uploadBtn = document.getElementById('uploadMultipleBtn');
   try {
-    // ボタンを無効化
-    const uploadBtn = document.getElementById('uploadMultipleBtn');
     uploadBtn.disabled = true;
-    
-    // 選択されたファイルリストを非表示
-    const selectedFilesList = document.getElementById('selectedFilesList');
-    if (selectedFilesList) {
-      selectedFilesList.style.display = 'none';
-    }
-    
-    // 進捗表示UIを初期化
-    showUploadProgressUI(selectedMultipleFiles);
-    
-    // FormDataを作成
-    const formData = new FormData();
-    selectedMultipleFiles.forEach(file => {
-      formData.append('files', file);
-    });
-    
-    // API呼び出し（SSE）
-    const response = await authFetchWithAuth('/ai/api/documents/upload/multiple', {
-      method: 'POST',
-      body: formData
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ detail: `HTTP error! status: ${response.status}` }));
-      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
-    }
-    
-    // SSEストリーミング処理
-    await processUploadStreamingResponse(response, selectedMultipleFiles.length);
-    
+    await startDraftIngest([...selectedMultipleFiles]);
+    selectedMultipleFiles = [];
+    document.getElementById('fileInputMultiple').value = '';
+    document.getElementById('selectedFilesList').style.display = 'none';
+    utilsShowToast('一時保存と分類候補の作成が完了しました。確認表を確認してください', 'success');
   } catch (error) {
     console.error('アップロードエラー:', error);
-    hideUploadProgressUI();
-    const uploadBtn = document.getElementById('uploadMultipleBtn');
-    if (uploadBtn) {
-      uploadBtn.disabled = false;
-    }
     utilsShowToast(`アップロードに失敗しました: ${error.message}`, 'error');
+  } finally {
+    uploadBtn.disabled = selectedMultipleFiles.length === 0;
   }
 }
 
@@ -887,15 +866,7 @@ function getChildObjects(folderName) {
  * 文書一覧を更新(通知付き)
  */
 window.refreshDocumentsWithNotification = async function() {
-  try {
-    utilsShowLoading('文書一覧を再取得中...');
-    await loadOciObjects();
-    utilsHideLoading();
-    utilsShowToast('文書一覧を再取得しました', 'success');
-  } catch (error) {
-    utilsHideLoading();
-    utilsShowToast(`文書一覧の再取得に失敗しました: ${error.message}`, 'error');
-  }
+  await loadDocumentLibrary({ notification: true });
 }
 
 
