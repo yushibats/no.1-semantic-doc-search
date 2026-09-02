@@ -653,7 +653,7 @@ async function processUploadStreamingResponse(response, totalFiles) {
           
           // 成功時のトースト
           if (data.success) {
-            utilsShowToast(`${data.success_count}件のファイルアップロードが完了しました。<br />一覧に反映するには、登録済み文書の「再取得」を押してください。`, 'success');
+            utilsShowToast(`${data.success_count}件のファイルアップロードが完了しました。<br />一覧に反映するには、登録済み文書の「更新」を押してください。`, 'success');
           } else {
             utilsShowToast(data.message, 'warning');
           }

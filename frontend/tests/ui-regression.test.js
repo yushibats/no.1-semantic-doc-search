@@ -1868,6 +1868,19 @@ test('生成する両方のNginx API設定はSSEレスポンスをバッファ�
   }
 });
 
+test("登録済み文書の手動操作は再取得ではなく更新と表示する", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const source = await readFile(new URL("../src/modules/document-library.js", import.meta.url), "utf8");
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  const refreshButton = html.match(/<button[^>]+onclick="refreshDocumentsWithNotification\(\)"[\s\S]*?<\/button>/)?.[0] || "";
+
+  assert.match(refreshButton, /> 更新\s*<\/button>/);
+  assert.doesNotMatch(refreshButton, /再取得/);
+  assert.match(source, /文書一覧を更新しました/);
+  assert.match(source, /文書一覧の更新に失敗しました/);
+  assert.match(app, /登録済み文書の「更新」を押してください/);
+});
+
 test('登録済み文書は表示中の選択・一括移動・完全削除・FULL再処理を提供する', async () => {
   const source = await readFile(new URL('../src/modules/document-library.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');

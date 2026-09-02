@@ -381,7 +381,11 @@ def test_registered_document_delete_detaches_audit_pointers_before_cascade() -> 
     assert "current_revision_id=null" in sql
     assert "update sds_pipeline_job_steps" in sql
     assert "document_revision_id=null" in sql
+    assert "delete from sds_ingest_items" in sql
     assert "delete from sds_documents" in sql
+    assert sql.index("delete from sds_ingest_items") < sql.index(
+        "delete from sds_documents"
+    )
     assert repository.connection_value.committed is True
 
 

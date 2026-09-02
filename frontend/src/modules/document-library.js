@@ -254,11 +254,11 @@ export async function loadDocumentLibrary({ notification = false } = {}) {
     await loadMasters();
     await refresh();
     if (!state.currentBatch) await loadActiveIngestBatches();
-    if (notification) showToast('文書一覧を再取得しました', 'success');
+    if (notification) showToast('文書一覧を更新しました', 'success');
   } catch (error) {
     const target = document.getElementById('documentsList');
     if (target) target.innerHTML = `<div class="retrieval-message error">${escapeHtml(error.message)}</div>`;
-    if (notification) showToast(`文書一覧の再取得に失敗しました: ${error.message}`, 'error');
+    if (notification) showToast(`文書一覧の更新に失敗しました: ${error.message}`, 'error');
   }
 }
 

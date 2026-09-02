@@ -1352,6 +1352,16 @@ class DocumentMetadataRepository:
                 """,
                 {"document": document_id},
             )
+            # Ingest items deliberately keep a required reference to the
+            # document so an unfinished upload cannot become detached from its
+            # draft. Registered-document deletion is the other lifecycle:
+            # remove those upload records explicitly before deleting the
+            # document. The item delete also cascades to item-scoped class
+            # candidates.
+            cursor.execute(
+                "DELETE FROM sds_ingest_items WHERE document_id=:document",
+                {"document": document_id},
+            )
             cursor.execute(
                 "DELETE FROM sds_documents WHERE document_id=:document",
                 {"document": document_id},
