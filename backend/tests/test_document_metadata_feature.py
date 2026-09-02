@@ -24,6 +24,7 @@ from app.rag.document_metadata_models import (
 )
 from app.rag.document_metadata_repository import DocumentMetadataRepository
 from app.rag.models import (
+    BuildingConditionSearchFilter,
     CustomerSearchFilter,
     FolderSearchScope,
     MetadataSearchFilters,
@@ -542,6 +543,50 @@ def test_metadata_filters_are_in_vector_candidate_sql_before_fetch() -> None:
     assert sql.index("sds_folder_closure") < sql.index("FETCH APPROX FIRST")
     assert "sds_document_tags" in sql
     assert "customer_name_search_key" in sql
+
+
+def test_building_conditions_are_in_candidates_before_limits() -> None:
+    repository = _CaptureSearchRepository()
+    filters = MetadataSearchFilters(
+        building=BuildingConditionSearchFilter(
+            building_types=["マンション"],
+            structures=["RC造"],
+            area_min=70,
+            area_max=90,
+            area_unit="㎡",
+            existing_layouts=["3LDK"],
+            proposed_layouts=["2LDK"],
+        )
+    )
+    repository.keyword_search(
+        query="回遊動線",
+        top_k=20,
+        user_hash="u" * 64,
+        current_version_only=True,
+        document_types=[],
+        metadata_filters=filters,
+    )
+    keyword_sql, binds = repository.connection_value.cursor_value.calls[-1]
+    assert keyword_sql.index("sds_document_set_facts") < keyword_sql.index("ROWNUM<=:top_k")
+    assert binds["building_type_0"] == "マンション"
+    assert binds["structure_0"] == "RC造"
+    assert binds["area_value_min"] == 70
+    assert binds["area_value_max"] == 90
+    assert binds["existing_layout_0"] == "3LDK"
+    assert binds["proposed_layout_0"] == "2LDK"
+
+    repository.recipe_vector_search(
+        recipe_code="chunk_text",
+        embedding=[0.1, 0.2],
+        channel="vector:test",
+        top_k=20,
+        user_hash="u" * 64,
+        current_version_only=True,
+        document_types=[],
+        metadata_filters=filters,
+    )
+    vector_sql, _ = repository.connection_value.cursor_value.calls[-1]
+    assert vector_sql.index("sds_document_set_facts") < vector_sql.index("FETCH APPROX FIRST")
 
 
 def test_required_concepts_are_in_keyword_candidate_sql_before_row_limit() -> None:

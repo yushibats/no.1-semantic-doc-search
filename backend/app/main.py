@@ -84,6 +84,7 @@ from app.rag.settings_api import router as retrieval_settings_router
 from app.rag.search_api import router as retrieval_search_router
 from app.rag.pipeline_api import router as pipeline_router
 from app.rag.document_metadata_api import router as document_metadata_router
+from app.rag.case_comparison_api import router as case_comparison_router
 from app.rag.document_metadata_schema import (
     apply_document_library_schema,
     document_library_schema_status,
@@ -142,6 +143,7 @@ app.include_router(retrieval_settings_router)
 app.include_router(retrieval_search_router)
 app.include_router(pipeline_router)
 app.include_router(document_metadata_router)
+app.include_router(case_comparison_router)
 
 # CORS設定
 app.add_middleware(

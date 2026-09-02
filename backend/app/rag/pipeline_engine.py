@@ -570,6 +570,24 @@ class PipelineEngine:
                 await asyncio.to_thread(
                     profile_repository.refresh_apply_status, profile.slot_no
                 )
+            # Comparison metadata is derived from the immutable, just-published
+            # artifacts.  Failure here must not roll back an otherwise valid
+            # search release; the comparison screen can explicitly retry it.
+            try:
+                from app.rag.case_comparison_repository import (
+                    case_comparison_repository,
+                )
+
+                await asyncio.to_thread(
+                    case_comparison_repository.refresh_document,
+                    context.revision.document_id,
+                )
+            except Exception:
+                logger.warning(
+                    "案件比較用メタデータの更新に失敗しました: %s",
+                    context.revision.document_id,
+                    exc_info=True,
+                )
             return None, False
         config_hash = stage_config_hash(kind, component)
         input_hash = self._input_hash(

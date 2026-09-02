@@ -1594,3 +1594,173 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
   .search-related-document { align-items:flex-start; }
   .search-related-document-actions { flex-direction:column; align-items:stretch; }
 }
+
+
+/* Typed building-condition search */
+.building-condition-filter {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  padding: 14px;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  background: #fff;
+}
+.building-condition-filter legend { padding: 0 6px; color: #334155; font-size: 13px; font-weight: 700; }
+.building-condition-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.building-condition-grid label,
+.building-area-range label { color: #52647a; font-size: 11px; font-weight: 650; }
+.building-area-range { display: grid; grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr) minmax(90px, .4fr); align-items: end; gap: 9px; margin-top: 10px; }
+.building-area-range > span { padding-bottom: 10px; color: #64748b; text-align: center; }
+
+/* Before / After case comparison */
+body.case-comparison-open { overflow: hidden; }
+.case-comparison-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 13000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(2, 12, 27, .76);
+}
+.case-comparison-dialog {
+  display: flex;
+  width: min(1480px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #f8fafc;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, .38);
+}
+.case-comparison-dialog > header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 17px 22px;
+  border-bottom: 1px solid #dbe4ef;
+  background: #fff;
+}
+.case-comparison-dialog > header h2 { margin: 0; color: #172b45; font-size: 21px; }
+.case-comparison-dialog > header p { margin: 3px 0 0; color: #64748b; font-size: 12px; }
+.case-comparison-dialog > header button {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: #eef2f7;
+  color: #334155;
+  cursor: pointer;
+}
+.case-comparison-scroll { overflow: auto; padding: 18px 22px 24px; }
+.case-comparison-notice {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a5f;
+  font-size: 12px;
+}
+.case-comparison-notice button { border: 0; background: transparent; color: #1d4ed8; font-weight: 650; cursor: pointer; }
+.case-comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.case-comparison-side { min-width: 0; padding: 14px; border: 1px solid #dbe4ef; border-radius: 10px; background: #fff; }
+.case-comparison-side.before { border-top: 4px solid #64748b; }
+.case-comparison-side.after { border-top: 4px solid #2563eb; }
+.case-comparison-side-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.case-comparison-side-heading span { color: #172b45; font-size: 18px; font-weight: 750; }
+.case-comparison-side-heading small { color: #64748b; }
+.case-comparison-page-select { display: block; margin-bottom: 10px; color: #52647a; font-size: 11px; font-weight: 650; }
+.case-comparison-page-select select { margin-top: 5px; }
+.case-comparison-image-button {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: clamp(260px, 40vh, 460px);
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  cursor: zoom-in;
+}
+.case-comparison-image-button img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.case-comparison-image-button > span { position: absolute; right: 9px; bottom: 9px; padding: 6px 9px; border-radius: 6px; background: rgba(15, 40, 71, .88); color: #fff; font-size: 11px; }
+.case-comparison-page-meta { display: grid; gap: 3px; margin-top: 9px; }
+.case-comparison-page-meta strong { overflow: hidden; color: #334155; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.case-comparison-page-meta small { color: #64748b; }
+.case-comparison-missing { display: flex; min-height: 270px; align-items: center; justify-content: center; gap: 8px; border: 1px dashed #cbd5e1; border-radius: 8px; color: #64748b; }
+.case-comparison-pair-actions,
+.case-building-facts-actions,
+.case-page-classification-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 16px; color: #64748b; font-size: 11px; }
+.case-comparison-details { margin-top: 12px; overflow: hidden; border: 1px solid #dbe4ef; border-radius: 9px; background: #fff; }
+.case-comparison-details > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; color: #334155; font-weight: 700; cursor: pointer; }
+.case-comparison-details[open] > summary { border-bottom: 1px solid #e2e8f0; background: #f8fafc; }
+.case-comparison-details > summary small { color: #64748b; font-size: 11px; font-weight: 500; }
+.case-page-classification-editor { padding: 14px; }
+.case-page-classification-editor > label,
+.case-page-classification-grid label,
+.case-building-facts-grid label { color: #52647a; font-size: 11px; font-weight: 650; }
+.case-page-classification-editor > label select { margin-top: 5px; }
+.case-page-classification-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.case-page-classification-grid .form-input,
+.case-building-facts-grid .form-input { margin-top: 5px; }
+.case-building-facts-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 14px; }
+.case-building-facts-actions { margin: 0; padding: 0 14px 14px; }
+.case-comparison-analysis { margin-top: 16px; padding: 15px; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff; }
+.case-comparison-analysis-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.case-comparison-analysis-heading h3 { margin: 0; color: #172b45; font-size: 16px; }
+.case-comparison-analysis-heading p { margin: 4px 0 0; color: #64748b; font-size: 11px; }
+.case-comparison-analysis-heading > div:last-child { display: flex; gap: 8px; }
+.case-analysis-empty { margin: 14px 0 0; padding: 12px; border-radius: 7px; background: #f8fafc; color: #64748b; font-size: 12px; }
+.case-analysis-running,
+.case-analysis-failed { display: flex; align-items: center; gap: 9px; margin-top: 14px; padding: 12px; border-radius: 7px; }
+.case-analysis-running { background: #eff6ff; color: #1d4ed8; }
+.case-analysis-failed { background: #fef2f2; color: #b91c1c; }
+.case-analysis-result { display: grid; gap: 10px; margin-top: 14px; }
+.case-analysis-result > p { margin: 0; color: #334155; line-height: 1.65; }
+.case-analysis-result article { display: grid; gap: 5px; padding: 11px 12px; border: 1px solid #e2e8f0; border-radius: 7px; background: #f8fafc; color: #334155; font-size: 12px; }
+.case-analysis-result article strong { color: #1e3a5f; font-size: 13px; }
+.case-analysis-result article small { color: #64748b; }
+.case-analysis-result article em { color: #b45309; font-style: normal; }
+.case-analysis-cache { justify-self: start; padding: 3px 7px; border-radius: 999px; background: #dcfce7; color: #166534; font-size: 10px; font-weight: 700; }
+.case-comparison-empty { padding: 14px; color: #64748b; }
+
+.search-result-group-title,
+.search-result-group-actions { display: flex; align-items: center; gap: 8px; }
+.search-result-group-actions { justify-content: flex-end; }
+.search-result-group-actions .apex-button-xs { white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .building-condition-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .building-area-range { grid-template-columns: 1fr auto 1fr; }
+  .building-area-range label:last-child { grid-column: 1 / -1; }
+  .case-comparison-grid { grid-template-columns: 1fr; }
+  .case-page-classification-grid,
+  .case-building-facts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .case-comparison-analysis-heading,
+  .case-comparison-pair-actions,
+  .case-building-facts-actions,
+  .case-page-classification-actions { align-items: stretch; flex-direction: column; }
+}
+@media (max-width: 600px) {
+  .case-comparison-modal { padding: 0; }
+  .case-comparison-dialog { width: 100vw; max-height: 100vh; border-radius: 0; }
+  .case-comparison-scroll { padding: 12px; }
+  .building-condition-grid,
+  .case-page-classification-grid,
+  .case-building-facts-grid { grid-template-columns: 1fr; }
+  .building-area-range { grid-template-columns: 1fr; }
+  .building-area-range > span { display: none; }
+}

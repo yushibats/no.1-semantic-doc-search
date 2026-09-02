@@ -414,6 +414,7 @@ async def search_v2_filters(request: Request) -> dict[str, object]:
     from app.rag.pipeline_repository import pipeline_repository
     from app.rag.document_metadata_repository import document_metadata_repository
     from app.rag.document_metadata_schema import document_library_schema_status
+    from app.rag.case_comparison_repository import case_comparison_repository
 
     # schema_ready()は同期DBコール（DB停止時は接続待ちで長時間ブロックする）。
     # イベントループを凍結させないよう必ずワーカースレッドで実行する。
@@ -426,6 +427,7 @@ async def search_v2_filters(request: Request) -> dict[str, object]:
     date_bounds: dict[str, object] = {"min_year": None, "max_year": None}
     search_concepts: list[object] = []
     search_concept_settings: dict[str, object] = {}
+    building_conditions: dict[str, object] = {}
     if schema_ready:
         feature_status = await asyncio.to_thread(document_library_schema_status)
         document_library_ready = bool(feature_status.get("ready"))
@@ -438,6 +440,7 @@ async def search_v2_filters(request: Request) -> dict[str, object]:
                 date_values,
                 concept_values,
                 concept_settings,
+                building_condition_values,
             ) = (
                 await asyncio.gather(
                     asyncio.to_thread(document_metadata_repository.folder_tree),
@@ -461,6 +464,12 @@ async def search_v2_filters(request: Request) -> dict[str, object]:
                     asyncio.to_thread(
                         document_metadata_repository.get_concept_settings
                     ),
+                    asyncio.to_thread(
+                        case_comparison_repository.condition_options,
+                        principal_hash(
+                            getattr(request.state, "auth_username", None)
+                        ),
+                    ),
                 )
             )
             folders = [item.model_dump(mode="json") for item in folder_values]
@@ -472,6 +481,7 @@ async def search_v2_filters(request: Request) -> dict[str, object]:
                 item.model_dump(mode="json") for item in concept_values
             ]
             search_concept_settings = concept_settings.model_dump(mode="json")
+            building_conditions = building_condition_values.model_dump(mode="json")
     return {
         "profile_retrieval_active": False,
         "v2_retrieval_active": schema_ready,
@@ -484,6 +494,7 @@ async def search_v2_filters(request: Request) -> dict[str, object]:
         "date_bounds": date_bounds,
         "search_concepts": search_concepts,
         "search_concept_settings": search_concept_settings,
+        "building_conditions": building_conditions,
         "retrieval_modes": await asyncio.to_thread(
             _retrieval_mode_options,
             schema_ready,

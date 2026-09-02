@@ -313,6 +313,78 @@ class OracleRagRepository:
                 + " OR ".join(customer_clauses)
                 + "))"
             )
+        building = filters.building
+
+        def add_set_fact_values(
+            *, fact_code: str, phase: str, values: list[str], bind_prefix: str
+        ) -> None:
+            if not values:
+                return
+            placeholders: list[str] = []
+            for index, value in enumerate(values):
+                key = f"{bind_prefix}_{index}"
+                binds[key] = value
+                placeholders.append(f":{key}")
+            binds[f"{bind_prefix}_code"] = fact_code
+            binds[f"{bind_prefix}_phase"] = phase
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sds_document_metadata dm_fact "
+                "JOIN sds_document_set_facts sf "
+                "ON sf.document_set_id=dm_fact.document_set_id "
+                "WHERE dm_fact.document_id=d.document_id "
+                "AND dm_fact.document_set_id IS NOT NULL "
+                "AND sf.confirmed=1 "
+                f"AND sf.fact_code=:{bind_prefix}_code "
+                f"AND sf.phase=:{bind_prefix}_phase "
+                f"AND sf.value_text IN ({', '.join(placeholders)}))"
+            )
+
+        add_set_fact_values(
+            fact_code="BUILDING_TYPE", phase="COMMON",
+            values=building.building_types, bind_prefix="building_type",
+        )
+        add_set_fact_values(
+            fact_code="STRUCTURE", phase="COMMON",
+            values=building.structures, bind_prefix="structure",
+        )
+        add_set_fact_values(
+            fact_code="USE", phase="COMMON",
+            values=building.uses, bind_prefix="building_use",
+        )
+        add_set_fact_values(
+            fact_code="AREA_TYPE", phase="COMMON",
+            values=building.area_types, bind_prefix="area_type",
+        )
+        add_set_fact_values(
+            fact_code="LAYOUT", phase="EXISTING",
+            values=building.existing_layouts, bind_prefix="existing_layout",
+        )
+        add_set_fact_values(
+            fact_code="LAYOUT", phase="PROPOSED",
+            values=building.proposed_layouts, bind_prefix="proposed_layout",
+        )
+        if building.area_min is not None or building.area_max is not None:
+            binds["area_value_code"] = "AREA_VALUE"
+            binds["area_value_unit"] = building.area_unit
+            area_bounds = ""
+            if building.area_min is not None:
+                binds["area_value_min"] = building.area_min
+                area_bounds += " AND sf_area.value_number>=:area_value_min"
+            if building.area_max is not None:
+                binds["area_value_max"] = building.area_max
+                area_bounds += " AND sf_area.value_number<=:area_value_max"
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sds_document_metadata dm_area "
+                "JOIN sds_document_set_facts sf_area "
+                "ON sf_area.document_set_id=dm_area.document_set_id "
+                "WHERE dm_area.document_id=d.document_id "
+                "AND dm_area.document_set_id IS NOT NULL "
+                "AND sf_area.confirmed=1 "
+                "AND sf_area.fact_code=:area_value_code "
+                "AND sf_area.unit=:area_value_unit"
+                + area_bounds
+                + ")"
+            )
         if filters.concept_ids and filters.concept_mode == "REQUIRE_ALL":
             # Concept matching is evaluated at the logical document-set level.
             # Unassigned documents form a one-document virtual set. This clause

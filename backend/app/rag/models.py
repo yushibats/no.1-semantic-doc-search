@@ -423,6 +423,52 @@ class CustomerSearchFilter(BaseModel):
         return list(dict.fromkeys(value.strip() for value in values if value.strip()))
 
 
+class BuildingConditionSearchFilter(BaseModel):
+    building_types: list[str] = Field(default_factory=list, max_length=50)
+    structures: list[str] = Field(default_factory=list, max_length=50)
+    uses: list[str] = Field(default_factory=list, max_length=50)
+    area_types: list[str] = Field(default_factory=list, max_length=50)
+    area_min: float | None = Field(default=None, ge=0)
+    area_max: float | None = Field(default=None, ge=0)
+    area_unit: Literal["㎡", "坪"] = "㎡"
+    existing_layouts: list[str] = Field(default_factory=list, max_length=50)
+    proposed_layouts: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator(
+        "building_types",
+        "structures",
+        "uses",
+        "area_types",
+        "existing_layouts",
+        "proposed_layouts",
+    )
+    @classmethod
+    def unique_values(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @model_validator(mode="after")
+    def valid_area_range(self) -> "BuildingConditionSearchFilter":
+        if (
+            self.area_min is not None
+            and self.area_max is not None
+            and self.area_min > self.area_max
+        ):
+            raise ValueError("area_minはarea_max以下にしてください")
+        return self
+
+    def active(self) -> bool:
+        return bool(
+            self.building_types
+            or self.structures
+            or self.uses
+            or self.area_types
+            or self.area_min is not None
+            or self.area_max is not None
+            or self.existing_layouts
+            or self.proposed_layouts
+        )
+
+
 class MetadataSearchFilters(BaseModel):
     folder: FolderSearchScope | None = None
     tags: TagSearchFilter = Field(default_factory=TagSearchFilter)
@@ -432,6 +478,9 @@ class MetadataSearchFilters(BaseModel):
     document_months: list[int] = Field(default_factory=list, max_length=12)
     concept_ids: list[str] = Field(default_factory=list, max_length=30)
     concept_mode: Literal["BOOST", "REQUIRE_ALL"] = "BOOST"
+    building: BuildingConditionSearchFilter = Field(
+        default_factory=BuildingConditionSearchFilter
+    )
 
     @field_validator("document_months")
     @classmethod
@@ -467,6 +516,7 @@ class MetadataSearchFilters(BaseModel):
             or self.document_year_to is not None
             or self.document_months
             or (self.concept_ids and self.concept_mode == "REQUIRE_ALL")
+            or self.building.active()
         )
 
 
@@ -504,8 +554,14 @@ class SearchV2Request(BaseModel):
 
     @model_validator(mode="after")
     def require_query_or_concept(self) -> "SearchV2Request":
-        if not self.query.strip() and not self.selected_concept_ids:
-            raise ValueError("検索文または検索コンセプトを指定してください")
+        if (
+            not self.query.strip()
+            and not self.selected_concept_ids
+            and not self.metadata_filters.active()
+        ):
+            raise ValueError(
+                "検索文、検索コンセプト、または絞り込み条件を指定してください"
+            )
         return self
 
 

@@ -268,8 +268,24 @@ def test_search_request_accepts_concept_only_and_deduplicates_concepts() -> None
     assert request.selected_concept_ids == ["concept-a", "concept-b"]
     assert request.concept_mode == "REQUIRE_ALL"
 
-    with pytest.raises(ValidationError, match="検索文または検索コンセプト"):
+    with pytest.raises(ValidationError, match="検索文、検索コンセプト、または絞り込み条件"):
         SearchV2Request()
+
+
+def test_search_request_accepts_typed_building_filter_only() -> None:
+    request = SearchV2Request(
+        metadata_filters={
+            "building": {
+                "structures": ["RC造"],
+                "area_min": 70,
+                "area_max": 90,
+                "area_unit": "㎡",
+            }
+        }
+    )
+    assert request.query == ""
+    assert request.metadata_filters.building.structures == ["RC造"]
+    assert request.metadata_filters.building.area_min == 70
 
 
 def test_multipart_retrieval_modes_require_a_non_empty_known_array() -> None:

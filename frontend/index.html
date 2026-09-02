@@ -319,7 +319,7 @@
           <div class="search-auxiliary-options">
             <p class="search-auxiliary-label">絞り込み・詳細設定</p>
           <details id="metadataSearchFilters" class="metadata-filter-panel search-secondary-filter-panel">
-            <summary><i class="fas fa-folder-tree"></i> フォルダ・カテゴリ・顧客・年月で絞り込む</summary>
+            <summary><i class="fas fa-folder-tree"></i> フォルダ・カテゴリ・顧客・年月・建物条件で絞り込む</summary>
             <div class="metadata-filter-grid">
               <div>
                 <label class="form-label" for="searchFolderId">検索フォルダ</label>
@@ -355,6 +355,23 @@
                 <label class="form-label">カテゴリ（すべて満たす）</label>
                 <div id="searchTagFilters" class="metadata-tag-picker"><span class="text-xs text-gray-500">設定を読み込んでいます...</span></div>
               </div>
+              <fieldset class="building-condition-filter">
+                <legend>建物条件</legend>
+                <div class="building-condition-grid">
+                  <label>建物種別<select id="searchBuildingType" class="form-input"><option value="">すべて</option></select></label>
+                  <label>構造<select id="searchStructure" class="form-input"><option value="">すべて</option></select></label>
+                  <label>用途<select id="searchBuildingUse" class="form-input"><option value="">すべて</option></select></label>
+                  <label>面積種別<select id="searchAreaType" class="form-input"><option value="">すべて</option></select></label>
+                  <label>現況間取り<select id="searchExistingLayout" class="form-input"><option value="">すべて</option></select></label>
+                  <label>提案間取り<select id="searchProposedLayout" class="form-input"><option value="">すべて</option></select></label>
+                </div>
+                <div class="building-area-range">
+                  <label>面積（下限）<input id="searchAreaMin" type="number" min="0" step="0.1" class="form-input" placeholder="例: 60"></label>
+                  <span>〜</span>
+                  <label>面積（上限）<input id="searchAreaMax" type="number" min="0" step="0.1" class="form-input" placeholder="例: 90"></label>
+                  <label>単位<select id="searchAreaUnit" class="form-input"><option value="㎡">㎡</option><option value="坪">坪</option></select></label>
+                </div>
+              </fieldset>
             </div>
           </details>
 

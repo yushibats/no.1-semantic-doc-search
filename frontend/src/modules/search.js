@@ -24,6 +24,7 @@ import {
   showImageModal as utilsShowImageModal,
   showTextPreviewModal as utilsShowTextPreviewModal
 } from './utils.js';
+import { showCaseComparison } from './case-comparison.js';
 
 // 検索画像の状態管理
 let selectedSearchImage = null;
@@ -86,6 +87,21 @@ function renderMetadataSearchFilters(data) {
   const yearTo = document.getElementById('searchYearTo');
   if (yearFrom && bounds.min_year) yearFrom.placeholder = String(bounds.min_year);
   if (yearTo && bounds.max_year) yearTo.placeholder = String(bounds.max_year);
+  const buildingConditions = data.building_conditions || {};
+  const fillConditionOptions = (elementId, values) => {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+    const current = element.value;
+    element.innerHTML = '<option value="">すべて</option>' + (values || [])
+      .map(value => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('');
+    element.value = (values || []).includes(current) ? current : '';
+  };
+  fillConditionOptions('searchBuildingType', buildingConditions.building_types);
+  fillConditionOptions('searchStructure', buildingConditions.structures);
+  fillConditionOptions('searchBuildingUse', buildingConditions.uses);
+  fillConditionOptions('searchAreaType', buildingConditions.area_types);
+  fillConditionOptions('searchExistingLayout', buildingConditions.existing_layouts);
+  fillConditionOptions('searchProposedLayout', buildingConditions.proposed_layouts);
   searchConcepts = (data.search_concepts || []).filter(concept => concept.status === 'ACTIVE');
   searchConceptSettings = data.search_concept_settings || searchConceptSettings;
   searchConceptSuggestionIds = null;
@@ -261,6 +277,25 @@ function collectMetadataFilters() {
   const yearFrom = Number(document.getElementById('searchYearFrom')?.value) || null;
   const yearTo = Number(document.getElementById('searchYearTo')?.value) || null;
   const month = Number(document.getElementById('searchMonth')?.value) || null;
+  const areaMinInput = document.getElementById('searchAreaMin')?.value.trim() || '';
+  const areaMaxInput = document.getElementById('searchAreaMax')?.value.trim() || '';
+  const areaMin = areaMinInput ? Number(areaMinInput) : null;
+  const areaMax = areaMaxInput ? Number(areaMaxInput) : null;
+  const singleValue = elementId => {
+    const value = document.getElementById(elementId)?.value || '';
+    return value ? [value] : [];
+  };
+  const building = {
+    building_types: singleValue('searchBuildingType'),
+    structures: singleValue('searchStructure'),
+    uses: singleValue('searchBuildingUse'),
+    area_types: singleValue('searchAreaType'),
+    area_min: Number.isFinite(areaMin) && areaMin >= 0 ? areaMin : null,
+    area_max: Number.isFinite(areaMax) && areaMax >= 0 ? areaMax : null,
+    area_unit: document.getElementById('searchAreaUnit')?.value || '㎡',
+    existing_layouts: singleValue('searchExistingLayout'),
+    proposed_layouts: singleValue('searchProposedLayout')
+  };
   return {
     folder: folderId ? {
       folder_id: folderId,
@@ -277,7 +312,8 @@ function collectMetadataFilters() {
     } : null,
     document_year_from: yearFrom,
     document_year_to: yearTo,
-    document_months: month ? [month] : []
+    document_months: month ? [month] : [],
+    building
   };
 }
 
@@ -1134,8 +1170,8 @@ export function displaySearchResults(data) {
     const isGroupEnd = Boolean(group) && next?.group_key !== fileResult.group_key;
     const groupHeader = isGroupStart ? `<section class="search-result-group">
       <div class="search-result-group-header">
-        <div><i class="fas fa-layer-group"></i><strong>${escapeHtml(group.label)}</strong>${group.document_set_id ? '' : '<span>未グループ</span>'}</div>
-        <small>直接一致 ${group.direct_document_ids.length}件${group.related_documents.length ? `・関連資料 ${group.related_documents.length}件` : ''}</small>
+        <div class="search-result-group-title"><i class="fas fa-layer-group"></i><strong>${escapeHtml(group.label)}</strong>${group.document_set_id ? '' : '<span>未グループ</span>'}</div>
+        <div class="search-result-group-actions"><small>直接一致 ${group.direct_document_ids.length}件${group.related_documents.length ? `・関連資料 ${group.related_documents.length}件` : ''}</small>${group.document_set_id ? `<button type="button" class="apex-button-secondary apex-button-xs" onclick="window.searchModule.showCaseComparison(${groupIndex})"><i class="fas fa-table-columns"></i> 現況図と提案図を比較</button>` : ''}</div>
       </div>` : '';
     
     // ファイル情報カード
@@ -1668,7 +1704,8 @@ window.searchModule = {
   toggleSearchConcept,
   filterSearchConcepts,
   expandSearchConceptCategory,
-  clearSearchConcepts
+  clearSearchConcepts,
+  showCaseComparison
 };
 
 // デフォルトエクスポート
@@ -1692,7 +1729,8 @@ export default {
   toggleSearchConcept,
   filterSearchConcepts,
   expandSearchConceptCategory,
-  clearSearchConcepts
+  clearSearchConcepts,
+  showCaseComparison
 }
 
 /**
