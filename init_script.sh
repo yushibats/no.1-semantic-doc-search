@@ -542,8 +542,8 @@ if [ -d "$PROJECT_DIR" ]; then
     fi
     
     # Set API Host and Port for production
-    sed -i "s|API_HOST=.*|API_HOST=0.0.0.0|g" .env
-    sed -i "s|API_PORT=.*|API_PORT=8081|g" .env
+    sed -i "s|^API_HOST=.*|API_HOST=0.0.0.0|g" .env
+    sed -i "s|^API_PORT=.*|API_PORT=8081|g" .env
     
     # Detect access IP (public subnet: public IP, private subnet: private IP)
     EXTERNAL_IP=$(detect_access_ip || true)

@@ -13,6 +13,7 @@ readonly MINERU_INSTALL_MODEL="mineru2-5-pro-2605-1-2b"
 readonly MINERU_INSTALL_VERSION="3.4.4"
 readonly MINERU_INSTALL_ORIGINAL_CLIENT_SHA="c8b5435cf6fbed48bc161591b8219af8c281c55db2af0c18d6258e9e7b682c55"
 readonly MINERU_INSTALL_PATCHED_CLIENT_SHA="4b837820b094150f1e86a00487ef0e622f3c7152530d874fe9d9bccfa3663e8e"
+readonly MINERU_INSTALL_CURRENT_CLIENT_SHA="0961da52bfdd55b58de22903541740d552bbf976c5b1fe9c0d192abfbe292ef5"
 
 mineru_install_log() {
   printf '[MinerU installer] %s\n' "$*"
@@ -51,11 +52,11 @@ readonly MINERU_INSTALL_LIVE_CLIENT="${MINERU_INSTALL_APP_ROOT}/backend/app/rag/
 [[ -f "${MINERU_INSTALL_SOURCE_CLIENT}" ]] || mineru_install_fail "変更済みclients.pyが見つかりません: ${MINERU_INSTALL_SOURCE_CLIENT}"
 
 mineru_install_source_sha="$(sha256sum "${MINERU_INSTALL_SOURCE_CLIENT}" | awk '{print $1}')"
-[[ "${mineru_install_source_sha}" == "${MINERU_INSTALL_PATCHED_CLIENT_SHA}" ]] || mineru_install_fail "変更済みclients.pyの内容が想定と異なります"
+[[ "${mineru_install_source_sha}" == "${MINERU_INSTALL_CURRENT_CLIENT_SHA}" ]] || mineru_install_fail "現在のclients.pyの内容が想定と異なります"
 
 mineru_install_live_sha="$(sha256sum "${MINERU_INSTALL_LIVE_CLIENT}" | awk '{print $1}')"
 case "${mineru_install_live_sha}" in
-  "${MINERU_INSTALL_ORIGINAL_CLIENT_SHA}"|"${MINERU_INSTALL_PATCHED_CLIENT_SHA}") ;;
+  "${MINERU_INSTALL_ORIGINAL_CLIENT_SHA}"|"${MINERU_INSTALL_PATCHED_CLIENT_SHA}"|"${MINERU_INSTALL_CURRENT_CLIENT_SHA}") ;;
   *) mineru_install_fail "本番clients.pyに別の変更があります。安全のため上書きを停止しました" ;;
 esac
 
@@ -135,8 +136,10 @@ install -m 0644 -o root -g root "${mineru_install_tmp_dir}/no1-mineru-api.servic
 
 mineru_install_timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
 cp -a "${MINERU_INSTALL_APP_ROOT}/.env" "${MINERU_INSTALL_APP_ROOT}/.env.before-mineru-${mineru_install_timestamp}"
-cp -a "${MINERU_INSTALL_LIVE_CLIENT}" "${MINERU_INSTALL_LIVE_CLIENT}.before-mineru-${mineru_install_timestamp}"
-install -m 0644 -o root -g root "${MINERU_INSTALL_SOURCE_CLIENT}" "${MINERU_INSTALL_LIVE_CLIENT}"
+if [[ "$(readlink -f "${MINERU_INSTALL_SOURCE_CLIENT}")" != "$(readlink -f "${MINERU_INSTALL_LIVE_CLIENT}")" ]]; then
+  cp -a "${MINERU_INSTALL_LIVE_CLIENT}" "${MINERU_INSTALL_LIVE_CLIENT}.before-mineru-${mineru_install_timestamp}"
+  install -m 0644 -o root -g root "${MINERU_INSTALL_SOURCE_CLIENT}" "${MINERU_INSTALL_LIVE_CLIENT}"
+fi
 
 mineru_install_set_app_env "MINERU_ENABLED" "true"
 mineru_install_set_app_env "MINERU_API_HOST" "http://127.0.0.1:8000"
