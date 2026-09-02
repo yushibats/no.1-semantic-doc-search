@@ -11,7 +11,7 @@ macOSでローカル開発環境を構築する場合は、[README_MAC.md](READM
 - 大阪・東京リージョンに対応しています。（デフォルト：大阪リージョン）
 - 新しいADBとComputeを作成し、このリポジトリの作業ブランチをデプロイします。
 
-  Click [![Deploy to Oracle Cloud](https://oci-resourcemanager-plugin.plugins.oci.oraclecloud.com/latest/deploy-to-oracle-cloud.svg)](https://cloud.oracle.com/resourcemanager/stacks/create?region=ap-osaka-1&zipUrl=https://raw.githubusercontent.com/yushibats/no.1-semantic-doc-search/codex/case-plan-comparison/releases/oci/case-plan-comparison-preview.zip)
+  Click [![Deploy to Oracle Cloud](https://oci-resourcemanager-plugin.plugins.oci.oraclecloud.com/latest/deploy-to-oracle-cloud.svg)](https://cloud.oracle.com/resourcemanager/stacks/create?region=ap-osaka-1&zipUrl=https://github.com/yushibats/no.1-semantic-doc-search/releases/download/oci-case-plan-comparison-preview-v1/case-plan-comparison-preview.zip)
 
 
 ## ネットワーク設定
