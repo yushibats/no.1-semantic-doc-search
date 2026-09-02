@@ -92,7 +92,7 @@ runcmd:
   - systemctl enable nginx
   - systemctl start nginx
   - cd /u01/aipoc
-  - git clone https://github.com/engchina/no.1-semantic-doc-search.git
+  - git clone --branch codex/case-plan-comparison --single-branch https://github.com/yushibats/no.1-semantic-doc-search.git
   - cd /u01/aipoc/no.1-semantic-doc-search
   - chmod +x init_script.sh
   - nohup bash init_script.sh >> /var/log/cloud-init-custom.log 2>&1 &
