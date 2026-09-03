@@ -20,6 +20,12 @@ DESIGN_PROFILE_UPDATES = {
     3: ("住宅提案プレゼン・デザイン", PRESENTATION_DESIGN_PROFILE_PROMPT),
 }
 
+SEARCH_READY_PROFILE_UPDATES = {
+    1: ("住宅施工写真・検索強化", CONSTRUCTION_PHOTO_PROFILE_PROMPT),
+    2: ("住宅提案・図面・検索強化", PROPOSAL_PLAN_PROFILE_PROMPT),
+    3: ("住宅提案プレゼン・検索強化", PRESENTATION_DESIGN_PROFILE_PROMPT),
+}
+
 
 def snapshot_profiles() -> list[dict[str, Any]]:
     """Capture the exact revisions so rollback can reuse already indexed releases."""
@@ -132,6 +138,83 @@ def restore_design_profiles(snapshot: list[dict[str, Any]]) -> list[dict[str, An
     by_slot = {int(item["slot_no"]): item for item in snapshot}
     if set(by_slot) != expected_slots:
         raise ValueError("profile snapshot must contain exactly slots 1 and 3")
+    with profile_repository._connection() as connection, connection.cursor() as cursor:
+        for slot_no in sorted(expected_slots):
+            item = by_slot[slot_no]
+            revision_id = str(item["current_revision_id"])
+            cursor.execute(
+                "SELECT COUNT(*) FROM SDS_VLM_PROFILE_REVISIONS "
+                "WHERE REVISION_ID=:revision AND SLOT_NO=:slot",
+                {"revision": revision_id, "slot": slot_no},
+            )
+            if int(cursor.fetchone()[0]) != 1:
+                raise ValueError(f"profile revision is missing for slot {slot_no}")
+            cursor.execute(
+                """
+                UPDATE SDS_VLM_PROFILES
+                SET NAME=:name, ENABLED=:enabled, CURRENT_REVISION_ID=:revision,
+                    APPLY_STATUS='PENDING', UPDATED_AT=SYSTIMESTAMP
+                WHERE SLOT_NO=:slot
+                """,
+                {
+                    "name": str(item["name"]),
+                    "enabled": int(bool(item["enabled"])),
+                    "revision": revision_id,
+                    "slot": slot_no,
+                },
+            )
+        connection.commit()
+    for slot_no in sorted(expected_slots):
+        profile_repository.refresh_apply_status(slot_no)
+    profiles = [profile_repository.get_profile(slot_no) for slot_no in sorted(expected_slots)]
+    return [
+        {
+            "slot_no": profile.slot_no,
+            "name": profile.name,
+            "enabled": profile.enabled,
+            "apply_status": profile.apply_status,
+            "pending_document_count": profile.pending_document_count,
+            "current_revision_id": profile.current_revision_id,
+        }
+        for profile in profiles
+    ]
+
+
+def snapshot_search_ready_profiles() -> list[dict[str, Any]]:
+    """Capture all three profile revisions before applying search-ready prompts."""
+    return [
+        profile_repository.get_profile(slot_no).model_dump(mode="json")
+        for slot_no in sorted(SEARCH_READY_PROFILE_UPDATES)
+    ]
+
+
+def apply_search_ready_profiles() -> list[dict[str, Any]]:
+    """Apply all search-ready prompts without queuing existing documents."""
+    results: list[dict[str, Any]] = []
+    for slot_no, (name, prompt) in SEARCH_READY_PROFILE_UPDATES.items():
+        current = profile_repository.get_profile(slot_no)
+        saved = profile_repository.apply_profile(
+            current.model_copy(update={"name": name, "extraction_prompt": prompt})
+        )
+        results.append(
+            {
+                "slot_no": saved.slot_no,
+                "name": saved.name,
+                "enabled": saved.enabled,
+                "apply_status": saved.apply_status,
+                "pending_document_count": saved.pending_document_count,
+                "current_revision_id": saved.current_revision_id,
+            }
+        )
+    return results
+
+
+def restore_search_ready_profiles(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Restore the exact prior revisions for all three profile slots."""
+    expected_slots = set(SEARCH_READY_PROFILE_UPDATES)
+    by_slot = {int(item["slot_no"]): item for item in snapshot}
+    if set(by_slot) != expected_slots:
+        raise ValueError("profile snapshot must contain exactly slots 1, 2, and 3")
     with profile_repository._connection() as connection, connection.cursor() as cursor:
         for slot_no in sorted(expected_slots):
             item = by_slot[slot_no]
