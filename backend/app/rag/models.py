@@ -431,6 +431,7 @@ class BuildingConditionSearchFilter(BaseModel):
     area_min: float | None = Field(default=None, ge=0)
     area_max: float | None = Field(default=None, ge=0)
     area_unit: Literal["㎡", "坪"] = "㎡"
+    layouts: list[str] = Field(default_factory=list, max_length=50)
     existing_layouts: list[str] = Field(default_factory=list, max_length=50)
     proposed_layouts: list[str] = Field(default_factory=list, max_length=50)
 
@@ -439,6 +440,7 @@ class BuildingConditionSearchFilter(BaseModel):
         "structures",
         "uses",
         "area_types",
+        "layouts",
         "existing_layouts",
         "proposed_layouts",
     )
@@ -464,6 +466,7 @@ class BuildingConditionSearchFilter(BaseModel):
             or self.area_types
             or self.area_min is not None
             or self.area_max is not None
+            or self.layouts
             or self.existing_layouts
             or self.proposed_layouts
         )

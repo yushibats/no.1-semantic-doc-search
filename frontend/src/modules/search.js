@@ -45,6 +45,12 @@ let searchConceptSuggestionSerial = 0;
 const searchConceptSuggestionCache = new Map();
 const selectedSearchConceptIds = new Set();
 const expandedConceptCategories = new Set();
+let parsedQueryConditions = null;
+let parsedQueryConditionQuery = '';
+let queryConditionTimer = null;
+let queryConditionSerial = 0;
+const queryConditionCache = new Map();
+const dismissedQueryConditionIds = new Set();
 const defaultRetrievalModes = [
   'visual_vector',
   'oracle_text',
@@ -271,7 +277,134 @@ export function clearSearchConcepts() {
   renderSearchConcepts();
 }
 
-function collectMetadataFilters() {
+function activeParsedBuildingConditions() {
+  const building = {
+    building_types: [],
+    structures: [],
+    uses: [],
+    area_types: [],
+    area_min: null,
+    area_max: null,
+    area_unit: '㎡',
+    layouts: [],
+    existing_layouts: [],
+    proposed_layouts: []
+  };
+  for (const chip of parsedQueryConditions?.chips || []) {
+    if (dismissedQueryConditionIds.has(chip.id)) continue;
+    const effect = chip.effect || {};
+    for (const key of [
+      'building_types', 'structures', 'uses', 'area_types',
+      'layouts', 'existing_layouts', 'proposed_layouts'
+    ]) {
+      for (const value of effect[key] || []) {
+        if (!building[key].includes(value)) building[key].push(value);
+      }
+    }
+    if (Object.hasOwn(effect, 'area_min')) building.area_min = effect.area_min;
+    if (Object.hasOwn(effect, 'area_max')) building.area_max = effect.area_max;
+    if (effect.area_unit) building.area_unit = effect.area_unit;
+  }
+  return building;
+}
+
+function renderParsedQueryConditions() {
+  const root = document.getElementById('parsedQueryConditions');
+  if (!root) return;
+  const chips = (parsedQueryConditions?.chips || [])
+    .filter(chip => !dismissedQueryConditionIds.has(chip.id));
+  root.hidden = !chips.length;
+  root.innerHTML = chips.length ? `
+    <span class="parsed-query-condition-label"><i class="fas fa-filter"></i> 入力から認識した絞り込み</span>
+    <div class="parsed-query-condition-chips">
+      ${chips.map(chip => `<button type="button" class="parsed-query-condition-chip" onclick="window.searchModule.removeParsedQueryCondition('${escapeHtml(chip.id)}')" title="この条件を解除">${escapeHtml(chip.label)} <i class="fas fa-times" aria-hidden="true"></i></button>`).join('')}
+    </div>
+  ` : '';
+}
+
+async function fetchParsedQueryConditions(query, requestSerial) {
+  const normalized = query.trim();
+  if (!normalized) return null;
+  const cached = queryConditionCache.get(normalized);
+  if (cached) return cached;
+  const data = await authApiCall('/ai/api/search/v2/query-conditions/parse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: normalized }),
+    timeout: 5000
+  });
+  if (requestSerial !== queryConditionSerial) return null;
+  if (queryConditionCache.size >= 100) queryConditionCache.clear();
+  queryConditionCache.set(normalized, data);
+  return data;
+}
+
+export function scheduleQueryConditionParsing(value) {
+  const query = String(value || '').trim();
+  const changed = query !== parsedQueryConditionQuery;
+  parsedQueryConditionQuery = query;
+  if (changed) dismissedQueryConditionIds.clear();
+  if (queryConditionTimer) {
+    clearTimeout(queryConditionTimer);
+    queryConditionTimer = null;
+  }
+  const requestSerial = ++queryConditionSerial;
+  if (!query) {
+    parsedQueryConditions = null;
+    renderParsedQueryConditions();
+    return;
+  }
+  const cached = queryConditionCache.get(query);
+  if (cached) {
+    parsedQueryConditions = cached;
+    renderParsedQueryConditions();
+    return;
+  }
+  queryConditionTimer = setTimeout(async () => {
+    try {
+      const data = await fetchParsedQueryConditions(query, requestSerial);
+      if (!data || requestSerial !== queryConditionSerial) return;
+      parsedQueryConditions = data;
+      renderParsedQueryConditions();
+    } catch (_error) {
+      if (requestSerial !== queryConditionSerial) return;
+      parsedQueryConditions = null;
+      renderParsedQueryConditions();
+    }
+  }, 250);
+}
+
+export function removeParsedQueryCondition(conditionId) {
+  dismissedQueryConditionIds.add(conditionId);
+  renderParsedQueryConditions();
+}
+
+async function ensureQueryConditions(query) {
+  const normalized = query.trim();
+  if (!normalized) return null;
+  if (queryConditionTimer) {
+    clearTimeout(queryConditionTimer);
+    queryConditionTimer = null;
+  }
+  if (parsedQueryConditionQuery !== normalized) {
+    parsedQueryConditionQuery = normalized;
+    dismissedQueryConditionIds.clear();
+  }
+  try {
+    if (!parsedQueryConditions || parsedQueryConditions.original_query?.trim() !== normalized) {
+      const requestSerial = ++queryConditionSerial;
+      const data = await fetchParsedQueryConditions(normalized, requestSerial);
+      if (data) parsedQueryConditions = data;
+      renderParsedQueryConditions();
+    }
+    return activeParsedBuildingConditions();
+  } catch (_error) {
+    // Condition parsing is an optional fast path. Semantic retrieval must still run.
+    return null;
+  }
+}
+
+function collectMetadataFilters(parsedBuilding = null) {
   const folderId = document.getElementById('searchFolderId')?.value || '';
   const customer = document.getElementById('searchCustomerName')?.value.trim() || '';
   const yearFrom = Number(document.getElementById('searchYearFrom')?.value) || null;
@@ -285,16 +418,27 @@ function collectMetadataFilters() {
     const value = document.getElementById(elementId)?.value || '';
     return value ? [value] : [];
   };
+  const manualAreaTypes = singleValue('searchAreaType');
+  const manualAreaMin = Number.isFinite(areaMin) && areaMin >= 0 ? areaMin : null;
+  const manualAreaMax = Number.isFinite(areaMax) && areaMax >= 0 ? areaMax : null;
+  const hasManualArea = Boolean(manualAreaTypes.length || areaMinInput || areaMaxInput);
+  const manualOrParsed = (elementId, key) => {
+    const manual = singleValue(elementId);
+    return manual.length ? manual : (parsedBuilding?.[key] || []);
+  };
   const building = {
-    building_types: singleValue('searchBuildingType'),
-    structures: singleValue('searchStructure'),
-    uses: singleValue('searchBuildingUse'),
-    area_types: singleValue('searchAreaType'),
-    area_min: Number.isFinite(areaMin) && areaMin >= 0 ? areaMin : null,
-    area_max: Number.isFinite(areaMax) && areaMax >= 0 ? areaMax : null,
-    area_unit: document.getElementById('searchAreaUnit')?.value || '㎡',
-    existing_layouts: singleValue('searchExistingLayout'),
-    proposed_layouts: singleValue('searchProposedLayout')
+    building_types: manualOrParsed('searchBuildingType', 'building_types'),
+    structures: manualOrParsed('searchStructure', 'structures'),
+    uses: manualOrParsed('searchBuildingUse', 'uses'),
+    area_types: hasManualArea ? manualAreaTypes : (parsedBuilding?.area_types || []),
+    area_min: hasManualArea ? manualAreaMin : (parsedBuilding?.area_min ?? null),
+    area_max: hasManualArea ? manualAreaMax : (parsedBuilding?.area_max ?? null),
+    area_unit: hasManualArea
+      ? (document.getElementById('searchAreaUnit')?.value || '㎡')
+      : (parsedBuilding?.area_unit || '㎡'),
+    layouts: parsedBuilding?.layouts || [],
+    existing_layouts: manualOrParsed('searchExistingLayout', 'existing_layouts'),
+    proposed_layouts: manualOrParsed('searchProposedLayout', 'proposed_layouts')
   };
   return {
     folder: folderId ? {
@@ -1095,11 +1239,12 @@ export async function performSearch() {
     hideSearchResults();
     setSearchButtonBusy(submitButton, true, '検索中...');
     if (!dynamicFiltersLoaded) await loadDynamicSearchFilters();
+    const parsedBuilding = await ensureQueryConditions(query);
     usesEventStream = true;
     setSearchButtonBusy(submitButton, true, '検索中...', usesEventStream);
     if (searchCancelled) throw new Error('検索をキャンセルしました');
 
-    const requestBody = { query, top_k: topK, min_score: minScore, filename_filter: filenameFilter || null, field_filters: collectDynamicFilters(), metadata_filters: collectMetadataFilters(), document_types: [], current_version_only: true, retrieval_modes: retrievalModes, verify, ...conceptPayload };
+    const requestBody = { query, top_k: topK, min_score: minScore, filename_filter: filenameFilter || null, field_filters: collectDynamicFilters(), metadata_filters: collectMetadataFilters(parsedBuilding), document_types: [], current_version_only: true, retrieval_modes: retrievalModes, verify, ...conceptPayload };
     const endpoint = '/ai/api/search/v2/events';
 
     const data = usesEventStream ? await streamSearch(endpoint, {
@@ -1670,6 +1815,15 @@ export function clearSearchResults() {
   setRetrievalModeError();
   // テキスト検索のクリア
   document.getElementById('searchQuery').value = '';
+  if (queryConditionTimer) {
+    clearTimeout(queryConditionTimer);
+    queryConditionTimer = null;
+  }
+  queryConditionSerial += 1;
+  parsedQueryConditions = null;
+  parsedQueryConditionQuery = '';
+  dismissedQueryConditionIds.clear();
+  renderParsedQueryConditions();
 
   // 画像検索のクリア
   clearSearchImage();
@@ -1705,6 +1859,8 @@ window.searchModule = {
   filterSearchConcepts,
   expandSearchConceptCategory,
   clearSearchConcepts,
+  scheduleQueryConditionParsing,
+  removeParsedQueryCondition,
   showCaseComparison
 };
 
@@ -1730,6 +1886,8 @@ export default {
   filterSearchConcepts,
   expandSearchConceptCategory,
   clearSearchConcepts,
+  scheduleQueryConditionParsing,
+  removeParsedQueryCondition,
   showCaseComparison
 }
 

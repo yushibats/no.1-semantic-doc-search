@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 readonly APP_ROOT="${APP_ROOT:-/u01/aipoc/no.1-semantic-doc-search}"
+readonly BACKUP_PARENT="${BACKUP_PARENT:-/u01/aipoc/backups/search-ready-vlm-prompts}"
 readonly BACKUP_ROOT="${1:-}"
 readonly SETTINGS_BACKUP="${BACKUP_ROOT}/settings-before.json"
 
@@ -10,7 +11,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 case "${BACKUP_ROOT}" in
-  /u01/aipoc/backups/search-ready-vlm-prompts/*) ;;
+  "${BACKUP_PARENT}/"*) ;;
   *) echo "想定外のバックアップパスです: ${BACKUP_ROOT}" >&2; exit 1 ;;
 esac
 if [[ ! -f "${SETTINGS_BACKUP}" || ! -x "${APP_ROOT}/backend/.venv/bin/python" ]]; then

@@ -1452,6 +1452,52 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
   border-color: #1d4ed8;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, .18);
 }
+.parsed-query-conditions {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #fff;
+}
+.parsed-query-conditions[hidden] { display: none; }
+.parsed-query-condition-label {
+  padding-top: 5px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.parsed-query-condition-chips {
+  display: flex;
+  flex: 1 1 420px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.parsed-query-condition-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid #93c5fd;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+.parsed-query-condition-chip:hover,
+.parsed-query-condition-chip:focus-visible {
+  border-color: #2563eb;
+  background: #dbeafe;
+  outline: none;
+}
 .search-auxiliary-options {
   margin-top: 26px;
   padding-top: 14px;

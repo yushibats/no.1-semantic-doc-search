@@ -96,7 +96,7 @@ test('検索画面はタグ・自然言語を主操作にして詳細設定を�
   const textPanel = document.getElementById('textSearchPanel');
   assert.ok(auxiliary);
   assert.match(auxiliary.querySelector('.search-auxiliary-label').textContent, /絞り込み・詳細設定/);
-  assert.equal(document.getElementById('searchQuery').placeholder, '例: 開放的なLDK、アイランドキッチン');
+  assert.equal(document.getElementById('searchQuery').placeholder, '例: RC造マンション、80㎡、3LDK、開放的なLDK');
   assert.equal(metadata.closest('.search-auxiliary-options'), auxiliary);
   assert.equal(settings.closest('.search-auxiliary-options'), auxiliary);
   assert.ok(concepts.classList.contains('search-primary-concept-panel'));

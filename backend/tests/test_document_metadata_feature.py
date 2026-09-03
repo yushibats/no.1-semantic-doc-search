@@ -551,6 +551,7 @@ def test_building_conditions_are_in_candidates_before_limits() -> None:
         building=BuildingConditionSearchFilter(
             building_types=["マンション"],
             structures=["RC造"],
+            area_types=["専有面積"],
             area_min=70,
             area_max=90,
             area_unit="㎡",
@@ -568,8 +569,10 @@ def test_building_conditions_are_in_candidates_before_limits() -> None:
     )
     keyword_sql, binds = repository.connection_value.cursor_value.calls[-1]
     assert keyword_sql.index("sds_document_set_facts") < keyword_sql.index("ROWNUM<=:top_k")
+    assert keyword_sql.index("sds_document_set_areas") < keyword_sql.index("ROWNUM<=:top_k")
     assert binds["building_type_0"] == "マンション"
     assert binds["structure_0"] == "RC造"
+    assert binds["area_type_0"] == "専有面積"
     assert binds["area_value_min"] == 70
     assert binds["area_value_max"] == 90
     assert binds["existing_layout_0"] == "3LDK"
@@ -587,6 +590,39 @@ def test_building_conditions_are_in_candidates_before_limits() -> None:
     )
     vector_sql, _ = repository.connection_value.cursor_value.calls[-1]
     assert vector_sql.index("sds_document_set_facts") < vector_sql.index("FETCH APPROX FIRST")
+    assert vector_sql.index("sds_document_set_areas") < vector_sql.index("FETCH APPROX FIRST")
+
+
+def test_typed_metadata_search_returns_one_representative_page_per_document() -> None:
+    repository = _CaptureSearchRepository()
+    filters = MetadataSearchFilters(
+        building=BuildingConditionSearchFilter(
+            area_types=["専有面積"],
+            area_min=72,
+            area_max=88,
+            area_unit="㎡",
+        )
+    )
+
+    assert repository.metadata_search(
+        top_k=20,
+        user_hash="u" * 64,
+        current_version_only=True,
+        document_types=[],
+        metadata_filters=filters,
+    ) == []
+
+    sql, binds = repository.connection_value.cursor_value.calls[-1]
+    normalized = " ".join(sql.casefold().split())
+    assert "sds_document_set_areas" in normalized
+    assert normalized.index("sds_document_set_areas") < normalized.index(
+        "rownum<=:top_k"
+    )
+    assert "row_number() over" in normalized
+    assert "partition by metadata_rows.document_id" in normalized
+    assert binds["area_type_0"] == "専有面積"
+    assert binds["area_value_min"] == 72
+    assert binds["area_value_max"] == 88
 
 
 def test_required_concepts_are_in_keyword_candidate_sql_before_row_limit() -> None:

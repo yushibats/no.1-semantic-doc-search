@@ -527,8 +527,13 @@ class SearchPipeline:
         selected_concept_ids = list(
             dict.fromkeys(value for value in (selected_concept_ids or []) if value)
         )
-        if image is None and not query.strip() and not selected_concept_ids:
-            raise ValueError("検索文または検索コンセプトを指定してください")
+        if (
+            image is None
+            and not query.strip()
+            and not selected_concept_ids
+            and not metadata_filters.active()
+        ):
+            raise ValueError("検索文、検索コンセプト、または絞り込み条件を指定してください")
         if concept_mode not in {"BOOST", "REQUIRE_ALL"}:
             raise ValueError("検索コンセプトの一致モードが不正です")
         concept_labels = await asyncio.to_thread(
@@ -566,7 +571,11 @@ class SearchPipeline:
         active_modes = requested_modes.intersection(configured_modes)
         if not query.strip():
             active_modes.difference_update(KEYWORD_RETRIEVAL_MODES)
-        if not active_modes and not selected_concept_ids:
+        if (
+            not active_modes
+            and not selected_concept_ids
+            and not metadata_filters.active()
+        ):
             raise ValueError(
                 "選択した検索方式は現在の検索条件または管理者設定では利用できません"
             )
@@ -652,6 +661,25 @@ class SearchPipeline:
                     asyncio.to_thread(
                         rag_repository.concept_search,
                         concept_ids=selected_concept_ids,
+                        top_k=branch_k,
+                        user_hash=user_hash,
+                        current_version_only=current_version_only,
+                        document_types=document_types,
+                        filename_filter=filename_filter,
+                        metadata_filters=metadata_filters,
+                    ),
+                )
+            )
+
+        if metadata_filters.building.active() or (
+            metadata_filters.active() and not query.strip()
+        ):
+            tasks.append(
+                (
+                    "metadata:typed",
+                    0.9,
+                    asyncio.to_thread(
+                        rag_repository.metadata_search,
                         top_k=branch_k,
                         user_hash=user_hash,
                         current_version_only=current_version_only,

@@ -200,10 +200,12 @@
               <textarea
                 id="searchQuery"
                 class="form-input"
-                placeholder="例: 開放的なLDK、アイランドキッチン"
+                placeholder="例: RC造マンション、80㎡、3LDK、開放的なLDK"
                 rows="3"
+                oninput="window.searchModule.scheduleQueryConditionParsing(this.value)"
                 onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); window.searchModule.performSearch(); }"
               ></textarea>
+              <div id="parsedQueryConditions" class="parsed-query-conditions" hidden></div>
             </div>
 
             <div style="display: flex; gap: 12px;">

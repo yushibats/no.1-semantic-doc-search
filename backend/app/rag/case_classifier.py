@@ -31,6 +31,18 @@ class SetFactCandidate:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SetAreaCandidate:
+    area_type: str
+    phase: str
+    value: float
+    unit: str
+    source: str = "RULE"
+    confidence: float = 0.0
+    confirmed: bool = False
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
 def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value or "")).strip()
 
@@ -138,14 +150,14 @@ def classify_page(
         floor_code = "2F"
     else:
         floor_match = re.search(
-            r"(?<!\d)([1-9])\s*(?:F|階)(?!\w)|(?:地階|地下)\s*([1-9])",
+            r"(?<!\d)([1-9])\s*(?:F|階)(?![A-Za-z0-9])|(?:地階|地下)\s*([1-9])",
             rule_text,
             flags=re.IGNORECASE,
         )
         if floor_match:
             floor_code = f"{floor_match.group(1)}F" if floor_match.group(1) else f"B{floor_match.group(2)}F"
         elif ai_text:
-            floor_match = re.search(r"(?<!\d)([1-9])\s*(?:F|階)(?!\w)", ai_text, re.IGNORECASE)
+            floor_match = re.search(r"(?<!\d)([1-9])\s*(?:F|階)(?![A-Za-z0-9])", ai_text, re.IGNORECASE)
             if floor_match:
                 floor_code = f"{floor_match.group(1)}F"
                 source, confirmed = "VLM", False
@@ -175,6 +187,117 @@ def classify_page(
         confirmed=confirmed,
         evidence=evidence,
     )
+
+
+_AREA_TYPE_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("専有面積", r"専有面積"),
+    ("延床面積", r"(?:延床面積|延べ床面積|延べ面積|延床|延べ床)"),
+    ("建築面積", r"建築面積"),
+    ("敷地面積", r"(?:敷地面積|土地面積)"),
+    ("施工対象面積", r"(?:施工対象面積|施工面積|改修面積|リフォーム面積|工事対象面積)"),
+    ("部屋面積", r"(?:部屋面積|室面積|居室面積)"),
+    ("不明", r"(?<![\w一-龥])面積"),
+)
+_AREA_LABEL_PATTERN = "|".join(f"(?:{pattern})" for _, pattern in _AREA_TYPE_PATTERNS)
+_AREA_PATTERN = re.compile(
+    rf"(?P<label>{_AREA_LABEL_PATTERN})\s*[:：=]?\s*"
+    r"(?P<value>\d{1,5}(?:\.\d+)?)\s*(?P<unit>㎡|m2|m²|平米|坪)",
+    re.IGNORECASE,
+)
+_BARE_AREA_PATTERN = re.compile(
+    r"(?P<value>\d{1,5}(?:\.\d+)?)\s*(?P<unit>㎡|m2|m²|平米|坪)",
+    re.IGNORECASE,
+)
+
+
+def _canonical_area_type(label: str) -> str:
+    normalized = _normalize(label)
+    for area_type, pattern in _AREA_TYPE_PATTERNS:
+        if re.fullmatch(pattern, normalized, re.IGNORECASE):
+            return area_type
+    return "不明"
+
+
+def _display_area_evidence(value: str) -> str:
+    return re.sub(r"(?i)m2", "㎡", value)
+
+
+def _area_context(text: str, match: re.Match[str], radius: int = 80) -> str:
+    start = max(0, match.start() - radius)
+    end = min(len(text), match.end() + radius)
+    return text[start:end].strip()
+
+
+def extract_set_areas(
+    *,
+    file_name: str,
+    page_text: str = "",
+    vlm_text: str = "",
+    page_phase: str = "UNKNOWN",
+) -> list[SetAreaCandidate]:
+    """Extract every explicitly labelled area while preserving type/value pairing."""
+
+    rule_text = _normalize(f"{file_name}\n{page_text}")
+    ai_text = _normalize(vlm_text)
+    phase = page_phase if page_phase in {"EXISTING", "PROPOSED", "COMPLETED"} else "COMMON"
+    candidates: list[SetAreaCandidate] = []
+    seen: set[tuple[str, str, float, str]] = set()
+
+    def append_matches(text: str, *, source: str, confidence: float, confirmed: bool) -> None:
+        typed_spans: list[tuple[int, int]] = []
+        for match in _AREA_PATTERN.finditer(text):
+            typed_spans.append(match.span())
+            area_type = _canonical_area_type(match.group("label"))
+            value = float(match.group("value"))
+            unit_raw = match.group("unit").casefold()
+            unit = "㎡" if unit_raw in {"㎡", "m2", "m²", "平米"} else "坪"
+            key = (phase, area_type, value, unit)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(SetAreaCandidate(
+                area_type=area_type,
+                phase=phase,
+                value=value,
+                unit=unit,
+                source=source,
+                confidence=confidence,
+                confirmed=confirmed,
+                evidence={
+                    "matched_text": _display_area_evidence(match.group(0)),
+                    "context": _display_area_evidence(_area_context(text, match)),
+                },
+            ))
+
+        for match in _BARE_AREA_PATTERN.finditer(text):
+            if any(match.start() < end and match.end() > start for start, end in typed_spans):
+                continue
+            value = float(match.group("value"))
+            unit_raw = match.group("unit").casefold()
+            unit = "㎡" if unit_raw in {"㎡", "m2", "m²", "平米"} else "坪"
+            key = (phase, "不明", value, unit)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(SetAreaCandidate(
+                area_type="不明",
+                phase=phase,
+                value=value,
+                unit=unit,
+                source=source,
+                confidence=min(confidence, 0.90),
+                confirmed=confirmed,
+                evidence={
+                    "matched_text": _display_area_evidence(match.group(0)),
+                    "context": _display_area_evidence(_area_context(text, match)),
+                },
+            ))
+
+    append_matches(rule_text, source="RULE", confidence=0.96, confirmed=True)
+    # VLM is supplementary. Values found only in generated text remain candidates.
+    append_matches(ai_text, source="VLM", confidence=0.72, confirmed=False)
+    return candidates
+
 
 
 def extract_set_facts(
@@ -243,28 +366,26 @@ def extract_set_facts(
             evidence={"matched_text": layout_match.group(0)},
         ))
 
-    area_pattern = re.compile(
-        r"(専有面積|延床面積|延べ床面積|床面積|施工面積)\s*[:：]?\s*"
-        r"(\d+(?:\.\d+)?)\s*(㎡|m2|m²|平米|坪)",
-        re.IGNORECASE,
+    # Keep one representative legacy pair for the existing comparison UI. The
+    # complete, correctly paired list is stored by extract_set_areas().
+    areas = extract_set_areas(
+        file_name=file_name,
+        page_text=page_text,
+        vlm_text=vlm_text,
+        page_phase=page_phase,
     )
-    area_match = area_pattern.search(rule_text)
-    area_source, area_confidence, area_confirmed = "RULE", 0.96, True
-    if not area_match:
-        area_match = area_pattern.search(ai_text)
-        area_source, area_confidence, area_confirmed = "VLM", 0.72, False
-    if area_match:
-        unit = "㎡" if area_match.group(3).casefold() in {"㎡", "m2", "m²", "平米"} else "坪"
+    if areas:
+        area = max(areas, key=lambda item: (item.confirmed, item.confidence))
         facts.extend((
             SetFactCandidate(
-                fact_code="AREA_TYPE", phase="COMMON", value_text=area_match.group(1),
-                source=area_source, confidence=area_confidence, confirmed=area_confirmed,
-                evidence={"matched_text": area_match.group(0)},
+                fact_code="AREA_TYPE", phase="COMMON", value_text=area.area_type,
+                source=area.source, confidence=area.confidence, confirmed=area.confirmed,
+                evidence=area.evidence,
             ),
             SetFactCandidate(
-                fact_code="AREA_VALUE", phase="COMMON", value_number=float(area_match.group(2)), unit=unit,
-                source=area_source, confidence=area_confidence, confirmed=area_confirmed,
-                evidence={"matched_text": area_match.group(0)},
+                fact_code="AREA_VALUE", phase="COMMON", value_number=area.value, unit=area.unit,
+                source=area.source, confidence=area.confidence, confirmed=area.confirmed,
+                evidence=area.evidence,
             ),
         ))
 

@@ -351,10 +351,23 @@ class OracleRagRepository:
             fact_code="USE", phase="COMMON",
             values=building.uses, bind_prefix="building_use",
         )
-        add_set_fact_values(
-            fact_code="AREA_TYPE", phase="COMMON",
-            values=building.area_types, bind_prefix="area_type",
-        )
+        if building.layouts:
+            placeholders: list[str] = []
+            for index, value in enumerate(building.layouts):
+                key = f"layout_any_{index}"
+                binds[key] = value
+                placeholders.append(f":{key}")
+            binds["layout_any_code"] = "LAYOUT"
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sds_document_metadata dm_layout "
+                "JOIN sds_document_set_facts sf_layout "
+                "ON sf_layout.document_set_id=dm_layout.document_set_id "
+                "WHERE dm_layout.document_id=d.document_id "
+                "AND dm_layout.document_set_id IS NOT NULL "
+                "AND sf_layout.confirmed=1 "
+                "AND sf_layout.fact_code=:layout_any_code "
+                f"AND sf_layout.value_text IN ({', '.join(placeholders)}))"
+            )
         add_set_fact_values(
             fact_code="LAYOUT", phase="EXISTING",
             values=building.existing_layouts, bind_prefix="existing_layout",
@@ -363,27 +376,49 @@ class OracleRagRepository:
             fact_code="LAYOUT", phase="PROPOSED",
             values=building.proposed_layouts, bind_prefix="proposed_layout",
         )
-        if building.area_min is not None or building.area_max is not None:
-            binds["area_value_code"] = "AREA_VALUE"
-            binds["area_value_unit"] = building.area_unit
-            area_bounds = ""
+        if (
+            building.area_types
+            or building.area_min is not None
+            or building.area_max is not None
+        ):
+            area_conditions = [
+                "dm_area.document_id=d.document_id",
+                "dm_area.document_set_id IS NOT NULL",
+                "set_area.confirmed=1",
+                "("
+                "set_area.user_locked=1 OR NOT EXISTS ("
+                "SELECT 1 FROM sds_document_set_areas user_area "
+                "WHERE user_area.document_set_id=set_area.document_set_id "
+                "AND user_area.phase=set_area.phase "
+                "AND user_area.area_type=set_area.area_type "
+                "AND user_area.unit=set_area.unit "
+                "AND user_area.user_locked=1 AND user_area.confirmed=1"
+                ")"
+                ")",
+            ]
+            if building.area_types:
+                placeholders = []
+                for index, value in enumerate(building.area_types):
+                    key = f"area_type_{index}"
+                    binds[key] = value
+                    placeholders.append(f":{key}")
+                area_conditions.append(
+                    f"set_area.area_type IN ({', '.join(placeholders)})"
+                )
+            if building.area_min is not None or building.area_max is not None:
+                binds["area_value_unit"] = building.area_unit
+                area_conditions.append("set_area.unit=:area_value_unit")
             if building.area_min is not None:
                 binds["area_value_min"] = building.area_min
-                area_bounds += " AND sf_area.value_number>=:area_value_min"
+                area_conditions.append("set_area.area_value>=:area_value_min")
             if building.area_max is not None:
                 binds["area_value_max"] = building.area_max
-                area_bounds += " AND sf_area.value_number<=:area_value_max"
+                area_conditions.append("set_area.area_value<=:area_value_max")
             clauses.append(
                 "EXISTS (SELECT 1 FROM sds_document_metadata dm_area "
-                "JOIN sds_document_set_facts sf_area "
-                "ON sf_area.document_set_id=dm_area.document_set_id "
-                "WHERE dm_area.document_id=d.document_id "
-                "AND dm_area.document_set_id IS NOT NULL "
-                "AND sf_area.confirmed=1 "
-                "AND sf_area.fact_code=:area_value_code "
-                "AND sf_area.unit=:area_value_unit"
-                + area_bounds
-                + ")"
+                "JOIN sds_document_set_areas set_area "
+                "ON set_area.document_set_id=dm_area.document_set_id "
+                "WHERE " + " AND ".join(area_conditions) + ")"
             )
         if filters.concept_ids and filters.concept_mode == "REQUIRE_ALL":
             # Concept matching is evaluated at the logical document-set level.
@@ -466,10 +501,107 @@ class OracleRagRepository:
             d.file_name, d.object_name, d.bucket
         """
 
-    def keyword_search(self, *, query: str, top_k: int, user_hash: str | None,
-                       current_version_only: bool, document_types: list[str],
-                       filename_filter: str | None = None,
-                       metadata_filters: MetadataSearchFilters | None = None) -> list[RetrievalHit]:
+    def metadata_search(
+        self,
+        *,
+        top_k: int,
+        user_hash: str | None,
+        current_version_only: bool,
+        document_types: list[str],
+        filename_filter: str | None = None,
+        metadata_filters: MetadataSearchFilters | None = None,
+    ) -> list[RetrievalHit]:
+        """Select one representative page per document using typed metadata only."""
+
+        filters = metadata_filters or MetadataSearchFilters()
+        if not filters.active():
+            return []
+        where, binds = self._document_where(
+            user_hash=user_hash,
+            current_version_only=current_version_only,
+            document_types=document_types,
+            filename_filter=filename_filter,
+            metadata_filters=filters,
+        )
+        binds["top_k"] = max(1, min(top_k, 1000))
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT metadata_rows.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY metadata_rows.document_id
+                               ORDER BY metadata_rows.page_number NULLS LAST,
+                                        metadata_rows.evidence_id
+                           ) metadata_rank
+                    FROM (
+                        SELECT
+                            'metadata:' || d.document_id || ':' ||
+                                NVL(TO_CHAR(page_image.page_number), 'document')
+                                evidence_id,
+                            d.document_id, 0 slot_no,
+                            rel.document_revision_id revision_id,
+                            page_image.page_number,
+                            NVL(page_image.artifact_kind, 'DOCUMENT_METADATA')
+                                unit_kind,
+                            NVL(
+                                page_image.source_locator,
+                                'metadata:' || d.document_id
+                            ) source_locator,
+                            page_image.bbox_json,
+                            NVL(page_text.raw_text, d.file_name) raw_text,
+                            '型付き文書属性に一致' caption,
+                            page_image.object_name asset_object_name,
+                            d.file_name, d.object_name, d.bucket,
+                            1 score
+                        FROM sds_documents d
+                        JOIN sds_index_releases rel
+                          ON rel.release_id=d.serving_release_id
+                         AND rel.status='PUBLISHED'
+                        LEFT JOIN sds_index_release_components render_component
+                          ON render_component.release_id=rel.release_id
+                         AND render_component.component_key='render'
+                         AND render_component.is_stale=0
+                        LEFT JOIN sds_artifacts page_image
+                          ON page_image.stage_run_id=render_component.stage_run_id
+                         AND page_image.artifact_kind='PAGE_IMAGE'
+                        LEFT JOIN sds_index_release_components text_component
+                          ON text_component.release_id=rel.release_id
+                         AND text_component.component_key='normalize'
+                         AND text_component.is_stale=0
+                        LEFT JOIN sds_artifacts page_text
+                          ON page_text.stage_run_id=text_component.stage_run_id
+                         AND page_text.artifact_kind='PAGE_TEXT'
+                         AND (
+                             page_text.page_number=page_image.page_number
+                             OR (
+                                 page_image.page_number IS NULL
+                                 AND page_text.page_number IS NULL
+                             )
+                         )
+                        WHERE {where}
+                    ) metadata_rows
+                )
+                WHERE metadata_rank=1 AND ROWNUM<=:top_k
+                """,
+                binds,
+            )
+            return [
+                self._hit(row, channel="metadata:typed")
+                for row in self.rows(cursor)
+            ]
+
+    def keyword_search(
+        self,
+        *,
+        query: str,
+        top_k: int,
+        user_hash: str | None,
+        current_version_only: bool,
+        document_types: list[str],
+        filename_filter: str | None = None,
+        metadata_filters: MetadataSearchFilters | None = None,
+    ) -> list[RetrievalHit]:
         text_query = self._text_query(query)
         if not text_query:
             return []

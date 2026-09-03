@@ -28,6 +28,7 @@ from app.rag.search_pipeline import (
     principal_hash,
     search_pipeline,
 )
+from app.rag.query_condition_parser import parse_query_conditions
 
 router = APIRouter(tags=["retrieval"])
 logger = logging.getLogger(__name__)
@@ -77,6 +78,10 @@ class SearchFeedbackRequest(BaseModel):
 class SearchConceptSuggestionRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=24, ge=1, le=30)
+
+
+class QueryConditionParseRequest(BaseModel):
+    query: str = Field(default="", max_length=4000)
 
 
 class SearchEvidenceExplanationRequest(BaseModel):
@@ -407,6 +412,16 @@ def _search_events(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/search/v2/query-conditions/parse")
+async def parse_search_query_conditions(
+    payload: QueryConditionParseRequest,
+) -> dict[str, object]:
+    started_at = time.perf_counter()
+    result = parse_query_conditions(payload.query)
+    result["elapsed_ms"] = round((time.perf_counter() - started_at) * 1000, 3)
+    return result
 
 
 @router.get("/search/v2/filters")

@@ -18,7 +18,7 @@ from app.services.database_service import database_service
 
 
 FEATURE_CODE = "document_library"
-FEATURE_VERSION = "20260902_001"
+FEATURE_VERSION = "20260902_002"
 SYSTEM_TENANT_HASH = "0" * 64
 
 
@@ -367,6 +367,34 @@ TABLE_STATEMENTS: dict[str, str] = {
             CHECK (VALUE_TEXT IS NOT NULL OR VALUE_NUMBER IS NOT NULL)
         )
     """,
+    "SDS_DOCUMENT_SET_AREAS": """
+        CREATE TABLE SDS_DOCUMENT_SET_AREAS (
+            AREA_ID VARCHAR2(64) PRIMARY KEY,
+            DOCUMENT_SET_ID VARCHAR2(64) NOT NULL
+                REFERENCES SDS_DOCUMENT_SETS(DOCUMENT_SET_ID) ON DELETE CASCADE,
+            PHASE VARCHAR2(16) DEFAULT 'COMMON' NOT NULL
+                CHECK (PHASE IN ('COMMON', 'EXISTING', 'PROPOSED', 'COMPLETED')),
+            AREA_TYPE VARCHAR2(32) NOT NULL
+                CHECK (AREA_TYPE IN ('専有面積', '延床面積', '建築面積', '敷地面積',
+                                     '施工対象面積', '部屋面積', '不明')),
+            AREA_VALUE NUMBER NOT NULL CHECK (AREA_VALUE > 0),
+            UNIT VARCHAR2(8) DEFAULT '㎡' NOT NULL CHECK (UNIT IN ('㎡', '坪')),
+            SOURCE VARCHAR2(16) DEFAULT 'RULE' NOT NULL
+                CHECK (SOURCE IN ('RULE', 'VLM', 'USER', 'MIGRATION')),
+            CONFIDENCE NUMBER DEFAULT 0 NOT NULL CHECK (CONFIDENCE BETWEEN 0 AND 1),
+            CONFIRMED NUMBER(1) DEFAULT 0 NOT NULL CHECK (CONFIRMED IN (0, 1)),
+            USER_LOCKED NUMBER(1) DEFAULT 0 NOT NULL CHECK (USER_LOCKED IN (0, 1)),
+            EVIDENCE_DOCUMENT_ID VARCHAR2(64)
+                REFERENCES SDS_DOCUMENTS(DOCUMENT_ID) ON DELETE SET NULL,
+            EVIDENCE_REVISION_ID VARCHAR2(64)
+                REFERENCES SDS_DOCUMENT_REVISIONS(REVISION_ID) ON DELETE SET NULL,
+            EVIDENCE_PAGE_NUMBER NUMBER,
+            EVIDENCE_JSON CLOB CHECK (EVIDENCE_JSON IS JSON),
+            CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+            UPDATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+            UNIQUE (DOCUMENT_SET_ID, PHASE, AREA_TYPE, AREA_VALUE, UNIT)
+        )
+    """,
     "SDS_COMPARISON_PAIRS": """
         CREATE TABLE SDS_COMPARISON_PAIRS (
             PAIR_ID VARCHAR2(64) PRIMARY KEY,
@@ -494,6 +522,11 @@ INDEX_STATEMENTS: dict[str, str] = {
     "SDS_SETFACT_NUMBER_IDX": """
         CREATE INDEX SDS_SETFACT_NUMBER_IDX ON SDS_DOCUMENT_SET_FACTS (
             FACT_CODE, CONFIRMED, VALUE_NUMBER, DOCUMENT_SET_ID
+        )
+    """,
+    "SDS_SETAREA_FILTER_IDX": """
+        CREATE INDEX SDS_SETAREA_FILTER_IDX ON SDS_DOCUMENT_SET_AREAS (
+            AREA_TYPE, UNIT, CONFIRMED, AREA_VALUE, DOCUMENT_SET_ID
         )
     """,
     "SDS_COMPARISON_ANALYSIS_IDX": """
@@ -776,6 +809,78 @@ def apply_document_library_schema() -> dict[str, Any]:
                 (DOCUMENT_ID, FOLDER_ID, DATE_PRECISION, DATE_SOURCE, DATE_CONFIRMED,
                  CUSTOMER_CONFIRMED, ROW_VERSION)
             VALUES (s.DOCUMENT_ID, '{UNCLASSIFIED_FOLDER_ID}', 'UNKNOWN', 'MIGRATION', 0, 0, 1)
+            """
+        )
+        cursor.execute(
+            """
+            MERGE INTO SDS_DOCUMENT_SET_AREAS target
+            USING (
+                SELECT area_type.DOCUMENT_SET_ID,
+                       area_type.PHASE,
+                       area_type.VALUE_TEXT AS AREA_TYPE,
+                       area_value.VALUE_NUMBER AS AREA_VALUE,
+                       NVL(area_value.UNIT, '㎡') AS UNIT,
+                       LEAST(area_type.CONFIDENCE, area_value.CONFIDENCE) AS CONFIDENCE,
+                       LEAST(area_type.CONFIRMED, area_value.CONFIRMED) AS CONFIRMED,
+                       COALESCE(area_value.EVIDENCE_DOCUMENT_ID,
+                                area_type.EVIDENCE_DOCUMENT_ID) AS EVIDENCE_DOCUMENT_ID,
+                       COALESCE(area_value.EVIDENCE_REVISION_ID,
+                                area_type.EVIDENCE_REVISION_ID) AS EVIDENCE_REVISION_ID,
+                       COALESCE(area_value.EVIDENCE_PAGE_NUMBER,
+                                area_type.EVIDENCE_PAGE_NUMBER) AS EVIDENCE_PAGE_NUMBER
+                FROM SDS_DOCUMENT_SET_FACTS area_type
+                JOIN SDS_DOCUMENT_SET_FACTS area_value
+                  ON area_value.DOCUMENT_SET_ID=area_type.DOCUMENT_SET_ID
+                 AND area_value.PHASE=area_type.PHASE
+                 AND area_value.FACT_CODE='AREA_VALUE'
+                WHERE area_type.FACT_CODE='AREA_TYPE'
+                  AND area_type.VALUE_TEXT IN (
+                      '専有面積', '延床面積', '建築面積', '敷地面積',
+                      '施工対象面積', '部屋面積', '不明'
+                  )
+                  AND area_value.VALUE_NUMBER IS NOT NULL
+                  AND (
+                      SELECT COUNT(DISTINCT candidate_type.VALUE_TEXT)
+                      FROM SDS_DOCUMENT_SET_FACTS candidate_type
+                      WHERE candidate_type.DOCUMENT_SET_ID=area_type.DOCUMENT_SET_ID
+                        AND candidate_type.PHASE=area_type.PHASE
+                        AND candidate_type.FACT_CODE='AREA_TYPE'
+                        AND candidate_type.VALUE_TEXT IN (
+                            '専有面積', '延床面積', '建築面積', '敷地面積',
+                            '施工対象面積', '部屋面積', '不明'
+                        )
+                  )=1
+                  AND (
+                      SELECT COUNT(DISTINCT
+                          TO_CHAR(candidate_value.VALUE_NUMBER, 'TM9')
+                          || ':' || NVL(candidate_value.UNIT, '㎡')
+                      )
+                      FROM SDS_DOCUMENT_SET_FACTS candidate_value
+                      WHERE candidate_value.DOCUMENT_SET_ID=area_value.DOCUMENT_SET_ID
+                        AND candidate_value.PHASE=area_value.PHASE
+                        AND candidate_value.FACT_CODE='AREA_VALUE'
+                        AND candidate_value.VALUE_NUMBER IS NOT NULL
+                  )=1
+            ) source
+            ON (
+                target.DOCUMENT_SET_ID=source.DOCUMENT_SET_ID
+                AND target.PHASE=source.PHASE
+                AND target.AREA_TYPE=source.AREA_TYPE
+                AND target.AREA_VALUE=source.AREA_VALUE
+                AND target.UNIT=source.UNIT
+            )
+            WHEN NOT MATCHED THEN INSERT (
+                AREA_ID, DOCUMENT_SET_ID, PHASE, AREA_TYPE, AREA_VALUE, UNIT,
+                SOURCE, CONFIDENCE, CONFIRMED, USER_LOCKED,
+                EVIDENCE_DOCUMENT_ID, EVIDENCE_REVISION_ID, EVIDENCE_PAGE_NUMBER,
+                EVIDENCE_JSON
+            ) VALUES (
+                LOWER(RAWTOHEX(SYS_GUID())), source.DOCUMENT_SET_ID, source.PHASE,
+                source.AREA_TYPE, source.AREA_VALUE, source.UNIT, 'MIGRATION',
+                source.CONFIDENCE, source.CONFIRMED, 0,
+                source.EVIDENCE_DOCUMENT_ID, source.EVIDENCE_REVISION_ID,
+                source.EVIDENCE_PAGE_NUMBER, '{"migrated_from":"SDS_DOCUMENT_SET_FACTS"}'
+            )
             """
         )
 

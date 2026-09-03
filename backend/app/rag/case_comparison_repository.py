@@ -6,7 +6,11 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 from uuid import uuid4
 
-from app.rag.case_classifier import classify_page, extract_set_facts
+from app.rag.case_classifier import (
+    classify_page,
+    extract_set_areas,
+    extract_set_facts,
+)
 from app.rag.case_comparison_models import (
     BuildingConditionOptions,
     ComparisonAnalysis,
@@ -171,7 +175,20 @@ class CaseComparisonRepository:
 
         classifications = 0
         facts_written = 0
+        areas_written = 0
         with self.connection() as connection, connection.cursor() as cursor:
+            if document.get("document_set_id"):
+                # Re-analysis must not leave an obsolete automatic area as an
+                # active search condition. User-confirmed rows are never changed.
+                cursor.execute(
+                    """
+                    UPDATE sds_document_set_areas
+                    SET confirmed=0, updated_at=SYSTIMESTAMP
+                    WHERE evidence_document_id=:document
+                      AND user_locked=0
+                    """,
+                    {"document": document_id},
+                )
             for page_number, page in pages.items():
                 if not page["rendered"]:
                     continue
@@ -284,8 +301,76 @@ class CaseComparisonRepository:
                         },
                     )
                     facts_written += 1
+                for area in extract_set_areas(
+                    file_name=str(document["file_name"]),
+                    page_text=normalized_text,
+                    vlm_text=vlm_text,
+                    page_phase=inference.phase,
+                ):
+                    cursor.execute(
+                        """
+                        MERGE INTO sds_document_set_areas target
+                        USING (
+                            SELECT :document_set document_set_id, :phase phase,
+                                   :area_type area_type, :area_value area_value,
+                                   :unit unit
+                            FROM dual
+                        ) source
+                        ON (
+                            target.document_set_id=source.document_set_id
+                            AND target.phase=source.phase
+                            AND target.area_type=source.area_type
+                            AND target.area_value=source.area_value
+                            AND target.unit=source.unit
+                        )
+                        WHEN MATCHED THEN UPDATE SET
+                            target.source=:source,
+                            target.confidence=:confidence,
+                            target.confirmed=:confirmed,
+                            target.evidence_document_id=:document,
+                            target.evidence_revision_id=:revision,
+                            target.evidence_page_number=:page_number,
+                            target.evidence_json=:evidence,
+                            target.updated_at=SYSTIMESTAMP
+                        WHERE target.user_locked=0
+                          AND (:confirmed=1 OR target.confirmed=0)
+                        WHEN NOT MATCHED THEN INSERT
+                            (area_id, document_set_id, phase, area_type,
+                             area_value, unit, source, confidence, confirmed,
+                             user_locked, evidence_document_id,
+                             evidence_revision_id, evidence_page_number,
+                             evidence_json)
+                        VALUES
+                            (:area_id, :document_set, :phase, :area_type,
+                             :area_value, :unit, :source, :confidence,
+                             :confirmed, 0, :document, :revision,
+                             :page_number, :evidence)
+                        """,
+                        {
+                            "area_id": uuid4().hex,
+                            "document_set": str(document["document_set_id"]),
+                            "phase": area.phase,
+                            "area_type": area.area_type,
+                            "area_value": area.value,
+                            "unit": area.unit,
+                            "source": area.source,
+                            "confidence": area.confidence,
+                            "confirmed": int(area.confirmed),
+                            "document": document_id,
+                            "revision": str(document["current_revision_id"]),
+                            "page_number": page_number,
+                            "evidence": json.dumps(
+                                area.evidence, ensure_ascii=False
+                            ),
+                        },
+                    )
+                    areas_written += 1
             connection.commit()
-        return {"classifications": classifications, "facts": facts_written}
+        return {
+            "classifications": classifications,
+            "facts": facts_written,
+            "areas": areas_written,
+        }
 
     def refresh_set(self, document_set_id: str, user_hash: str | None) -> dict[str, int]:
         self._set_label(document_set_id, user_hash)
@@ -302,12 +387,13 @@ class CaseComparisonRepository:
                 {"document_set": document_set_id, "user_hash": user_hash},
             )
             document_ids = [str(row[0]) for row in cursor.fetchall()]
-        total = {"documents": 0, "classifications": 0, "facts": 0}
+        total = {"documents": 0, "classifications": 0, "facts": 0, "areas": 0}
         for document_id in document_ids:
             result = self.refresh_document(document_id)
             total["documents"] += 1
             total["classifications"] += result["classifications"]
             total["facts"] += result["facts"]
+            total["areas"] += result["areas"]
         return total
 
     @staticmethod
@@ -735,6 +821,7 @@ class CaseComparisonRepository:
         if set(supplied_keys) - editable_keys:
             raise ValueError("編集対象外の建物条件が含まれています")
 
+        supplied = {(item.fact_code, item.phase): item for item in items}
         missing = editable_keys - set(supplied_keys)
         with self.connection() as connection, connection.cursor() as cursor:
             try:
@@ -755,6 +842,80 @@ class CaseComparisonRepository:
                         + " OR ".join(conditions)
                         + ")",
                         binds,
+                    )
+
+                # The legacy editor still sends AREA_TYPE and AREA_VALUE as
+                # separate facts. Keep the paired area record in sync without
+                # physically deleting user-entered history.
+                cursor.execute(
+                    """
+                    UPDATE sds_document_set_areas
+                    SET confirmed=0, updated_at=SYSTIMESTAMP
+                    WHERE document_set_id=:document_set
+                      AND phase='COMMON' AND user_locked=1
+                    """,
+                    {"document_set": document_set_id},
+                )
+                area_type_item = supplied.get(("AREA_TYPE", "COMMON"))
+                area_value_item = supplied.get(("AREA_VALUE", "COMMON"))
+                if (
+                    area_type_item
+                    and area_type_item.value_text
+                    and area_value_item
+                    and area_value_item.value_number is not None
+                ):
+                    area_type = area_type_item.value_text.strip()
+                    allowed_area_types = {
+                        "専有面積", "延床面積", "建築面積", "敷地面積",
+                        "施工対象面積", "部屋面積", "不明",
+                    }
+                    if area_type not in allowed_area_types:
+                        raise ValueError("面積種別が不正です")
+                    area_value = float(area_value_item.value_number)
+                    if area_value <= 0:
+                        raise ValueError("面積は0より大きい値を指定してください")
+                    unit = area_value_item.unit or "㎡"
+                    if unit not in {"㎡", "坪"}:
+                        raise ValueError("面積の単位が不正です")
+                    cursor.execute(
+                        """
+                        MERGE INTO sds_document_set_areas target
+                        USING (
+                            SELECT :document_set document_set_id, 'COMMON' phase,
+                                   :area_type area_type, :area_value area_value,
+                                   :unit unit
+                            FROM dual
+                        ) source
+                        ON (
+                            target.document_set_id=source.document_set_id
+                            AND target.phase=source.phase
+                            AND target.area_type=source.area_type
+                            AND target.area_value=source.area_value
+                            AND target.unit=source.unit
+                        )
+                        WHEN MATCHED THEN UPDATE SET
+                            target.source='USER', target.confidence=1,
+                            target.confirmed=1, target.user_locked=1,
+                            target.evidence_json=:evidence,
+                            target.updated_at=SYSTIMESTAMP
+                        WHEN NOT MATCHED THEN INSERT
+                            (area_id, document_set_id, phase, area_type,
+                             area_value, unit, source, confidence, confirmed,
+                             user_locked, evidence_json)
+                        VALUES
+                            (:area_id, :document_set, 'COMMON', :area_type,
+                             :area_value, :unit, 'USER', 1, 1, 1, :evidence)
+                        """,
+                        {
+                            "area_id": uuid4().hex,
+                            "document_set": document_set_id,
+                            "area_type": area_type,
+                            "area_value": area_value,
+                            "unit": unit,
+                            "evidence": json.dumps(
+                                {"updated_by": user_hash}, ensure_ascii=False
+                            ),
+                        },
                     )
                 connection.commit()
             except Exception:
@@ -782,15 +943,32 @@ class CaseComparisonRepository:
                 {"user_hash": user_hash},
             )
             rows = self.rows(cursor)
+            cursor.execute(
+                f"""
+                SELECT DISTINCT area.area_type
+                FROM sds_document_set_areas area
+                WHERE area.confirmed=1
+                  AND EXISTS (
+                    SELECT 1 FROM sds_document_metadata dm
+                    JOIN sds_documents d ON d.document_id=dm.document_id
+                    WHERE dm.document_set_id=area.document_set_id
+                      AND d.is_current=1 AND d.serving_release_id IS NOT NULL
+                      AND {access}
+                  )
+                ORDER BY area.area_type
+                """,
+                {"user_hash": user_hash},
+            )
+            area_types = [str(row["area_type"]) for row in self.rows(cursor)]
         values: dict[str, list[str]] = {
-            "building_types": [], "structures": [], "uses": [], "area_types": [],
+            "building_types": [], "structures": [], "uses": [],
+            "area_types": area_types,
             "existing_layouts": [], "proposed_layouts": [],
         }
         mapping = {
             ("BUILDING_TYPE", "COMMON"): "building_types",
             ("STRUCTURE", "COMMON"): "structures",
             ("USE", "COMMON"): "uses",
-            ("AREA_TYPE", "COMMON"): "area_types",
             ("LAYOUT", "EXISTING"): "existing_layouts",
             ("LAYOUT", "PROPOSED"): "proposed_layouts",
         }
@@ -798,6 +976,8 @@ class CaseComparisonRepository:
             target = mapping.get((str(row["fact_code"]), str(row["phase"])))
             if target:
                 values[target].append(str(row["value_text"]))
+        for key in values:
+            values[key] = sorted(set(values[key]))
         return BuildingConditionOptions(**values)
 
     @staticmethod
