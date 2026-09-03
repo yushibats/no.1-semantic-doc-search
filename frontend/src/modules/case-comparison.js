@@ -153,6 +153,10 @@ function ensureModal() {
 function renderComparisonModal() {
   if (!comparisonState?.data) return;
   const modal = ensureModal();
+  const previousScroller = modal.querySelector('.case-comparison-scroll');
+  const previousScrollPosition = previousScroller
+    ? { top: previousScroller.scrollTop, left: previousScroller.scrollLeft }
+    : null;
   const data = comparisonState.data;
   const complete = Boolean(data.pair?.before && data.pair?.after);
   modal.innerHTML = `<div class="case-comparison-dialog">
@@ -167,6 +171,13 @@ function renderComparisonModal() {
     </div>
   </div>`;
   modal.hidden = false;
+  if (previousScrollPosition) {
+    const nextScroller = modal.querySelector('.case-comparison-scroll');
+    if (nextScroller) {
+      nextScroller.scrollTop = previousScrollPosition.top;
+      nextScroller.scrollLeft = previousScrollPosition.left;
+    }
+  }
   document.body.classList.add('case-comparison-open');
 }
 

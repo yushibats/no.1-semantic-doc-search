@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import { createServer } from 'vite';
 
 let authModule;
+let caseComparisonModule;
 let dbModule;
 let documentLibraryModule;
 let metadataSettingsModule;
@@ -34,6 +35,7 @@ before(async () => {
     server: { middlewareMode: true }
   });
   authModule = await vite.ssrLoadModule('/src/modules/auth.js');
+  caseComparisonModule = await vite.ssrLoadModule('/src/modules/case-comparison.js');
   dbModule = await vite.ssrLoadModule('/src/modules/db.js');
   documentLibraryModule = await vite.ssrLoadModule('/src/modules/document-library.js');
   metadataSettingsModule = await vite.ssrLoadModule('/src/modules/metadata-settings.js');
@@ -44,6 +46,57 @@ before(async () => {
   utilsModule = await vite.ssrLoadModule('/src/modules/utils.js');
 });
 
+test('変更点のAI分析中に状態が更新されても比較画面のスクロール位置を保持する', async () => {
+  document.body.innerHTML = '';
+  localStorage.setItem('loginToken', 'test-token');
+  const beforePage = {
+    document_id: 'before-doc', revision_id: 'before-rev', page_number: 1,
+    file_name: '現況図.pdf', image_url: '/objects/before.png', phase: 'EXISTING', confirmed: true, confidence: 1
+  };
+  const afterPage = {
+    document_id: 'after-doc', revision_id: 'after-rev', page_number: 2,
+    file_name: '提案図.pdf', image_url: '/objects/after.png', phase: 'PROPOSED', confirmed: true, confidence: 1
+  };
+  const comparison = {
+    document_set_id: 'set-1', label: 'テスト案件',
+    before_candidates: [beforePage], after_candidates: [afterPage],
+    pair: { before: beforePage, after: afterPage, complete: true, source: 'AUTO' },
+    all_pages: [], facts: []
+  };
+  window._searchResultsData = { groups: [{ document_set_id: 'set-1' }] };
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+    if (options.method === 'PUT') {
+      return { ok: true, status: 200, json: async () => comparison };
+    }
+    if (options.method === 'POST' && value.endsWith('/comparison-analyses')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          analysis_id: 'analysis-1', status: 'COMPLETED',
+          result: { summary: '変更点を確認しました', change_items: [] }
+        })
+      };
+    }
+    return { ok: true, status: 200, json: async () => comparison };
+  };
+
+  await caseComparisonModule.showCaseComparison(0);
+  const scroller = document.querySelector('.case-comparison-scroll');
+  scroller.scrollTop = 420;
+  scroller.scrollLeft = 12;
+
+  await caseComparisonModule.runCaseComparisonAnalysis(false);
+
+  const updatedScroller = document.querySelector('.case-comparison-scroll');
+  assert.equal(updatedScroller.scrollTop, 420);
+  assert.equal(updatedScroller.scrollLeft, 12);
+  assert.match(updatedScroller.textContent, /変更点を確認しました/);
+
+  caseComparisonModule.closeCaseComparison();
+  delete window._searchResultsData;
+});
 test('文書一覧の索引状態はJob失敗を処理中ではなく失敗として表示する', () => {
   assert.equal(documentLibraryModule.pipelineLabel({
     status: 'PROCESSING',
