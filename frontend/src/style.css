@@ -1342,6 +1342,7 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
 .ingest-review-table td { vertical-align: top; }
 .ingest-tag-cell { display: grid; gap: 6px; min-width: 240px; }
 .ingest-evidence { max-width: 360px; margin-top: 5px; color: #64748b; font-size: 11px; line-height: 1.45; }
+.ingest-analysis-note { max-width: 360px; margin-top: 5px; color: #92400e; font-size: 11px; line-height: 1.45; }
 .ingest-review-value { min-width: 180px; padding: 3px; border-radius: 7px; transition: background-color .2s ease, box-shadow .2s ease; }
 .ingest-review-value.copied { background: #dcfce7; box-shadow: 0 0 0 2px #86efac; }
 .ingest-adjacent-copy { display: flex; gap: 5px; margin-top: 6px; }

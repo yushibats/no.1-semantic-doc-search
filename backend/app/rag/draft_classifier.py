@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -64,6 +65,42 @@ class DraftClassificationResult(BaseModel):
     raw_llm_result: dict[str, Any] = Field(default_factory=dict)
     preview: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    degradations: list[str] = Field(default_factory=list)
+
+
+_RASTER_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"}
+
+
+def _timeout_seconds(name: str, default: float) -> float:
+    try:
+        return max(float(os.getenv(name, str(default))), 0.1)
+    except (TypeError, ValueError):
+        return default
+
+
+def _environment_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _preview_payload(
+    selected_native: dict[int, str],
+    images: list[tuple[bytes, str]],
+    ocr_engines: list[str],
+    *,
+    ocr_skipped: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "pages": sorted(selected_native),
+        "text_length": len("\n\n".join(selected_native.values())),
+        "image_count": len(images),
+        "ocr_engines": list(dict.fromkeys(ocr_engines)),
+    }
+    if ocr_skipped:
+        payload["ocr_skipped"] = ocr_skipped
+    return payload
 
 
 def classify_filename(
@@ -106,7 +143,23 @@ async def classify_document_preview(
 ) -> DraftClassificationResult:
     rule_result = classify_filename(filename, config=config, tags=tags)
     extension = PurePosixPath(filename).suffix.casefold().removeprefix(".")
-    native_pages = await asyncio.to_thread(_native_pages, content, extension)
+    warnings = list(rule_result.warnings)
+    degradations: list[str] = []
+    try:
+        native_pages = await asyncio.wait_for(
+            asyncio.to_thread(_native_pages, content, extension),
+            timeout=_timeout_seconds("DRAFT_PREVIEW_NATIVE_TIMEOUT_SECONDS", 8),
+        )
+    except TimeoutError:
+        native_pages = {}
+        message = "ネイティブテキスト抽出が時間切れになったため省略しました"
+        warnings.append(message)
+        degradations.append(message)
+    except Exception as error:
+        native_pages = {}
+        message = f"ネイティブテキスト抽出を利用できませんでした: {error}"
+        warnings.append(message)
+        degradations.append(message)
     selected_native = {
         page: text[: config.preview_text_limit]
         for page, text in sorted(native_pages.items())[: config.preview_page_limit]
@@ -114,23 +167,41 @@ async def classify_document_preview(
     total_text = "\n\n".join(selected_native.values())[: config.preview_text_limit]
 
     images: list[tuple[bytes, str]] = []
-    success, rendered, render_error = await asyncio.to_thread(
-        _convert_file_to_images_worker,
-        content,
-        extension,
-        filename,
-        160,
-        1,
-        config.preview_page_limit,
-    )
-    warnings = list(rule_result.warnings)
+    try:
+        success, rendered, render_error = await asyncio.wait_for(
+            asyncio.to_thread(
+                _convert_file_to_images_worker,
+                content,
+                extension,
+                filename,
+                160,
+                1,
+                config.preview_page_limit,
+            ),
+            timeout=_timeout_seconds("DRAFT_PREVIEW_RENDER_TIMEOUT_SECONDS", 15),
+        )
+    except TimeoutError:
+        success, rendered, render_error = False, [], "ページ画像生成が時間切れになりました"
+    except Exception as error:
+        success, rendered, render_error = False, [], str(error)
     if success:
         images = [(image, "image/png") for _, image in rendered[: config.preview_page_limit]]
     elif not total_text:
         warnings.append(f"先行ページ画像を生成できませんでした: {render_error}")
 
     ocr_engines: list[str] = []
-    if len(total_text.strip()) < 200 and images:
+    ocr_skipped: str | None = None
+    should_run_ocr = (
+        len(total_text.strip()) < 200
+        and bool(images)
+        and (
+            extension not in _RASTER_EXTENSIONS
+            or _environment_flag("DRAFT_PREVIEW_OCR_RASTER_IMAGES", False)
+        )
+    )
+    if extension in _RASTER_EXTENSIONS and len(total_text.strip()) < 200 and images:
+        ocr_skipped = "RASTER_IMAGE_FAST_PATH"
+    if should_run_ocr:
         ocr_settings = retrieval_service_settings.get_ocr(mask_secrets=False)
         if ocr_settings.enabled:
             pages = [
@@ -138,8 +209,20 @@ async def classify_document_preview(
                 for index, (image, _) in enumerate(images, start=1)
             ]
             degraded: list[str] = []
+            async def run_preview_ocr() -> None:
+                for page in pages:
+                    await _run_ocr(page, degraded)
+
+            try:
+                await asyncio.wait_for(
+                    run_preview_ocr(),
+                    timeout=_timeout_seconds("DRAFT_PREVIEW_OCR_TIMEOUT_SECONDS", 20),
+                )
+            except TimeoutError:
+                degraded.append("OCRが時間切れになりました")
+            except Exception as error:
+                degraded.append(str(error))
             for page in pages:
-                await _run_ocr(page, degraded)
                 if page.ocr_blocks:
                     selected_native[page.page_number] = "\n\n".join(
                         block.text for block in page.ocr_blocks if block.text
@@ -147,7 +230,9 @@ async def classify_document_preview(
                 if page.ocr_engine:
                     ocr_engines.append(page.ocr_engine)
             if degraded:
-                warnings.extend(f"先行OCRを利用できませんでした: {item}" for item in degraded)
+                messages = [f"先行OCRを利用できませんでした: {item}" for item in degraded]
+                warnings.extend(messages)
+                degradations.extend(messages)
             total_text = "\n\n".join(selected_native.values())[: config.preview_text_limit]
 
     enterprise = oci_service.get_enterprise_ai_settings()
@@ -156,13 +241,11 @@ async def classify_document_preview(
         return DraftClassificationResult(
             rule_result=rule_result,
             raw_llm_result={"skipped": True, "reason": "VLM_NOT_CONFIGURED"},
-            preview={
-                "pages": sorted(selected_native),
-                "text_length": len(total_text),
-                "image_count": len(images),
-                "ocr_engines": list(dict.fromkeys(ocr_engines)),
-            },
+            preview=_preview_payload(
+                selected_native, images, ocr_engines, ocr_skipped=ocr_skipped
+            ),
             warnings=warnings,
+            degradations=degradations,
         )
 
     tag_by_id = {tag.tag_id: tag for tag in tags if tag.active}
@@ -219,20 +302,40 @@ async def classify_document_preview(
         f"先頭ページ抽出テキスト:\n{total_text}"
     )
     try:
-        raw = await vlm_client.generate_json(prompt=prompt, images=images)
+        raw = await asyncio.wait_for(
+            vlm_client.generate_json(prompt=prompt, images=images),
+            timeout=_timeout_seconds("DRAFT_PREVIEW_VLM_TIMEOUT_SECONDS", 20),
+        )
         output = _LlmClassificationOutput.model_validate(raw)
-    except Exception as error:
-        warnings.append(f"LLM候補化に失敗しました: {error}")
+    except TimeoutError:
+        message = "内容AI解析が時間切れになったため、ファイル名解析の候補だけを使用します"
+        warnings.append(message)
+        degradations.append(message)
         return DraftClassificationResult(
             rule_result=rule_result,
-            raw_llm_result={"failed": True, "error": str(error)[:1000]},
-            preview={
-                "pages": sorted(selected_native),
-                "text_length": len(total_text),
-                "image_count": len(images),
-                "ocr_engines": list(dict.fromkeys(ocr_engines)),
-            },
+            raw_llm_result={"skipped": True, "reason": "VLM_TIMEOUT"},
+            preview=_preview_payload(
+                selected_native, images, ocr_engines, ocr_skipped=ocr_skipped
+            ),
             warnings=warnings,
+            degradations=degradations,
+        )
+    except Exception as error:
+        message = f"内容AI解析を利用できないため、ファイル名解析の候補だけを使用します: {error}"
+        warnings.append(message)
+        degradations.append(message)
+        return DraftClassificationResult(
+            rule_result=rule_result,
+            raw_llm_result={
+                "skipped": True,
+                "reason": "VLM_ERROR",
+                "error": str(error)[:1000],
+            },
+            preview=_preview_payload(
+                selected_native, images, ocr_engines, ocr_skipped=ocr_skipped
+            ),
+            warnings=warnings,
+            degradations=degradations,
         )
 
     candidates: list[RuleCandidate] = []
@@ -288,11 +391,9 @@ async def classify_document_preview(
         rule_result=rule_result,
         llm_candidates=candidates,
         raw_llm_result=output.model_dump(mode="json"),
-        preview={
-            "pages": sorted(selected_native),
-            "text_length": len(total_text),
-            "image_count": len(images),
-            "ocr_engines": list(dict.fromkeys(ocr_engines)),
-        },
+        preview=_preview_payload(
+            selected_native, images, ocr_engines, ocr_skipped=ocr_skipped
+        ),
         warnings=warnings,
+        degradations=degradations,
     )

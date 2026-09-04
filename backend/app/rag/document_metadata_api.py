@@ -1142,12 +1142,14 @@ async def classify_ingest_item(item_id: str, request: Request) -> IngestItemRevi
             **result.raw_llm_result,
             "preview": result.preview,
             "warnings": result.warnings,
+            "degradations": result.degradations,
         }
         await asyncio.to_thread(
             document_metadata_repository.set_ingest_llm_result,
             item_id,
             candidates=result.llm_candidates,
             raw_result=raw,
+            error_summary=" / ".join(result.degradations)[:2000] or None,
         )
         return await asyncio.to_thread(document_metadata_repository.get_ingest_item, item_id)
     except Exception as error:

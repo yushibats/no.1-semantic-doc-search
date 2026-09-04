@@ -1353,40 +1353,46 @@ export async function classifyAllDrafts({ onlyPending = false } = {}) {
   }
   const completedAtStart = onlyPending ? state.ingestItems.length - pending.length : 0;
   let failed = 0;
+  let completed = completedAtStart;
+  let nextPendingIndex = 0;
   state.classificationInProgress = true;
   state.ingestError = '';
   renderIngestReview();
   try {
-    for (let pendingIndex = 0; pendingIndex < pending.length; pendingIndex += 1) {
-      const { item, index } = pending[pendingIndex];
-      const current = completedAtStart + pendingIndex + 1;
-      state.classificationProgressMessage = `内容を先行解析しています ${current}/${state.ingestItems.length}: ${item.original_filename}`;
-      setReviewProgress(state.classificationProgressMessage);
-      let classified = null;
-      try {
-        classified = await authApiCall(`/ai/api/document-library/ingest/items/${encodeURIComponent(item.item_id)}/classify`, { method: 'POST', timeout: 300000 });
-      } catch (error) {
-        failed += 1;
-        state.ingestItems[index].error_summary = error.message;
+    const runWorker = async () => {
+      while (nextPendingIndex < pending.length) {
+        const pendingIndex = nextPendingIndex;
+        nextPendingIndex += 1;
+        const { item, index } = pending[pendingIndex];
+        state.classificationProgressMessage = `内容を先行解析しています ${completed}/${state.ingestItems.length}: ${item.original_filename}`;
+        setReviewProgress(state.classificationProgressMessage);
+        try {
+          const classified = await authApiCall(`/ai/api/document-library/ingest/items/${encodeURIComponent(item.item_id)}/classify`, { method: 'POST', timeout: 90000 });
+          classified.review = {
+            ...(classified.review || {}),
+            ...(preservedReviews.get(String(item.item_id)) || {})
+          };
+          state.ingestItems[index] = classified;
+        } catch (error) {
+          failed += 1;
+          state.ingestItems[index].error_summary = error.message;
+        } finally {
+          completed += 1;
+          state.classificationProgressMessage = `内容を先行解析しています ${completed}/${state.ingestItems.length}`;
+          setReviewProgress(state.classificationProgressMessage);
+        }
       }
-      const latestReviews = captureReviewValues();
-      applyCapturedReviewValues(latestReviews);
-      if (classified) {
-        classified.review = {
-          ...(classified.review || {}),
-          ...(preservedReviews.get(String(item.item_id)) || {}),
-          ...(latestReviews.get(String(item.item_id)) || {})
-        };
-        state.ingestItems[index] = classified;
-      }
-      state.classificationProgressMessage = `内容を先行解析しています ${current}/${state.ingestItems.length}`;
-      renderIngestReview();
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, pending.length) }, () => runWorker()));
+    applyCapturedReviewValues(preservedReviews);
   } finally {
     state.classificationInProgress = false;
+    const degraded = state.ingestItems.filter(item => Array.isArray(item?.llm_result?.degradations) && item.llm_result.degradations.length).length;
     state.classificationProgressMessage = failed
       ? `先行解析が終了しました（失敗 ${failed}件）。失敗理由を確認し、必要なら再解析してください。`
-      : '解析が完了しました。候補を確認してから登録してください。';
+      : degraded
+        ? `解析が完了しました（補助解析省略 ${degraded}件）。候補を確認して登録できます。`
+        : '解析が完了しました。候補を確認してから登録してください。';
     state.ingestError = failed ? `${failed}件の先行解析に失敗しました。各行の理由を確認してください。` : '';
     renderIngestReview();
   }
@@ -1406,8 +1412,12 @@ function renderIngestReview() {
       const confidence = candidate.confidence == null ? '' : ` ${(candidate.confidence * 100).toFixed(0)}%`;
       return `${source}: ${candidate.value_raw}${confidence}${candidate.ambiguous ? '（競合）' : ''}`;
     }).join(' / ');
+    const analysisNotes = [...new Set([
+      item.error_summary,
+      ...(Array.isArray(item?.llm_result?.degradations) ? item.llm_result.degradations : [])
+    ].filter(Boolean))];
     return `<tr data-ingest-item="${escapeHtml(item.item_id)}" data-row-version="${item.row_version}" data-needs-review="${itemNeedsReview(item)}">
-      <td><strong>${escapeHtml(item.original_filename)}</strong><div class="ingest-evidence">${escapeHtml(evidence || item.error_summary || '候補なし')}</div></td>
+      <td><strong>${escapeHtml(item.original_filename)}</strong><div class="ingest-evidence">${escapeHtml(evidence || '候補なし')}</div>${analysisNotes.length ? `<div class="ingest-analysis-note"><i class="fas fa-triangle-exclamation"></i> ${escapeHtml(analysisNotes.join(' / '))}</div>` : ''}</td>
       <td><select data-review-folder class="form-input">${folderOptions(item.review?.folder_id || item.folder_id, false)}</select></td>
       <td><select data-review-document-set class="form-input">${documentSetOptions(item.review?.document_set_id || '')}</select><div class="metadata-settings-actions"><button type="button" class="apex-button-secondary apex-button-xs" onclick="window.documentLibraryModule.suggestDocumentSet(this,'${escapeHtml(item.document_id)}')">候補</button><button type="button" class="apex-button-secondary apex-button-xs" onclick="window.documentLibraryModule.createDocumentSet(this)">新規</button></div></td>
       <td><div class="ingest-tag-cell">${tagPicker(selected, candidateIds, `review-${item.item_id}`)}</div></td>
