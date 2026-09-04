@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from array import array
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -142,6 +143,11 @@ class RetrievalHit:
 
 
 class OracleRagRepository:
+    def __init__(self) -> None:
+        self._feedback_weight_cache: dict[
+            str, tuple[float, dict[str, float], int]
+        ] = {}
+
     @contextmanager
     def connection(self) -> Iterator[Any]:
         if not database_service._ensure_pool_initialized():
@@ -420,6 +426,97 @@ class OracleRagRepository:
                 "ON set_area.document_set_id=dm_area.document_set_id "
                 "WHERE " + " AND ".join(area_conditions) + ")"
             )
+        for fact_code, minimum, maximum, bind_prefix in (
+            (
+                "FLOOR_COUNT",
+                building.floor_count_min,
+                building.floor_count_max,
+                "floor_count",
+            ),
+            (
+                "BUILDING_AGE",
+                building.building_age_min,
+                building.building_age_max,
+                "building_age",
+            ),
+        ):
+            if minimum is None and maximum is None:
+                continue
+            numeric_conditions = [
+                "dm_numeric.document_id=d.document_id",
+                "dm_numeric.document_set_id IS NOT NULL",
+                "set_numeric.confirmed=1",
+                f"set_numeric.fact_code=:{bind_prefix}_fact_code",
+                "set_numeric.phase='COMMON'",
+            ]
+            binds[f"{bind_prefix}_fact_code"] = fact_code
+            if minimum is not None:
+                binds[f"{bind_prefix}_min"] = minimum
+                numeric_conditions.append(
+                    f"set_numeric.value_number>=:{bind_prefix}_min"
+                )
+            if maximum is not None:
+                binds[f"{bind_prefix}_max"] = maximum
+                numeric_conditions.append(
+                    f"set_numeric.value_number<=:{bind_prefix}_max"
+                )
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sds_document_metadata dm_numeric "
+                "JOIN sds_document_set_numeric_facts set_numeric "
+                "ON set_numeric.document_set_id=dm_numeric.document_set_id "
+                "WHERE " + " AND ".join(numeric_conditions) + ")"
+            )
+
+        room = filters.room
+        if room.active():
+            room_conditions = [
+                "target_room.document_id=d.document_id",
+                "measurement.searchable=1",
+                "measurement.review_status<>'REJECTED'",
+                "measurement.document_revision_id=room_document.current_revision_id",
+            ]
+            if room.room_names:
+                placeholders = []
+                for index, value in enumerate(room.room_names):
+                    key = f"room_name_{index}"
+                    binds[key] = value
+                    placeholders.append(f":{key}")
+                room_conditions.append(
+                    f"measurement.room_name IN ({', '.join(placeholders)})"
+                )
+            if room.phases:
+                placeholders = []
+                for index, value in enumerate(room.phases):
+                    key = f"room_phase_{index}"
+                    binds[key] = value
+                    placeholders.append(f":{key}")
+                room_conditions.append(
+                    "measurement.phase IN (" + ", ".join(placeholders) + ")"
+                )
+            for column, minimum, maximum, bind_prefix in (
+                ("tatami_equivalent", room.tatami_min, room.tatami_max, "room_tatami"),
+                ("area_m2", room.area_min, room.area_max, "room_area"),
+            ):
+                if minimum is not None:
+                    binds[f"{bind_prefix}_min"] = minimum
+                    room_conditions.append(
+                        f"measurement.{column}>=:{bind_prefix}_min"
+                    )
+                if maximum is not None:
+                    binds[f"{bind_prefix}_max"] = maximum
+                    room_conditions.append(
+                        f"measurement.{column}<=:{bind_prefix}_max"
+                    )
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sds_document_metadata target_room "
+                "JOIN sds_room_measurements measurement ON ("
+                "measurement.document_id=d.document_id OR "
+                "(target_room.document_set_id IS NOT NULL AND "
+                "measurement.document_set_id=target_room.document_set_id)) "
+                "JOIN sds_documents room_document "
+                "ON room_document.document_id=measurement.document_id "
+                "WHERE " + " AND ".join(room_conditions) + ")"
+            )
         if filters.concept_ids and filters.concept_mode == "REQUIRE_ALL":
             # Concept matching is evaluated at the logical document-set level.
             # Unassigned documents form a one-document virtual set. This clause
@@ -588,6 +685,77 @@ class OracleRagRepository:
             )
             return [
                 self._hit(row, channel="metadata:typed")
+                for row in self.rows(cursor)
+            ]
+
+    def exact_image_search(
+        self,
+        *,
+        content_sha256: str,
+        top_k: int,
+        user_hash: str | None,
+        current_version_only: bool,
+        document_types: list[str],
+        filename_filter: str | None = None,
+        metadata_filters: MetadataSearchFilters | None = None,
+    ) -> list[RetrievalHit]:
+        """Return published pages whose bytes, or source image bytes, match exactly."""
+
+        digest = str(content_sha256 or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return []
+        where, binds = self._document_where(
+            user_hash=user_hash,
+            current_version_only=current_version_only,
+            document_types=document_types,
+            filename_filter=filename_filter,
+            metadata_filters=metadata_filters,
+        )
+        binds.update(content_sha256=digest, top_k=max(1, min(top_k, 1000)))
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT {self._base_select()}, 1 score
+                    FROM sds_documents d
+                    JOIN sds_index_releases rel
+                      ON rel.release_id=d.serving_release_id
+                     AND rel.status='PUBLISHED'
+                    JOIN sds_index_release_components rc
+                      ON rc.release_id=rel.release_id
+                     AND rc.component_key='render'
+                     AND rc.is_stale=0
+                    JOIN sds_artifacts a
+                      ON a.stage_run_id=rc.stage_run_id
+                     AND a.artifact_kind='PAGE_IMAGE'
+                    LEFT JOIN sds_index_release_components nc
+                      ON nc.release_id=rel.release_id
+                     AND nc.component_key='normalize'
+                     AND nc.is_stale=0
+                    LEFT JOIN sds_artifacts page_text
+                      ON page_text.stage_run_id=nc.stage_run_id
+                     AND page_text.artifact_kind='PAGE_TEXT'
+                     AND page_text.page_number=a.page_number
+                    LEFT JOIN sds_artifacts page_image
+                      ON page_image.artifact_id=a.artifact_id
+                    WHERE {where}
+                      AND (
+                        LOWER(a.content_sha256)=:content_sha256
+                        OR (
+                          LOWER(d.media_type) LIKE 'image/%'
+                          AND LOWER(d.content_sha256)=:content_sha256
+                        )
+                      )
+                    ORDER BY
+                      CASE WHEN LOWER(a.content_sha256)=:content_sha256 THEN 0 ELSE 1 END,
+                      a.page_number NULLS LAST,
+                      a.artifact_id
+                ) WHERE ROWNUM<=:top_k
+                """,
+                binds,
+            )
+            return [
+                self._hit(row, channel="exact:image")
                 for row in self.rows(cursor)
             ]
 
@@ -1543,6 +1711,50 @@ class OracleRagRepository:
         with self.connection() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
+                SELECT user_id_hash, diagnostics_json
+                FROM sds_search_audit
+                WHERE trace_id=:trace
+                """,
+                {"trace": trace_id},
+            )
+            audit = cursor.fetchone()
+            if not audit:
+                raise LookupError("検索履歴が見つかりません")
+            audit_user_hash = str(audit[0]) if audit[0] is not None else None
+            if audit_user_hash != user_hash:
+                raise PermissionError("この検索結果にはフィードバックできません")
+            diagnostics = _json_col(audit[1], {})
+            result_signals = diagnostics.get("result_signals", {})
+            if document_id and document_id not in result_signals:
+                raise ValueError("検索結果に含まれない文書です")
+            if action in {"relevant", "irrelevant"} and not document_id:
+                raise ValueError("評価する文書を指定してください")
+            if evidence_id and document_id:
+                evidence_ids = result_signals.get(document_id, {}).get(
+                    "evidence_ids", []
+                )
+                if evidence_id not in evidence_ids:
+                    raise ValueError("検索結果に含まれないページです")
+            if action in {"relevant", "irrelevant"}:
+                cursor.execute(
+                    """
+                    DELETE FROM sds_search_feedback
+                    WHERE trace_id=:trace
+                      AND document_id=:document
+                      AND action IN ('relevant', 'irrelevant')
+                      AND (
+                        user_id_hash=:user_hash
+                        OR (user_id_hash IS NULL AND :user_hash IS NULL)
+                      )
+                    """,
+                    {
+                        "trace": trace_id,
+                        "document": document_id,
+                        "user_hash": user_hash,
+                    },
+                )
+            cursor.execute(
+                """
                 INSERT INTO sds_search_feedback
                     (feedback_id, trace_id, document_id, artifact_id, action, user_id_hash)
                 VALUES (:feedback, :trace, :document, :artifact, :action, :user_hash)
@@ -1557,6 +1769,70 @@ class OracleRagRepository:
                 },
             )
             connection.commit()
+        self._feedback_weight_cache.pop(user_hash or "", None)
+
+    def search_feedback_weight_multipliers(
+        self,
+        user_hash: str | None,
+        *,
+        cache_seconds: int = 60,
+        limit: int = 500,
+    ) -> tuple[dict[str, float], int]:
+        """Learn small per-route weight adjustments from explicit user ratings.
+
+        This intentionally avoids model training.  A Bayesian-style shrinkage term
+        and a +/-15% clamp prevent a handful of clicks from destabilising search.
+        """
+
+        cache_key = user_hash or ""
+        now = time.monotonic()
+        cached = self._feedback_weight_cache.get(cache_key)
+        if cached and now - cached[0] <= max(1, cache_seconds):
+            return dict(cached[1]), cached[2]
+        if not user_hash:
+            return {}, 0
+        with self.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT action, audit.diagnostics_json, feedback.document_id
+                FROM sds_search_feedback feedback
+                JOIN sds_search_audit audit ON audit.trace_id=feedback.trace_id
+                WHERE feedback.user_id_hash=:user_hash
+                  AND audit.user_id_hash=:user_hash
+                  AND feedback.action IN ('relevant', 'irrelevant')
+                ORDER BY feedback.created_at DESC
+                FETCH FIRST {max(1, min(limit, 2000))} ROWS ONLY
+                """,
+                {"user_hash": user_hash},
+            )
+            rows = cursor.fetchall()
+        counts: dict[str, list[int]] = {}
+        usable = 0
+        for action, diagnostics_json, document_id in rows:
+            diagnostics = _json_col(diagnostics_json, {})
+            signal = diagnostics.get("result_signals", {}).get(str(document_id), {})
+            modes = signal.get("modes", [])
+            if not modes:
+                continue
+            usable += 1
+            for mode in set(modes):
+                if mode not in {
+                    "oracle_text", "text_vector", "visual_vector",
+                    "vlm_text", "vlm_vector",
+                }:
+                    continue
+                pair = counts.setdefault(mode, [0, 0])
+                pair[0 if str(action) == "relevant" else 1] += 1
+        multipliers: dict[str, float] = {}
+        if usable >= 5:
+            for mode, (positive, negative) in counts.items():
+                total = positive + negative
+                if total < 2:
+                    continue
+                delta = 0.20 * (positive - negative) / (total + 8)
+                multipliers[mode] = max(0.85, min(1.15, 1.0 + delta))
+        self._feedback_weight_cache[cache_key] = (now, multipliers, usable)
+        return dict(multipliers), usable
 
 
 rag_repository = OracleRagRepository()

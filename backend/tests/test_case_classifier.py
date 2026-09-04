@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from app.rag.case_classifier import (
     classify_page,
+    extract_room_measurements,
     extract_set_areas,
     extract_set_facts,
+    extract_set_numeric_facts,
 )
 
 
@@ -105,3 +107,107 @@ def test_extract_set_areas_keeps_unlabelled_value_as_unknown_type() -> None:
     assert areas[0].source == "RULE"
     assert areas[0].confirmed is True
     assert areas[0].evidence["matched_text"] == "80㎡"
+
+
+def test_extract_room_measurements_converts_printed_tatami() -> None:
+    measurements = extract_room_measurements(
+        file_name="1F平面図.pdf",
+        page_text="LDK 16帖",
+        page_phase="PROPOSED",
+        page_number=1,
+    )
+
+    assert len(measurements) == 1
+    measurement = measurements[0]
+    assert measurement.room_name == "LDK"
+    assert measurement.tatami == 16.0
+    assert measurement.area_m2 == 25.92
+    assert measurement.basis == "PRINTED_TATAMI"
+    assert measurement.confirmed is True
+    assert measurement.review_status == "AUTO_VERIFIED"
+    assert measurement.searchable is True
+
+
+def test_extract_room_measurements_keeps_l_shape_searchable_before_review() -> None:
+    vlm_text = """{
+      "summary": "L字型LDK",
+      "keywords": [],
+      "facts": [],
+      "room_area_estimates": [{
+        "room_name": "LDK",
+        "rectangles": [
+          {"width_mm": 4000, "depth_mm": 3000, "operation": "ADD"},
+          {"width_mm": 2000, "depth_mm": 1500, "operation": "ADD"}
+        ],
+        "source_locator": "page:1",
+        "evidence": "L字型を2長方形に分割した概算・要確認",
+        "confidence": 0.65,
+        "area_m2": 0,
+        "tatami_equivalent": 0,
+        "conversion_m2_per_tatami": 1.62
+      }]
+    }"""
+    measurements = extract_room_measurements(
+        file_name="提案平面図.pdf",
+        vlm_text=vlm_text,
+        page_phase="PROPOSED",
+        page_number=1,
+    )
+
+    assert len(measurements) == 1
+    measurement = measurements[0]
+    assert measurement.area_m2 == 15.0
+    assert measurement.tatami == 9.26
+    assert measurement.basis == "ESTIMATED_L_SHAPE"
+    assert measurement.confirmed is False
+    assert measurement.review_status == "REVIEW_REQUIRED"
+    assert measurement.searchable is True
+
+
+def test_extract_room_measurements_auto_verifies_one_rectangle() -> None:
+    vlm_text = """{
+      "summary": "長方形LDK",
+      "keywords": [],
+      "facts": [],
+      "room_area_estimates": [{
+        "room_name": "LDK",
+        "rectangles": [
+          {"width_mm": 5200, "depth_mm": 4800, "operation": "ADD"}
+        ],
+        "source_locator": "page:2",
+        "evidence": "LDK内法寸法を確認",
+        "confidence": 0.85,
+        "area_m2": 0,
+        "tatami_equivalent": 0,
+        "conversion_m2_per_tatami": 1.62
+      }]
+    }"""
+    measurements = extract_room_measurements(
+        file_name="提案平面図.pdf",
+        vlm_text=vlm_text,
+        page_phase="PROPOSED",
+        page_number=2,
+    )
+
+    assert len(measurements) == 1
+    measurement = measurements[0]
+    assert measurement.area_m2 == 24.96
+    assert measurement.tatami == 15.41
+    assert measurement.basis == "VERIFIED_RECTANGLE"
+    assert measurement.confirmed is True
+    assert measurement.review_status == "AUTO_VERIFIED"
+
+
+def test_extract_set_numeric_facts_keeps_floor_count_and_building_age() -> None:
+    facts = extract_set_numeric_facts(
+        file_name="建物概要.pdf",
+        page_text="築30年の木造2階建て住宅",
+        page_phase="EXISTING",
+    )
+    by_code = {item.fact_code: item for item in facts}
+
+    assert by_code["BUILDING_AGE"].value_number == 30
+    assert by_code["BUILDING_AGE"].unit == "年"
+    assert by_code["FLOOR_COUNT"].value_number == 2
+    assert by_code["FLOOR_COUNT"].unit == "階"
+    assert all(item.confirmed for item in facts)

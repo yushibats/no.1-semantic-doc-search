@@ -13,9 +13,11 @@ readonly DEPLOY_FILES=(
   backend/app/rag/document_metadata_schema.py
   backend/app/rag/models.py
   backend/app/rag/oracle_repository.py
+  backend/app/rag/profile_prompts.py
   backend/app/rag/query_condition_parser.py
   backend/app/rag/search_api.py
   backend/app/rag/search_pipeline.py
+  backend/app/rag/vlm_prompting.py
   frontend/index.html
   frontend/src/modules/search.js
   frontend/src/style.css

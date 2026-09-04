@@ -8,8 +8,10 @@ from uuid import uuid4
 
 from app.rag.case_classifier import (
     classify_page,
+    extract_room_measurements,
     extract_set_areas,
     extract_set_facts,
+    extract_set_numeric_facts,
 )
 from app.rag.case_comparison_models import (
     BuildingConditionOptions,
@@ -176,13 +178,38 @@ class CaseComparisonRepository:
         classifications = 0
         facts_written = 0
         areas_written = 0
+        numeric_facts_written = 0
+        room_measurements_written = 0
         with self.connection() as connection, connection.cursor() as cursor:
+            # Recreate automatic room measurements for the serving revision.
+            # User-maintained measurements remain authoritative.
+            cursor.execute(
+                """
+                DELETE FROM sds_room_measurements
+                WHERE document_id=:document
+                  AND document_revision_id=:revision
+                  AND user_locked=0
+                """,
+                {
+                    "document": document_id,
+                    "revision": str(document["current_revision_id"]),
+                },
+            )
             if document.get("document_set_id"):
                 # Re-analysis must not leave an obsolete automatic area as an
                 # active search condition. User-confirmed rows are never changed.
                 cursor.execute(
                     """
                     UPDATE sds_document_set_areas
+                    SET confirmed=0, updated_at=SYSTIMESTAMP
+                    WHERE evidence_document_id=:document
+                      AND user_locked=0
+                    """,
+                    {"document": document_id},
+                )
+                cursor.execute(
+                    """
+                    UPDATE sds_document_set_numeric_facts
                     SET confirmed=0, updated_at=SYSTIMESTAMP
                     WHERE evidence_document_id=:document
                       AND user_locked=0
@@ -244,6 +271,79 @@ class CaseComparisonRepository:
                     },
                 )
                 classifications += 1
+                for measurement in extract_room_measurements(
+                    file_name=str(document["file_name"]),
+                    page_text=normalized_text,
+                    vlm_text=vlm_text,
+                    page_phase=inference.phase,
+                    floor_code=inference.floor_code,
+                ):
+                    cursor.execute(
+                        """
+                        MERGE INTO sds_room_measurements target
+                        USING (
+                            SELECT :revision document_revision_id,
+                                   :page_number page_number,
+                                   :phase phase, :room_name room_name,
+                                   :basis basis
+                            FROM dual
+                        ) source
+                        ON (
+                            target.document_revision_id=source.document_revision_id
+                            AND target.page_number=source.page_number
+                            AND target.phase=source.phase
+                            AND target.room_name=source.room_name
+                            AND target.basis=source.basis
+                        )
+                        WHEN MATCHED THEN UPDATE SET
+                            target.document_id=:document,
+                            target.document_set_id=:document_set,
+                            target.floor_code=:floor_code,
+                            target.area_m2=:area_m2,
+                            target.tatami_equivalent=:tatami,
+                            target.source=:source,
+                            target.confidence=:confidence,
+                            target.confirmed=:confirmed,
+                            target.review_status=:review_status,
+                            target.searchable=:searchable,
+                            target.evidence_json=:evidence,
+                            target.updated_at=SYSTIMESTAMP
+                        WHERE target.user_locked=0
+                        WHEN NOT MATCHED THEN INSERT
+                            (measurement_id, document_id, document_set_id,
+                             document_revision_id, page_number, phase, floor_code,
+                             room_name, area_m2, tatami_equivalent, basis, source,
+                             confidence, confirmed, user_locked, review_status,
+                             searchable, evidence_json)
+                        VALUES
+                            (:measurement_id, :document, :document_set, :revision,
+                             :page_number, :phase, :floor_code, :room_name,
+                             :area_m2, :tatami, :basis, :source, :confidence,
+                             :confirmed, 0, :review_status, :searchable, :evidence)
+                        """,
+                        {
+                            "measurement_id": uuid4().hex,
+                            "document": document_id,
+                            "document_set": document.get("document_set_id"),
+                            "revision": str(document["current_revision_id"]),
+                            "page_number": page_number,
+                            "phase": measurement.phase,
+                            "floor_code": measurement.floor_code,
+                            "room_name": measurement.room_name,
+                            "area_m2": measurement.area_m2,
+                            "tatami": measurement.tatami_equivalent,
+                            "basis": measurement.basis,
+                            "source": measurement.source,
+                            "confidence": measurement.confidence,
+                            "confirmed": int(measurement.confirmed),
+                            "review_status": measurement.review_status,
+                            "searchable": int(measurement.searchable),
+                            "evidence": json.dumps(
+                                measurement.evidence, ensure_ascii=False
+                            ),
+                        },
+                    )
+                    room_measurements_written += 1
                 if not document.get("document_set_id"):
                     continue
                 for fact in extract_set_facts(
@@ -365,11 +465,73 @@ class CaseComparisonRepository:
                         },
                     )
                     areas_written += 1
+                for numeric_fact in extract_set_numeric_facts(
+                    file_name=str(document["file_name"]),
+                    page_text=normalized_text,
+                    vlm_text=vlm_text,
+                ):
+                    cursor.execute(
+                        """
+                        MERGE INTO sds_document_set_numeric_facts target
+                        USING (
+                            SELECT :document_set document_set_id,
+                                   :fact_code fact_code, :phase phase
+                            FROM dual
+                        ) source
+                        ON (target.document_set_id=source.document_set_id
+                            AND target.fact_code=source.fact_code
+                            AND target.phase=source.phase)
+                        WHEN MATCHED THEN UPDATE SET
+                            target.value_number=:value_number,
+                            target.unit=:unit,
+                            target.source=:source,
+                            target.confidence=:confidence,
+                            target.confirmed=:confirmed,
+                            target.evidence_document_id=:document,
+                            target.evidence_revision_id=:revision,
+                            target.evidence_page_number=:page_number,
+                            target.evidence_json=:evidence,
+                            target.updated_at=SYSTIMESTAMP
+                        WHERE target.user_locked=0
+                          AND (:confirmed=1 OR target.confirmed=0)
+                        WHEN NOT MATCHED THEN INSERT
+                            (numeric_fact_id, document_set_id, fact_code, phase,
+                             value_number, unit, source, confidence, confirmed,
+                             user_locked, evidence_document_id,
+                             evidence_revision_id, evidence_page_number,
+                             evidence_json)
+                        VALUES
+                            (:numeric_fact_id, :document_set, :fact_code, :phase,
+                             :value_number, :unit, :source, :confidence,
+                             :confirmed, 0, :document, :revision,
+                             :page_number, :evidence)
+                        """,
+                        {
+                            "numeric_fact_id": uuid4().hex,
+                            "document_set": str(document["document_set_id"]),
+                            "fact_code": numeric_fact.fact_code,
+                            "phase": numeric_fact.phase,
+                            "value_number": numeric_fact.value,
+                            "unit": numeric_fact.unit,
+                            "source": numeric_fact.source,
+                            "confidence": numeric_fact.confidence,
+                            "confirmed": int(numeric_fact.confirmed),
+                            "document": document_id,
+                            "revision": str(document["current_revision_id"]),
+                            "page_number": page_number,
+                            "evidence": json.dumps(
+                                numeric_fact.evidence, ensure_ascii=False
+                            ),
+                        },
+                    )
+                    numeric_facts_written += 1
             connection.commit()
         return {
             "classifications": classifications,
             "facts": facts_written,
             "areas": areas_written,
+            "numeric_facts": numeric_facts_written,
+            "room_measurements": room_measurements_written,
         }
 
     def refresh_set(self, document_set_id: str, user_hash: str | None) -> dict[str, int]:
@@ -387,13 +549,22 @@ class CaseComparisonRepository:
                 {"document_set": document_set_id, "user_hash": user_hash},
             )
             document_ids = [str(row[0]) for row in cursor.fetchall()]
-        total = {"documents": 0, "classifications": 0, "facts": 0, "areas": 0}
+        total = {
+            "documents": 0,
+            "classifications": 0,
+            "facts": 0,
+            "areas": 0,
+            "numeric_facts": 0,
+            "room_measurements": 0,
+        }
         for document_id in document_ids:
             result = self.refresh_document(document_id)
             total["documents"] += 1
             total["classifications"] += result["classifications"]
             total["facts"] += result["facts"]
             total["areas"] += result["areas"]
+            total["numeric_facts"] += result["numeric_facts"]
+            total["room_measurements"] += result["room_measurements"]
         return total
 
     @staticmethod

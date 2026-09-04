@@ -82,6 +82,21 @@ def ordered_retrieval_modes(values: set[RetrievalMode]) -> list[RetrievalMode]:
     return [mode for mode in RETRIEVAL_MODES if mode in values]
 
 
+def apply_feedback_weight_multipliers(
+    weights: RetrievalWeights,
+    multipliers: dict[str, float],
+) -> RetrievalWeights:
+    """検索評価から得た倍率を安全な範囲で検索重みに反映する。"""
+    updates: dict[str, float] = {}
+    for mode in RETRIEVAL_MODES:
+        multiplier = max(0.85, min(1.15, float(multipliers.get(mode, 1.0))))
+        updates[mode] = max(
+            0.0,
+            min(10.0, float(getattr(weights, mode)) * multiplier),
+        )
+    return weights.model_copy(update=updates)
+
+
 def _load_search_configuration() -> tuple[list[Any], list[Any]]:
     return profile_repository.enabled_profiles(), pipeline_repository.enabled_recipes()
 
@@ -281,6 +296,9 @@ def _image_similarity_score(
     pure_image_channels: set[str],
     image_channels: set[str],
 ) -> float | None:
+    if "exact:image" in item.channels:
+        return 1.0
+
     preferred_scores = [
         score
         for channel, score in item.channel_scores.items()
@@ -301,7 +319,7 @@ def _image_sort_key(
     *,
     pure_image_channels: set[str],
     image_channels: set[str],
-) -> tuple[bool, float, bool, bool, float, float]:
+) -> tuple[bool, bool, float, bool, bool, float, float]:
     similarity = _image_similarity_score(
         item,
         pure_image_channels=pure_image_channels,
@@ -309,6 +327,7 @@ def _image_sort_key(
     )
     rerank_score = item.rerank_score
     return (
+        "exact:image" in item.channels,
         similarity is not None,
         similarity if similarity is not None else float("-inf"),
         item.verification_status == "verified",
@@ -563,6 +582,28 @@ class SearchPipeline:
         await step("initialization", "検索を準備しています")
         profiles, recipes = await asyncio.to_thread(_load_search_configuration)
         weights = retrieval_service_settings.get_weights()
+        feedback_weighting: dict[str, Any] = {
+            "status": "collecting",
+            "sample_count": 0,
+            "multipliers": {},
+        }
+        try:
+            multipliers, feedback_sample_count = await asyncio.to_thread(
+                rag_repository.search_feedback_weight_multipliers,
+                user_hash,
+            )
+            weights = apply_feedback_weight_multipliers(weights, multipliers)
+            feedback_weighting = {
+                "status": "applied" if multipliers else "collecting",
+                "sample_count": feedback_sample_count,
+                "multipliers": multipliers,
+            }
+        except Exception:
+            feedback_weighting = {
+                "status": "unavailable",
+                "sample_count": 0,
+                "multipliers": {},
+            }
         configured_modes = available_retrieval_modes(
             weights=weights,
             profiles=profiles,
@@ -572,7 +613,8 @@ class SearchPipeline:
         if not query.strip():
             active_modes.difference_update(KEYWORD_RETRIEVAL_MODES)
         if (
-            not active_modes
+            image is None
+            and not active_modes
             and not selected_concept_ids
             and not metadata_filters.active()
         ):
@@ -649,9 +691,31 @@ class SearchPipeline:
         tasks: list[tuple[str, float, Any]] = []
         image_channels: set[str] = set()
         pure_image_channels: set[str] = set()
+        retrieval_channel_modes: dict[str, RetrievalMode] = {}
 
         def route_name(name: str, index: int, total: int) -> str:
             return name if total == 1 else f"{name}_{index}"
+
+        if image is not None:
+            exact_channel = "exact:image"
+            tasks.append(
+                (
+                    exact_channel,
+                    2.0,
+                    asyncio.to_thread(
+                        rag_repository.exact_image_search,
+                        content_sha256=hashlib.sha256(image).hexdigest(),
+                        top_k=branch_k,
+                        user_hash=user_hash,
+                        current_version_only=current_version_only,
+                        document_types=document_types,
+                        filename_filter=filename_filter,
+                        metadata_filters=metadata_filters,
+                    ),
+                )
+            )
+            image_channels.add(exact_channel)
+            pure_image_channels.add(exact_channel)
 
         if selected_concept_ids:
             tasks.append(
@@ -671,7 +735,7 @@ class SearchPipeline:
                 )
             )
 
-        if metadata_filters.building.active() or (
+        if metadata_filters.building.active() or metadata_filters.room.active() or (
             metadata_filters.active() and not query.strip()
         ):
             tasks.append(
@@ -691,6 +755,7 @@ class SearchPipeline:
             )
 
         if query_variants and "oracle_text" in active_modes:
+            retrieval_channel_modes["keyword:page_text"] = "oracle_text"
             weight = weights.oracle_text / len(query_variants)
             for index, variant in enumerate(query_variants, start=1):
                 tasks.append(
@@ -730,6 +795,7 @@ class SearchPipeline:
                 )
                 for index, (_, embedding) in enumerate(recipe_vectors, start=1):
                     channel = f"vector:{recipe.code}"
+                    retrieval_channel_modes[channel] = mode
                     if "PAGE_IMAGE" in source_types:
                         image_channels.add(channel)
                         if source_types == {"PAGE_IMAGE"}:
@@ -757,10 +823,12 @@ class SearchPipeline:
         for profile in profiles:
             if query_variants and "vlm_text" in active_modes:
                 weight = weights.vlm_text / (vlm_profile_count * len(query_variants))
+                channel = f"keyword:vlm_text_slot_{profile.slot_no}"
+                retrieval_channel_modes[channel] = "vlm_text"
                 for index, variant in enumerate(query_variants, start=1):
                     tasks.append(
                         (
-                            route_name(f"keyword:vlm_text_slot_{profile.slot_no}", index, len(query_variants)),
+                            route_name(channel, index, len(query_variants)),
                             weight,
                             asyncio.to_thread(
                                 rag_repository.facet_keyword_search,
@@ -974,7 +1042,7 @@ class SearchPipeline:
                         (
                             rank
                             for channel, rank in item.channel_ranks.items()
-                            if channel.startswith("vector:page_image")
+                            if channel in pure_image_channels
                         ),
                         default=None,
                     ),
@@ -1099,6 +1167,26 @@ class SearchPipeline:
                 "delta": [{"op": "replace", "path": "/formatSummary", "value": format_summary}],
             })
         elapsed = time.perf_counter() - started
+        result_signals: dict[str, dict[str, Any]] = {}
+        for rank, result in enumerate(results, start=1):
+            channels = sorted({
+                channel
+                for evidence_item in result.evidence
+                for channel in evidence_item.retrieval_channels
+            })
+            modes = {
+                retrieval_channel_modes[channel]
+                for channel in channels
+                if channel in retrieval_channel_modes
+            }
+            result_signals[result.document_id] = {
+                "rank": rank,
+                "modes": ordered_retrieval_modes(modes),
+                "channels": channels,
+                "evidence_ids": [
+                    evidence_item.evidence_id for evidence_item in result.evidence
+                ],
+            }
         diagnostics: dict[str, Any] = {
             "enabled_vlm_profiles": [profile.slot_no for profile in profiles],
             "requested_retrieval_modes": ordered_retrieval_modes(requested_modes),
@@ -1118,6 +1206,8 @@ class SearchPipeline:
             "vlm_verify_requested": verify,
             "selected_concept_ids": selected_concept_ids,
             "concept_mode": concept_mode,
+            "feedback_weighting": feedback_weighting,
+            "result_signals": result_signals,
         }
         if debug:
             diagnostics.update(

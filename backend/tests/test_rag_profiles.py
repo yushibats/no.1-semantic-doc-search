@@ -65,6 +65,7 @@ from app.rag.search_pipeline import (
     QueryPlan,
     RankedHit,
     SearchPipeline,
+    apply_feedback_weight_multipliers,
     _candidate_text,
     _image_similarity_score,
     _image_sort_key,
@@ -1301,7 +1302,7 @@ def test_unreliable_or_invalid_room_estimate_does_not_fail_the_page() -> None:
                     "rectangles": [{"width_mm": 5000, "depth_mm": 4000}],
                     "source_locator": "page:1",
                     "evidence": "寸法の対応が曖昧",
-                    "confidence": 0.7,
+                    "confidence": 0.5,
                 },
                 {
                     "room_name": "洋室",
@@ -1334,6 +1335,9 @@ def test_vlm_prompt_uses_original_name_and_marks_storage_key_as_technical() -> N
     assert "名前や分類の判定根拠にしない" in prompt
     assert "PLAN-A 内観パース" in prompt
     assert "room_area_estimates" in prompt
+    assert "1帖=1.62㎡" in prompt
+    assert "confidence 0.55以上" in prompt
+    assert "承認前でも検索候補" not in prompt
 
 
 def test_specialized_profiles_cover_samples_and_guard_room_calculation() -> None:
@@ -1351,6 +1355,8 @@ def test_specialized_profiles_cover_samples_and_guard_room_calculation() -> None
         "1帖=1.62㎡",
         "建物全体寸法",
         "ピクセル推定",
+        "confidence 0.55以上",
+        "承認前でも検索候補",
     ):
         assert phrase in PROPOSAL_PLAN_PROFILE_PROMPT
     assert "room_area_estimatesは常に空配列" in CONSTRUCTION_PHOTO_PROFILE_PROMPT
@@ -1584,6 +1590,53 @@ def test_rrf_preserves_channel_scores_and_image_similarity_prefers_pure_image() 
         pure_image_channels={"vector:page_image"},
         image_channels={"vector:page_image", "vector:page_image_page_text"},
     ) == 0.92
+
+
+def test_feedback_weight_multipliers_are_bounded() -> None:
+    adjusted = apply_feedback_weight_multipliers(
+        RetrievalWeights(
+            oracle_text=2.0,
+            text_vector=2.0,
+            visual_vector=2.0,
+            vlm_text=2.0,
+            vlm_vector=2.0,
+        ),
+        {"oracle_text": 1.8, "text_vector": 0.2},
+    )
+
+    assert adjusted.oracle_text == pytest.approx(2.3)
+    assert adjusted.text_vector == pytest.approx(1.7)
+    assert adjusted.visual_vector == pytest.approx(2.0)
+
+
+def test_exact_image_channel_has_full_similarity_and_precedes_semantic_hits() -> None:
+    exact = RankedHit(
+        hit=retrieval_hit(document_id="exact", channel="exact:image", score=1.0),
+        rrf_score=0.01,
+        channels={"exact:image"},
+        channel_scores={"exact:image": 1.0},
+    )
+    semantic = RankedHit(
+        hit=retrieval_hit(
+            document_id="semantic", channel="vector:page_image", score=0.999
+        ),
+        rrf_score=1.0,
+        channels={"vector:page_image"},
+        channel_scores={"vector:page_image": 0.999},
+    )
+    channels = {"vector:page_image"}
+
+    assert _image_similarity_score(
+        exact, pure_image_channels=channels, image_channels=channels
+    ) == 1.0
+    ranked = sorted(
+        [semantic, exact],
+        key=lambda item: _image_sort_key(
+            item, pure_image_channels=channels, image_channels=channels
+        ),
+        reverse=True,
+    )
+    assert [item.hit.document_id for item in ranked] == ["exact", "semantic"]
 
 
 def test_image_sort_key_keeps_similarity_above_secondary_signals_and_missing_scores() -> None:

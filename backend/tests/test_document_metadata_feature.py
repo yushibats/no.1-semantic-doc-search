@@ -28,6 +28,7 @@ from app.rag.models import (
     CustomerSearchFilter,
     FolderSearchScope,
     MetadataSearchFilters,
+    RoomConditionSearchFilter,
     TagSearchFilter,
 )
 from app.rag.oracle_repository import OracleRagRepository
@@ -591,6 +592,71 @@ def test_building_conditions_are_in_candidates_before_limits() -> None:
     vector_sql, _ = repository.connection_value.cursor_value.calls[-1]
     assert vector_sql.index("sds_document_set_facts") < vector_sql.index("FETCH APPROX FIRST")
     assert vector_sql.index("sds_document_set_areas") < vector_sql.index("FETCH APPROX FIRST")
+
+
+def test_numeric_and_room_conditions_are_in_candidates_before_limits() -> None:
+    repository = _CaptureSearchRepository()
+    filters = MetadataSearchFilters(
+        building=BuildingConditionSearchFilter(
+            floor_count_min=2,
+            floor_count_max=2,
+            building_age_min=27,
+            building_age_max=33,
+        ),
+        room=RoomConditionSearchFilter(
+            room_names=["LDK"],
+            phases=["PROPOSED"],
+            tatami_min=14.4,
+            tatami_max=17.6,
+        ),
+    )
+    repository.keyword_search(
+        query="開放的なLDK",
+        top_k=20,
+        user_hash="u" * 64,
+        current_version_only=True,
+        document_types=[],
+        metadata_filters=filters,
+    )
+    keyword_sql, binds = repository.connection_value.cursor_value.calls[-1]
+    normalized = " ".join(keyword_sql.casefold().split())
+
+    assert "sds_document_set_numeric_facts" in normalized
+    assert "sds_room_measurements" in normalized
+    assert normalized.index("sds_document_set_numeric_facts") < normalized.index(
+        "rownum<=:top_k"
+    )
+    assert normalized.index("sds_room_measurements") < normalized.index(
+        "rownum<=:top_k"
+    )
+    assert "measurement.searchable=1" in normalized
+    assert "measurement.confirmed=1" not in normalized
+    assert binds["floor_count_min"] == 2
+    assert binds["floor_count_max"] == 2
+    assert binds["building_age_min"] == 27
+    assert binds["building_age_max"] == 33
+    assert binds["room_name_0"] == "LDK"
+    assert binds["room_phase_0"] == "PROPOSED"
+    assert binds["room_tatami_min"] == 14.4
+    assert binds["room_tatami_max"] == 17.6
+
+    repository.recipe_vector_search(
+        recipe_code="chunk_text",
+        embedding=[0.1, 0.2],
+        channel="vector:test",
+        top_k=20,
+        user_hash="u" * 64,
+        current_version_only=True,
+        document_types=[],
+        metadata_filters=filters,
+    )
+    vector_sql, _ = repository.connection_value.cursor_value.calls[-1]
+    assert vector_sql.index("sds_document_set_numeric_facts") < vector_sql.index(
+        "FETCH APPROX FIRST"
+    )
+    assert vector_sql.index("sds_room_measurements") < vector_sql.index(
+        "FETCH APPROX FIRST"
+    )
 
 
 def test_typed_metadata_search_returns_one_representative_page_per_document() -> None:

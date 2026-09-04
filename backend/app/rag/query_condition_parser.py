@@ -4,6 +4,7 @@ import copy
 import re
 import unicodedata
 from functools import lru_cache
+import math
 from typing import Any
 
 
@@ -49,6 +50,40 @@ _BOUND_AREA_PATTERN = re.compile(
 _BARE_AREA_PATTERN = re.compile(
     r"(?P<value>\d{1,5}(?:\.\d+)?)\s*(?P<unit>㎡|坪)"
 )
+_ROOM_NAMES = (
+    "ファミリークローク", "ランドリールーム", "ウォークインクローゼット",
+    "子供部屋", "主寝室", "リビング", "キッチン", "ダイニング",
+    "パントリー", "洗面脱衣室", "脱衣室", "洗面室", "畳コーナー",
+    "洋室", "和室", "寝室", "書斎", "納戸", "浴室", "トイレ",
+    "WIC", "LDK", "DK", "居間", "ホール",
+)
+_ROOM_NAME_PATTERN = "|".join(re.escape(value) for value in _ROOM_NAMES)
+_ROOM_TATAMI_PATTERNS = (
+    re.compile(
+        rf"(?P<room>{_ROOM_NAME_PATTERN})\s*(?P<value>\d{{1,3}}(?:\.\d+)?)\s*(?:帖|畳)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?P<value>\d{{1,3}}(?:\.\d+)?)\s*(?:帖|畳)(?:の)?\s*(?P<room>{_ROOM_NAME_PATTERN})",
+        re.IGNORECASE,
+    ),
+)
+_ROOM_AREA_PATTERNS = (
+    re.compile(
+        rf"(?P<room>{_ROOM_NAME_PATTERN})\s*(?P<value>\d{{1,4}}(?:\.\d+)?)\s*(?P<unit>㎡|坪)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?P<value>\d{{1,4}}(?:\.\d+)?)\s*(?P<unit>㎡|坪)(?:の)?\s*(?P<room>{_ROOM_NAME_PATTERN})",
+        re.IGNORECASE,
+    ),
+)
+_FLOOR_COUNT_PATTERN = re.compile(
+    r"(?:地上\s*(?P<ground>[1-9]\d?)\s*階|"
+    r"(?P<built>[1-9]\d?)\s*階(?:建て|建))",
+    re.IGNORECASE,
+)
+_BUILDING_AGE_PATTERN = re.compile(r"築\s*(?P<years>\d{1,3})\s*年", re.IGNORECASE)
 
 
 def _normalize(query: str) -> str:
@@ -117,6 +152,7 @@ def _span_overlaps(span: tuple[int, int], used: list[tuple[int, int]]) -> bool:
 def _area_effect(
     query: str,
     chips: list[dict[str, Any]],
+    excluded_spans: list[tuple[int, int]] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "area_types": [],
@@ -134,8 +170,12 @@ def _area_effect(
                 effect={"area_types": [canonical]},
             )
 
-    used: list[tuple[int, int]] = []
-    range_match = _RANGE_AREA_PATTERN.search(query)
+    used: list[tuple[int, int]] = list(excluded_spans or [])
+    range_match = next(
+        (match for match in _RANGE_AREA_PATTERN.finditer(query)
+         if not _span_overlaps(match.span(), used)),
+        None,
+    )
     if range_match:
         minimum = float(range_match.group("minimum"))
         maximum = float(range_match.group("maximum"))
@@ -152,7 +192,11 @@ def _area_effect(
         )
         return result
 
-    bound_match = _BOUND_AREA_PATTERN.search(query)
+    bound_match = next(
+        (match for match in _BOUND_AREA_PATTERN.finditer(query)
+         if not _span_overlaps(match.span(), used)),
+        None,
+    )
     if bound_match:
         value = float(bound_match.group("value"))
         unit = bound_match.group("unit")
@@ -197,6 +241,85 @@ def _area_effect(
     return result
 
 
+def _canonical_room_name(value: str) -> str:
+    normalized = value.upper() if value.upper() in {"LDK", "DK", "WIC"} else value
+    if normalized == "ウォークインクローゼット":
+        return "WIC"
+    return normalized
+
+
+def _numeric_tolerance(value: float) -> tuple[float, float]:
+    tolerance = value * AREA_TOLERANCE_PERCENT / 100
+    return round(max(0, value - tolerance), 2), round(value + tolerance, 2)
+
+
+def _extract_room_conditions(
+    query: str, chips: list[dict[str, Any]]
+) -> tuple[dict[str, Any], list[tuple[int, int]]]:
+    room: dict[str, Any] = {
+        "room_names": [],
+        "phases": [],
+        "tatami_min": None,
+        "tatami_max": None,
+        "area_min": None,
+        "area_max": None,
+    }
+    used: list[tuple[int, int]] = []
+    for pattern in _ROOM_TATAMI_PATTERNS:
+        for match in pattern.finditer(query):
+            if _span_overlaps(match.span(), used):
+                continue
+            room_name = _canonical_room_name(match.group("room"))
+            value = float(match.group("value"))
+            minimum, maximum = _numeric_tolerance(value)
+            _append_unique(room["room_names"], room_name)
+            phase = _layout_phase(query, match.start())
+            if phase != "COMMON":
+                _append_unique(room["phases"], phase)
+            room.update(tatami_min=minimum, tatami_max=maximum)
+            used.append(match.span())
+            _chip(
+                chips,
+                field="room_tatami",
+                label=f"{room_name}: 約{value:g}帖（{minimum:g}〜{maximum:g}帖）",
+                effect={
+                    "room_names": [room_name],
+                    "phases": room["phases"],
+                    "tatami_min": minimum,
+                    "tatami_max": maximum,
+                },
+            )
+            return room, used
+    for pattern in _ROOM_AREA_PATTERNS:
+        for match in pattern.finditer(query):
+            if _span_overlaps(match.span(), used):
+                continue
+            room_name = _canonical_room_name(match.group("room"))
+            value = float(match.group("value"))
+            unit = match.group("unit")
+            value_m2 = round(value * 3.305785, 2) if unit == "坪" else value
+            minimum, maximum = _numeric_tolerance(value_m2)
+            _append_unique(room["room_names"], room_name)
+            phase = _layout_phase(query, match.start())
+            if phase != "COMMON":
+                _append_unique(room["phases"], phase)
+            room.update(area_min=minimum, area_max=maximum)
+            used.append(match.span())
+            _chip(
+                chips,
+                field="room_area",
+                label=f"{room_name}: 約{value:g}{unit}（±10%）",
+                effect={
+                    "room_names": [room_name],
+                    "phases": room["phases"],
+                    "area_min": minimum,
+                    "area_max": maximum,
+                },
+            )
+            return room, used
+    return room, used
+
+
 @lru_cache(maxsize=256)
 def _parse_cached(query: str) -> dict[str, Any]:
     normalized = _normalize(query)
@@ -211,6 +334,10 @@ def _parse_cached(query: str) -> dict[str, Any]:
         "layouts": [],
         "existing_layouts": [],
         "proposed_layouts": [],
+        "floor_count_min": None,
+        "floor_count_max": None,
+        "building_age_min": None,
+        "building_age_max": None,
     }
     chips: list[dict[str, Any]] = []
     _extract_named_values(
@@ -241,14 +368,43 @@ def _parse_cached(query: str) -> dict[str, Any]:
         _append_unique(building[key], value)
         _chip(chips, field=key, label=label, effect={key: [value]})
 
-    building.update(_area_effect(normalized, chips))
+    room, room_spans = _extract_room_conditions(normalized, chips)
+    building.update(_area_effect(normalized, chips, room_spans))
+
+    floor_match = _FLOOR_COUNT_PATTERN.search(normalized)
+    if floor_match:
+        count = int(floor_match.group("ground") or floor_match.group("built"))
+        building.update(floor_count_min=count, floor_count_max=count)
+        _chip(
+            chips,
+            field="floor_count",
+            label=f"建物階数: {count}階",
+            effect={"floor_count_min": count, "floor_count_max": count},
+        )
+    age_match = _BUILDING_AGE_PATTERN.search(normalized)
+    if age_match:
+        years = int(age_match.group("years"))
+        minimum, maximum = _numeric_tolerance(float(years))
+        building.update(
+            building_age_min=math.floor(minimum),
+            building_age_max=max(math.ceil(maximum), years),
+        )
+        _chip(
+            chips,
+            field="building_age",
+            label=f"築年数: 約{years}年（±10%）",
+            effect={
+                "building_age_min": building["building_age_min"],
+                "building_age_max": building["building_age_max"],
+            },
+        )
     return {
         "original_query": query,
         "normalized_query": normalized,
         # Keep semantic retrieval intact; typed conditions narrow candidates
         # before Oracle Text/vector limits instead of replacing the query.
         "semantic_query": query.strip(),
-        "metadata_filters": {"building": building},
+        "metadata_filters": {"building": building, "room": room},
         "chips": chips,
         "area_tolerance_percent": AREA_TOLERANCE_PERCENT,
     }

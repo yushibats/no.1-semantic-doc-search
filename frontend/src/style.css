@@ -575,6 +575,12 @@ button .fas,button .far,a .fas,a .far{margin-right:4px}
 .search-result-filename{font-weight:600;font-size:16px;margin-bottom:4px}
 .search-result-path{font-size:12px;opacity:0.9}
 .search-result-stats{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.search-result-feedback{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,.14);padding:3px 5px;border-radius:6px}
+.search-result-feedback>span{font-size:11px;opacity:.9;margin:0 2px}
+.search-result-feedback button{display:inline-grid;place-items:center;width:28px;height:28px;padding:0;border:1px solid rgba(255,255,255,.45);border-radius:5px;background:transparent;color:#fff;cursor:pointer}
+.search-result-feedback button .fas{margin:0}
+.search-result-feedback button:hover,.search-result-feedback button.is-selected{background:#fff;color:#1a365d}
+.search-result-feedback button:disabled{opacity:.55;cursor:wait}
 .search-result-stat-badge{background:rgba(255,255,255,0.25);color:white;font-size:13px;padding:6px 12px}
 .search-result-download-btn{background:white;color:#1a365d;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600}
 .search-result-download-btn:hover{background:#f8fafc}

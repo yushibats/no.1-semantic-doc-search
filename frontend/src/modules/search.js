@@ -1279,6 +1279,7 @@ export async function performSearch() {
  * @param {Object} data - 検索結果データ
  */
 export function displaySearchResults(data) {
+  window._searchResultsData = data;
   const resultsDiv = document.getElementById('searchResults');
   const summarySpan = document.getElementById('searchResultsSummary');
   const listDiv = document.getElementById('searchResultsList');
@@ -1345,6 +1346,15 @@ export function displaySearchResults(data) {
                     ? '文書全体一致'
                     : 'ページ画像なし'}
               </span>
+              <div class="search-result-feedback" aria-label="この検索結果を評価">
+                <span>検索結果を評価</span>
+                <button type="button" onclick="window.searchModule.submitSearchFeedback(${fileIndex}, 'relevant', this)" aria-pressed="false" title="役に立った">
+                  <i class="fas fa-thumbs-up"></i>
+                </button>
+                <button type="button" onclick="window.searchModule.submitSearchFeedback(${fileIndex}, 'irrelevant', this)" aria-pressed="false" title="関連しない">
+                  <i class="fas fa-thumbs-down"></i>
+                </button>
+              </div>
               <button 
                 onclick="window.searchModule.downloadFile('${fileResult.bucket}', '${encodeURIComponent(fileResult.object_name)}')"
                 class="search-result-download-btn"
@@ -1498,6 +1508,45 @@ export function displaySearchResults(data) {
   
   // 検索結果データをグローバルに保存（画像モーダル用）
   window._searchResultsData = data;
+}
+
+export async function submitSearchFeedback(fileIndex, action, button) {
+  const data = window._searchResultsData;
+  const item = data?.results?.[fileIndex];
+  if (!data?.trace_id || !item?.file_id) {
+    utilsShowToast('評価対象の検索結果を特定できません', 'error');
+    return;
+  }
+  const container = button?.closest('.search-result-feedback');
+  if (button) button.disabled = true;
+  try {
+    await authApiCall('/ai/api/search/v2/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        trace_id: data.trace_id,
+        document_id: item.file_id,
+        evidence_id: null,
+        action
+      })
+    });
+    container?.querySelectorAll('button').forEach(candidate => {
+      candidate.classList.remove('is-selected');
+      candidate.setAttribute('aria-pressed', 'false');
+    });
+    button?.classList.add('is-selected');
+    button?.setAttribute('aria-pressed', 'true');
+    utilsShowToast(
+      action === 'relevant'
+        ? '役に立った結果として記録しました'
+        : '関連しない結果として記録しました',
+      'success'
+    );
+  } catch (error) {
+    utilsShowToast(`検索結果を評価できませんでした: ${error.message}`, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 /**
@@ -1842,6 +1891,7 @@ window.searchModule = {
   performSearch,
   performImageSearch,
   displaySearchResults,
+  submitSearchFeedback,
   showSearchImageModal,
   showSearchRepresentativeImage,
   showRelatedDocumentThumbnail,
@@ -1869,6 +1919,7 @@ export default {
   performSearch,
   performImageSearch,
   displaySearchResults,
+  submitSearchFeedback,
   showSearchImageModal,
   showSearchRepresentativeImage,
   showRelatedDocumentThumbnail,

@@ -187,7 +187,10 @@ class VlmExtractionOutput(BaseModel):
                 estimate = VlmRoomAreaEstimate.model_validate(value)
             except (TypeError, ValueError):
                 continue
-            if estimate.confidence >= 0.8:
+            # Keep plausible geometric estimates as searchable candidates. The
+            # persistence layer records whether they are verified or require
+            # review; review is deliberately not a search publication gate.
+            if estimate.confidence >= 0.55:
                 reliable.append(estimate)
         return reliable
 
@@ -434,6 +437,10 @@ class BuildingConditionSearchFilter(BaseModel):
     layouts: list[str] = Field(default_factory=list, max_length=50)
     existing_layouts: list[str] = Field(default_factory=list, max_length=50)
     proposed_layouts: list[str] = Field(default_factory=list, max_length=50)
+    floor_count_min: int | None = Field(default=None, ge=1, le=200)
+    floor_count_max: int | None = Field(default=None, ge=1, le=200)
+    building_age_min: int | None = Field(default=None, ge=0, le=500)
+    building_age_max: int | None = Field(default=None, ge=0, le=500)
 
     @field_validator(
         "building_types",
@@ -456,6 +463,18 @@ class BuildingConditionSearchFilter(BaseModel):
             and self.area_min > self.area_max
         ):
             raise ValueError("area_minはarea_max以下にしてください")
+        if (
+            self.floor_count_min is not None
+            and self.floor_count_max is not None
+            and self.floor_count_min > self.floor_count_max
+        ):
+            raise ValueError("floor_count_minはfloor_count_max以下にしてください")
+        if (
+            self.building_age_min is not None
+            and self.building_age_max is not None
+            and self.building_age_min > self.building_age_max
+        ):
+            raise ValueError("building_age_minはbuilding_age_max以下にしてください")
         return self
 
     def active(self) -> bool:
@@ -469,6 +488,52 @@ class BuildingConditionSearchFilter(BaseModel):
             or self.layouts
             or self.existing_layouts
             or self.proposed_layouts
+            or self.floor_count_min is not None
+            or self.floor_count_max is not None
+            or self.building_age_min is not None
+            or self.building_age_max is not None
+        )
+
+
+class RoomConditionSearchFilter(BaseModel):
+    room_names: list[str] = Field(default_factory=list, max_length=50)
+    phases: list[Literal["COMMON", "EXISTING", "PROPOSED", "COMPLETED"]] = Field(
+        default_factory=list, max_length=4
+    )
+    tatami_min: float | None = Field(default=None, ge=0)
+    tatami_max: float | None = Field(default=None, ge=0)
+    area_min: float | None = Field(default=None, ge=0)
+    area_max: float | None = Field(default=None, ge=0)
+
+    @field_validator("room_names")
+    @classmethod
+    def unique_room_names(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @model_validator(mode="after")
+    def valid_ranges(self) -> "RoomConditionSearchFilter":
+        if (
+            self.tatami_min is not None
+            and self.tatami_max is not None
+            and self.tatami_min > self.tatami_max
+        ):
+            raise ValueError("tatami_minはtatami_max以下にしてください")
+        if (
+            self.area_min is not None
+            and self.area_max is not None
+            and self.area_min > self.area_max
+        ):
+            raise ValueError("area_minはarea_max以下にしてください")
+        return self
+
+    def active(self) -> bool:
+        return bool(
+            self.room_names
+            or self.phases
+            or self.tatami_min is not None
+            or self.tatami_max is not None
+            or self.area_min is not None
+            or self.area_max is not None
         )
 
 
@@ -484,6 +549,7 @@ class MetadataSearchFilters(BaseModel):
     building: BuildingConditionSearchFilter = Field(
         default_factory=BuildingConditionSearchFilter
     )
+    room: RoomConditionSearchFilter = Field(default_factory=RoomConditionSearchFilter)
 
     @field_validator("document_months")
     @classmethod
@@ -520,6 +586,7 @@ class MetadataSearchFilters(BaseModel):
             or self.document_months
             or (self.concept_ids and self.concept_mode == "REQUIRE_ALL")
             or self.building.active()
+            or self.room.active()
         )
 
 

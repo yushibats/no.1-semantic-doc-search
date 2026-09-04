@@ -49,3 +49,34 @@ def test_cached_parse_results_are_returned_as_independent_values() -> None:
     assert second["metadata_filters"]["building"]["building_types"] == [
         "マンション"
     ]
+
+
+def test_parses_room_tatami_with_ten_percent_tolerance() -> None:
+    result = parse_query_conditions("LDK 16帖")
+    room = result["metadata_filters"]["room"]
+    building = result["metadata_filters"]["building"]
+
+    assert room["room_names"] == ["LDK"]
+    assert room["tatami_min"] == 14.4
+    assert room["tatami_max"] == 17.6
+    assert building["area_min"] is None
+    assert building["area_max"] is None
+
+
+def test_parses_room_area_with_ten_percent_tolerance() -> None:
+    result = parse_query_conditions("LDK 25.92㎡")
+    room = result["metadata_filters"]["room"]
+
+    assert room["room_names"] == ["LDK"]
+    assert room["area_min"] == 23.33
+    assert room["area_max"] == 28.51
+
+
+def test_parses_building_age_and_floor_count() -> None:
+    result = parse_query_conditions("築30年の2階建て")
+    building = result["metadata_filters"]["building"]
+
+    assert building["building_age_min"] == 27
+    assert building["building_age_max"] == 33
+    assert building["floor_count_min"] == 2
+    assert building["floor_count_max"] == 2

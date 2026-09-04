@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
+
+from app.rag.models import VlmExtractionOutput
+
+
+TATAMI_AREA_M2 = 1.62
 
 
 @dataclass(frozen=True)
@@ -40,6 +46,34 @@ class SetAreaCandidate:
     source: str = "RULE"
     confidence: float = 0.0
     confirmed: bool = False
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SetNumericFactCandidate:
+    fact_code: str
+    phase: str
+    value: float
+    unit: str
+    source: str = "RULE"
+    confidence: float = 0.0
+    confirmed: bool = False
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RoomMeasurementCandidate:
+    phase: str
+    room_name: str
+    area_m2: float | None
+    tatami_equivalent: float | None
+    floor_code: str | None = None
+    basis: str = "PRINTED_TATAMI"
+    source: str = "RULE"
+    confidence: float = 0.0
+    confirmed: bool = False
+    review_status: str = "REVIEW_REQUIRED"
+    searchable: bool = True
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
@@ -208,6 +242,34 @@ _BARE_AREA_PATTERN = re.compile(
     r"(?P<value>\d{1,5}(?:\.\d+)?)\s*(?P<unit>㎡|m2|m²|平米|坪)",
     re.IGNORECASE,
 )
+_ROOM_NAMES = (
+    "ファミリークローク", "ランドリールーム", "ウォークインクローゼット",
+    "子供部屋", "主寝室", "リビング", "キッチン", "ダイニング",
+    "パントリー", "洗面脱衣室", "脱衣室", "洗面室", "畳コーナー",
+    "洋室", "和室", "寝室", "書斎", "納戸", "浴室", "トイレ",
+    "WIC", "LDK", "DK", "居間", "ホール",
+)
+_ROOM_NAME_PATTERN = "|".join(re.escape(value) for value in _ROOM_NAMES)
+_ROOM_TATAMI_PATTERNS = (
+    re.compile(
+        rf"(?P<room>{_ROOM_NAME_PATTERN})\s*(?P<value>\d{{1,3}}(?:\.\d+)?)\s*(?:帖|畳)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?P<value>\d{{1,3}}(?:\.\d+)?)\s*(?:帖|畳)(?:の)?\s*(?P<room>{_ROOM_NAME_PATTERN})",
+        re.IGNORECASE,
+    ),
+)
+_ROOM_AREA_PATTERNS = (
+    re.compile(
+        rf"(?P<room>{_ROOM_NAME_PATTERN})\s*(?P<value>\d{{1,4}}(?:\.\d+)?)\s*(?P<unit>㎡|m2|m²|平米|坪)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?P<value>\d{{1,4}}(?:\.\d+)?)\s*(?P<unit>㎡|m2|m²|平米|坪)(?:の)?\s*(?P<room>{_ROOM_NAME_PATTERN})",
+        re.IGNORECASE,
+    ),
+)
 
 
 def _canonical_area_type(label: str) -> str:
@@ -228,6 +290,209 @@ def _area_context(text: str, match: re.Match[str], radius: int = 80) -> str:
     return text[start:end].strip()
 
 
+def _canonical_room_name(value: str) -> str:
+    upper = value.upper()
+    if upper in {"LDK", "DK", "WIC"}:
+        return upper
+    if value == "ウォークインクローゼット":
+        return "WIC"
+    return value
+
+
+def _room_measurement_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for pattern in (*_ROOM_TATAMI_PATTERNS, *_ROOM_AREA_PATTERNS):
+        spans.extend(match.span() for match in pattern.finditer(text))
+    return spans
+
+
+def _json_objects(text: str) -> list[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    objects: list[dict[str, Any]] = []
+    for offset, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[offset:])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+    return objects
+
+
+def extract_room_measurements(
+    *,
+    file_name: str,
+    page_text: str = "",
+    vlm_text: str = "",
+    page_phase: str = "UNKNOWN",
+    floor_code: str | None = None,
+) -> list[RoomMeasurementCandidate]:
+    """Extract printed and geometric room sizes without hiding estimates.
+
+    Printed values and a single high-confidence rectangle are auto-verified.
+    More complex geometry remains visibly review-required but is searchable
+    immediately, matching the product's recall-first behavior.
+    """
+
+    rule_text = _normalize(f"{file_name}\n{page_text}")
+    phase = page_phase if page_phase in {"EXISTING", "PROPOSED", "COMPLETED"} else "COMMON"
+    candidates: list[RoomMeasurementCandidate] = []
+    seen: set[tuple[str, str, float | None, float | None, str]] = set()
+
+    def append_candidate(candidate: RoomMeasurementCandidate) -> None:
+        key = (
+            candidate.phase,
+            candidate.room_name.casefold(),
+            candidate.area_m2,
+            candidate.tatami_equivalent,
+            candidate.basis,
+        )
+        if key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
+
+    for pattern in _ROOM_TATAMI_PATTERNS:
+        for match in pattern.finditer(rule_text):
+            tatami = round(float(match.group("value")), 2)
+            append_candidate(RoomMeasurementCandidate(
+                phase=phase,
+                room_name=_canonical_room_name(match.group("room")),
+                area_m2=round(tatami * TATAMI_AREA_M2, 2),
+                tatami_equivalent=tatami,
+                floor_code=floor_code,
+                basis="PRINTED_TATAMI",
+                source="RULE",
+                confidence=0.99,
+                confirmed=True,
+                review_status="AUTO_VERIFIED",
+                evidence={
+                    "matched_text": match.group(0),
+                    "conversion_m2_per_tatami": TATAMI_AREA_M2,
+                    "context": _area_context(rule_text, match),
+                },
+            ))
+
+    for pattern in _ROOM_AREA_PATTERNS:
+        for match in pattern.finditer(rule_text):
+            value = float(match.group("value"))
+            unit = match.group("unit").casefold()
+            area_m2 = round(value * 3.305785, 2) if unit == "坪" else round(value, 2)
+            append_candidate(RoomMeasurementCandidate(
+                phase=phase,
+                room_name=_canonical_room_name(match.group("room")),
+                area_m2=area_m2,
+                tatami_equivalent=round(area_m2 / TATAMI_AREA_M2, 2),
+                floor_code=floor_code,
+                basis="PRINTED_AREA",
+                source="RULE",
+                confidence=0.99,
+                confirmed=True,
+                review_status="AUTO_VERIFIED",
+                evidence={
+                    "matched_text": match.group(0),
+                    "conversion_m2_per_tatami": TATAMI_AREA_M2,
+                    "context": _area_context(rule_text, match),
+                },
+            ))
+
+    for raw in _json_objects(vlm_text):
+        if "room_area_estimates" not in raw:
+            continue
+        try:
+            output = VlmExtractionOutput.model_validate(raw)
+        except (TypeError, ValueError):
+            continue
+        for estimate in output.room_area_estimates:
+            rectangles = estimate.rectangles
+            verified_rectangle = (
+                len(rectangles) == 1
+                and rectangles[0].operation == "ADD"
+                and estimate.confidence >= 0.8
+            )
+            basis = "VERIFIED_RECTANGLE" if verified_rectangle else "ESTIMATED_L_SHAPE"
+            dimensions = [
+                {
+                    "width_mm": item.width_mm,
+                    "depth_mm": item.depth_mm,
+                    "operation": item.operation,
+                }
+                for item in rectangles
+            ]
+            append_candidate(RoomMeasurementCandidate(
+                phase=phase,
+                room_name=_canonical_room_name(estimate.room_name),
+                area_m2=round(float(estimate.area_m2 or 0), 2) or None,
+                tatami_equivalent=(
+                    round(float(estimate.tatami_equivalent or 0), 2) or None
+                ),
+                floor_code=floor_code,
+                basis=basis,
+                source="VLM",
+                confidence=float(estimate.confidence),
+                confirmed=verified_rectangle,
+                review_status=(
+                    "AUTO_VERIFIED" if verified_rectangle else "REVIEW_REQUIRED"
+                ),
+                searchable=True,
+                evidence={
+                    "source_locator": estimate.source_locator,
+                    "evidence": estimate.evidence,
+                    "rectangles": dimensions,
+                    "conversion_m2_per_tatami": TATAMI_AREA_M2,
+                    "approximate": not verified_rectangle,
+                },
+            ))
+        break
+    return candidates
+
+
+def extract_set_numeric_facts(
+    *,
+    file_name: str,
+    page_text: str = "",
+    vlm_text: str = "",
+) -> list[SetNumericFactCandidate]:
+    """Extract strict numeric building facts from explicit text."""
+
+    rule_text = _normalize(f"{file_name}\n{page_text}")
+    ai_text = _normalize(vlm_text)
+    candidates: list[SetNumericFactCandidate] = []
+    definitions = (
+        (
+            "FLOOR_COUNT",
+            re.compile(r"(?:地上\s*(?P<ground>[1-9]\d?)\s*階|(?P<built>[1-9]\d?)\s*階(?:建て|建))"),
+            "階",
+        ),
+        ("BUILDING_AGE", re.compile(r"築\s*(?P<years>\d{1,3})\s*年"), "年"),
+    )
+    for fact_code, pattern, unit in definitions:
+        match = pattern.search(rule_text)
+        source, confidence, confirmed = "RULE", 0.97, True
+        if not match:
+            match = pattern.search(ai_text)
+            source, confidence, confirmed = "VLM", 0.72, False
+        if not match:
+            continue
+        group = (
+            match.groupdict().get("ground")
+            or match.groupdict().get("built")
+            or match.groupdict().get("years")
+        )
+        candidates.append(SetNumericFactCandidate(
+            fact_code=fact_code,
+            phase="COMMON",
+            value=float(group),
+            unit=unit,
+            source=source,
+            confidence=confidence,
+            confirmed=confirmed,
+            evidence={"matched_text": match.group(0)},
+        ))
+    return candidates
+
+
 def extract_set_areas(
     *,
     file_name: str,
@@ -245,6 +510,7 @@ def extract_set_areas(
 
     def append_matches(text: str, *, source: str, confidence: float, confirmed: bool) -> None:
         typed_spans: list[tuple[int, int]] = []
+        room_spans = _room_measurement_spans(text)
         for match in _AREA_PATTERN.finditer(text):
             typed_spans.append(match.span())
             area_type = _canonical_area_type(match.group("label"))
@@ -271,6 +537,8 @@ def extract_set_areas(
 
         for match in _BARE_AREA_PATTERN.finditer(text):
             if any(match.start() < end and match.end() > start for start, end in typed_spans):
+                continue
+            if any(match.start() < end and match.end() > start for start, end in room_spans):
                 continue
             value = float(match.group("value"))
             unit_raw = match.group("unit").casefold()
