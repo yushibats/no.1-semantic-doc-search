@@ -63,6 +63,15 @@ def test_parses_room_tatami_with_ten_percent_tolerance() -> None:
     assert building["area_max"] is None
 
 
+def test_parses_japanese_room_tatami_order_with_ten_percent_tolerance() -> None:
+    result = parse_query_conditions("80帖のLDK")
+    room = result["metadata_filters"]["room"]
+
+    assert room["room_names"] == ["LDK"]
+    assert room["tatami_min"] == 72.0
+    assert room["tatami_max"] == 88.0
+
+
 def test_parses_room_area_with_ten_percent_tolerance() -> None:
     result = parse_query_conditions("LDK 25.92㎡")
     room = result["metadata_filters"]["room"]

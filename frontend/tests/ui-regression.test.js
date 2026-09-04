@@ -97,6 +97,28 @@ test('変更点のAI分析中に状態が更新されても比較画面のスク
   caseComparisonModule.closeCaseComparison();
   delete window._searchResultsData;
 });
+
+test('自然言語の部屋帖数条件を検索メタデータへ保持する', () => {
+  const parsed = searchModule.buildParsedMetadataConditions({
+    chips: [{
+      id: 'room_tatami:LDK:80',
+      field: 'room_tatami',
+      effect: {
+        room_names: ['LDK'],
+        phases: [],
+        tatami_min: 72,
+        tatami_max: 88
+      }
+    }]
+  });
+
+  assert.deepEqual(parsed.room.room_names, ['LDK']);
+  assert.equal(parsed.room.tatami_min, 72);
+  assert.equal(parsed.room.tatami_max, 88);
+  assert.equal(parsed.building.area_min, null);
+  assert.equal(parsed.building.area_max, null);
+});
+
 test('文書一覧の索引状態はJob失敗を処理中ではなく失敗として表示する', () => {
   assert.equal(documentLibraryModule.pipelineLabel({
     status: 'PROCESSING',

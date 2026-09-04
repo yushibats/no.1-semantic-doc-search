@@ -277,7 +277,7 @@ export function clearSearchConcepts() {
   renderSearchConcepts();
 }
 
-function activeParsedBuildingConditions() {
+export function buildParsedMetadataConditions(conditions, dismissedIds = new Set()) {
   const building = {
     building_types: [],
     structures: [],
@@ -288,10 +288,22 @@ function activeParsedBuildingConditions() {
     area_unit: '㎡',
     layouts: [],
     existing_layouts: [],
-    proposed_layouts: []
+    proposed_layouts: [],
+    floor_count_min: null,
+    floor_count_max: null,
+    building_age_min: null,
+    building_age_max: null
   };
-  for (const chip of parsedQueryConditions?.chips || []) {
-    if (dismissedQueryConditionIds.has(chip.id)) continue;
+  const room = {
+    room_names: [],
+    phases: [],
+    area_min: null,
+    area_max: null,
+    tatami_min: null,
+    tatami_max: null
+  };
+  for (const chip of conditions?.chips || []) {
+    if (dismissedIds.has(chip.id)) continue;
     const effect = chip.effect || {};
     for (const key of [
       'building_types', 'structures', 'uses', 'area_types',
@@ -301,11 +313,33 @@ function activeParsedBuildingConditions() {
         if (!building[key].includes(value)) building[key].push(value);
       }
     }
-    if (Object.hasOwn(effect, 'area_min')) building.area_min = effect.area_min;
-    if (Object.hasOwn(effect, 'area_max')) building.area_max = effect.area_max;
+    for (const key of ['room_names', 'phases']) {
+      for (const value of effect[key] || []) {
+        if (!room[key].includes(value)) room[key].push(value);
+      }
+    }
+    const areaTarget = chip.field === 'room_area' ? room : building;
+    if (Object.hasOwn(effect, 'area_min')) areaTarget.area_min = effect.area_min;
+    if (Object.hasOwn(effect, 'area_max')) areaTarget.area_max = effect.area_max;
     if (effect.area_unit) building.area_unit = effect.area_unit;
+    for (const key of [
+      'floor_count_min', 'floor_count_max',
+      'building_age_min', 'building_age_max'
+    ]) {
+      if (Object.hasOwn(effect, key)) building[key] = effect[key];
+    }
+    for (const key of ['tatami_min', 'tatami_max']) {
+      if (Object.hasOwn(effect, key)) room[key] = effect[key];
+    }
   }
-  return building;
+  return { building, room };
+}
+
+function activeParsedMetadataConditions() {
+  return buildParsedMetadataConditions(
+    parsedQueryConditions,
+    dismissedQueryConditionIds
+  );
 }
 
 function renderParsedQueryConditions() {
@@ -397,14 +431,16 @@ async function ensureQueryConditions(query) {
       if (data) parsedQueryConditions = data;
       renderParsedQueryConditions();
     }
-    return activeParsedBuildingConditions();
+    return activeParsedMetadataConditions();
   } catch (_error) {
     // Condition parsing is an optional fast path. Semantic retrieval must still run.
     return null;
   }
 }
 
-function collectMetadataFilters(parsedBuilding = null) {
+function collectMetadataFilters(parsedConditions = null) {
+  const parsedBuilding = parsedConditions?.building || parsedConditions || {};
+  const parsedRoom = parsedConditions?.room || {};
   const folderId = document.getElementById('searchFolderId')?.value || '';
   const customer = document.getElementById('searchCustomerName')?.value.trim() || '';
   const yearFrom = Number(document.getElementById('searchYearFrom')?.value) || null;
@@ -438,7 +474,11 @@ function collectMetadataFilters(parsedBuilding = null) {
       : (parsedBuilding?.area_unit || '㎡'),
     layouts: parsedBuilding?.layouts || [],
     existing_layouts: manualOrParsed('searchExistingLayout', 'existing_layouts'),
-    proposed_layouts: manualOrParsed('searchProposedLayout', 'proposed_layouts')
+    proposed_layouts: manualOrParsed('searchProposedLayout', 'proposed_layouts'),
+    floor_count_min: parsedBuilding?.floor_count_min ?? null,
+    floor_count_max: parsedBuilding?.floor_count_max ?? null,
+    building_age_min: parsedBuilding?.building_age_min ?? null,
+    building_age_max: parsedBuilding?.building_age_max ?? null
   };
   return {
     folder: folderId ? {
@@ -457,7 +497,8 @@ function collectMetadataFilters(parsedBuilding = null) {
     document_year_from: yearFrom,
     document_year_to: yearTo,
     document_months: month ? [month] : [],
-    building
+    building,
+    room: parsedRoom
   };
 }
 
@@ -1239,12 +1280,12 @@ export async function performSearch() {
     hideSearchResults();
     setSearchButtonBusy(submitButton, true, '検索中...');
     if (!dynamicFiltersLoaded) await loadDynamicSearchFilters();
-    const parsedBuilding = await ensureQueryConditions(query);
+    const parsedConditions = await ensureQueryConditions(query);
     usesEventStream = true;
     setSearchButtonBusy(submitButton, true, '検索中...', usesEventStream);
     if (searchCancelled) throw new Error('検索をキャンセルしました');
 
-    const requestBody = { query, top_k: topK, min_score: minScore, filename_filter: filenameFilter || null, field_filters: collectDynamicFilters(), metadata_filters: collectMetadataFilters(parsedBuilding), document_types: [], current_version_only: true, retrieval_modes: retrievalModes, verify, ...conceptPayload };
+    const requestBody = { query, top_k: topK, min_score: minScore, filename_filter: filenameFilter || null, field_filters: collectDynamicFilters(), metadata_filters: collectMetadataFilters(parsedConditions), document_types: [], current_version_only: true, retrieval_modes: retrievalModes, verify, ...conceptPayload };
     const endpoint = '/ai/api/search/v2/events';
 
     const data = usesEventStream ? await streamSearch(endpoint, {
