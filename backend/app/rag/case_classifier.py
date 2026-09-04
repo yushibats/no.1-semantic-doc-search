@@ -60,6 +60,12 @@ class SetNumericFactCandidate:
     confirmed: bool = False
     evidence: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def value_number(self) -> float:
+        """Expose the stored numeric value using the repository field name."""
+
+        return self.value
+
 
 @dataclass(frozen=True)
 class RoomMeasurementCandidate:
@@ -75,6 +81,12 @@ class RoomMeasurementCandidate:
     review_status: str = "REVIEW_REQUIRED"
     searchable: bool = True
     evidence: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def tatami(self) -> float | None:
+        """Backward-compatible alias used by callers and API tests."""
+
+        return self.tatami_equivalent
 
 
 def _normalize(value: str) -> str:
@@ -328,6 +340,7 @@ def extract_room_measurements(
     vlm_text: str = "",
     page_phase: str = "UNKNOWN",
     floor_code: str | None = None,
+    page_number: int | None = None,
 ) -> list[RoomMeasurementCandidate]:
     """Extract printed and geometric room sizes without hiding estimates.
 
@@ -420,13 +433,15 @@ def extract_room_measurements(
                 }
                 for item in rectangles
             ]
+            area_m2 = round(float(estimate.area_m2 or 0), 2) or None
+            tatami_equivalent = (
+                round(area_m2 / TATAMI_AREA_M2, 2) if area_m2 is not None else None
+            )
             append_candidate(RoomMeasurementCandidate(
                 phase=phase,
                 room_name=_canonical_room_name(estimate.room_name),
-                area_m2=round(float(estimate.area_m2 or 0), 2) or None,
-                tatami_equivalent=(
-                    round(float(estimate.tatami_equivalent or 0), 2) or None
-                ),
+                area_m2=area_m2,
+                tatami_equivalent=tatami_equivalent,
                 floor_code=floor_code,
                 basis=basis,
                 source="VLM",
@@ -437,7 +452,10 @@ def extract_room_measurements(
                 ),
                 searchable=True,
                 evidence={
-                    "source_locator": estimate.source_locator,
+                    "source_locator": (
+                        estimate.source_locator
+                        or (f"page:{page_number}" if page_number is not None else "")
+                    ),
                     "evidence": estimate.evidence,
                     "rectangles": dimensions,
                     "conversion_m2_per_tatami": TATAMI_AREA_M2,
@@ -453,11 +471,13 @@ def extract_set_numeric_facts(
     file_name: str,
     page_text: str = "",
     vlm_text: str = "",
+    page_phase: str = "UNKNOWN",
 ) -> list[SetNumericFactCandidate]:
     """Extract strict numeric building facts from explicit text."""
 
     rule_text = _normalize(f"{file_name}\n{page_text}")
     ai_text = _normalize(vlm_text)
+    phase = page_phase if page_phase in {"EXISTING", "PROPOSED", "COMPLETED"} else "COMMON"
     candidates: list[SetNumericFactCandidate] = []
     definitions = (
         (
@@ -482,7 +502,7 @@ def extract_set_numeric_facts(
         )
         candidates.append(SetNumericFactCandidate(
             fact_code=fact_code,
-            phase="COMMON",
+            phase=phase,
             value=float(group),
             unit=unit,
             source=source,

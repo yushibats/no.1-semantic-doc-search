@@ -277,6 +277,7 @@ class CaseComparisonRepository:
                     vlm_text=vlm_text,
                     page_phase=inference.phase,
                     floor_code=inference.floor_code,
+                    page_number=page_number,
                 ):
                     cursor.execute(
                         """
@@ -469,6 +470,7 @@ class CaseComparisonRepository:
                     file_name=str(document["file_name"]),
                     page_text=normalized_text,
                     vlm_text=vlm_text,
+                    page_phase=inference.phase,
                 ):
                     cursor.execute(
                         """
